@@ -1,0 +1,44 @@
+Screen {
+    layout: grid;
+    grid-size: 1;
+    grid-rows: auto 1fr auto;
+    background: $surface;
+}
+
+#execution-log {
+    height: 1fr;
+    min-height: 5;
+    margin: 1 2;
+    border: solid $primary;
+    padding: 0 1;
+}
+
+#final-output {
+    margin: 1 2;
+    border: solid $success;
+    padding: 1;
+    height: auto;
+    max-height: 15;
+    overflow-y: auto;
+}
+
+#input-area {
+    dock: bottom;
+    height: auto;
+    padding: 1 2;
+    background: $panel;
+}
+
+#query-input {
+    width: 100%;
+    border: solid $accent;
+}
+
+#query-input:focus {
+    border: solid $secondary;
+}
+
+#query-input:disabled {
+    border: solid #555555;
+    opacity: 0.7;
+}
