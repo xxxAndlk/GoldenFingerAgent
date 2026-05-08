@@ -14,6 +14,16 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
 from textual.widgets import Input, RichLog, Static
+from textual.strip import Strip
+
+
+class VisibleInput(Input):
+    """Input with forced white-on-black text — bypasses CSS cascade entirely."""
+
+    def render_line(self, y: int) -> Strip:
+        strip = super().render_line(y)
+        from rich.style import Style
+        return strip.apply_style(Style(color="#ffffff", bgcolor="#000000"))
 
 from ..harness import GoldenFingerHarness
 from ..config import config
@@ -30,7 +40,7 @@ class StatusBar(Static):
 
 
 class GoldenFingerApp(App[None]):
-    """金手指终端 TUI — 现代 Chat 风格"""
+    """金手指终端 TUI"""
 
     CSS_PATH = "tui.tcss"
     AUTO_FOCUS = "#query-input"
@@ -65,21 +75,30 @@ class GoldenFingerApp(App[None]):
         self.llm = LLMClient()
         log = self.query_one("#chat-log", RichLog)
         s = self.harness.get_status()
-        log.write("[bold #c084fc]╔══════════════════════════════════════╗[/]")
-        log.write("[bold #c084fc]║   ✦ 金手指 Agent System 已就绪 ✦   ║[/]")
-        log.write("[bold #c084fc]╚══════════════════════════════════════╝[/]")
-        log.write(
-            f"[dim #6b7280]模型: {config.openai_model}[/]"
-            f"  [dim #6b7280]|  境界: {s['realm']} · {s['realm_stage']}[/]"
-            f"  [dim #6b7280]|  灵根: {s['spirit_root']['dominant']}[/]"
-        )
-        log.write("[dim #545d68]输入问题开始修炼  ·  /help 查看指令  ·  ↑↓ 历史[/]")
+        realm_info = f"{s['realm']} · {s['realm_stage']}"
+        spirit = s['spirit_root']['dominant']
+        log.write("[bold #c084fc]╔══════════════════════════════════════════════╗[/]")
+        log.write("[bold #c084fc]║    ✦ 金手指 Agent System 已就绪 ✦            ║[/]")
+        log.write("[bold #c084fc]╟──────────────────────────────────────────────╢[/]")
+        log.write(f"[bold #c084fc]║[/]  [dim #8b949e]模型: {config.openai_model}[/]")
+        log.write(f"[bold #c084fc]║[/]  [dim #8b949e]境界: {realm_info}  |  灵根: {spirit}[/]")
+        log.write(f"[bold #c084fc]║[/]  [dim #545d68]输入问题开始修炼  ·  /help 查看指令  ·  ↑↓ 历史[/]")
+        log.write("[bold #c084fc]╚══════════════════════════════════════════════╝[/]")
         log.write("")
         self._update_status()
-        self.query_one("#query-input", Input).focus()
+        inp = self.query_one("#query-input", Input)
+        # Force high-contrast text via inline styles (highest CSS priority)
+        self._force_input_colors(inp)
+        inp.focus()
 
         self._pipeline_mode = False
         self._warm_chromadb(log)
+
+    @staticmethod
+    def _force_input_colors(inp: Input) -> None:
+        """Force white-on-black text on input widget for all terminal types."""
+        inp.styles.color = "#ffffff"
+        inp.styles.background = "#000000"
 
     # ---- ChromaDB 预热 ----
 
@@ -95,11 +114,15 @@ class GoldenFingerApp(App[None]):
                 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
             from ..storage.vector_store import vector_store
+            from pathlib import Path
 
-            log.write(
-                "[dim #6b7280]⏳ 向量数据库初始化中..."
-                " 首次运行需下载嵌入模型 (~79MB)，请耐心等待[/]"
-            )
+            # Only show init message if ChromaDB is not already cached
+            chroma_db = Path(config.memory_dir) / "chroma.sqlite3"
+            if not (chroma_db.exists() and chroma_db.stat().st_size > 0):
+                log.write(
+                    "[dim #6b7280]⏳ 向量数据库初始化中..."
+                    " 首次运行需下载嵌入模型 (~79MB)，请耐心等待[/]"
+                )
 
             loop = asyncio.get_event_loop()
             # 最多等待 120 秒，超时则跳过
@@ -150,7 +173,7 @@ class GoldenFingerApp(App[None]):
                 max_lines=10_000,
             )
         with Container(id="input-bar"):
-            yield Input(
+            yield VisibleInput(
                 placeholder="宿主> 输入问题或指令...",
                 id="query-input",
             )
@@ -186,11 +209,12 @@ class GoldenFingerApp(App[None]):
             await self._handle_command(query)
             self._cancel_processing_timer()
             inp.disabled = False
+            self._force_input_colors(inp)
             inp.focus()
             return
 
         log = self.query_one("#chat-log", RichLog)
-        log.write(f"[bold #fbbf24]宿主>[/] {query}")
+        log.write(f"[bold #fbbf24]▸ 宿主[/]  {query}")
 
         self.is_processing = True
         self._update_status()
@@ -202,6 +226,7 @@ class GoldenFingerApp(App[None]):
         try:
             inp = self.query_one("#query-input", Input)
             inp.disabled = False
+            self._force_input_colors(inp)
             inp.focus()
             self.is_processing = False
         except Exception:
@@ -288,6 +313,7 @@ class GoldenFingerApp(App[None]):
             try:
                 inp = self.query_one("#query-input", Input)
                 inp.disabled = False
+                self._force_input_colors(inp)
                 inp.focus()
             except Exception:
                 pass
@@ -381,13 +407,13 @@ class GoldenFingerApp(App[None]):
         for round_num in range(max_rounds):
             # ── 轮次分隔 ──
             if round_num > 0:
-                log.write(f"[dim #444c56]── 第 {round_num + 1} 轮 ──[/]")
+                log.write(f"[dim #444c56]── 第{round_num + 1}轮 ──[/]")
 
-            label: str = "金手指>" if round_num == 0 else "  …>"
-            log.write(f"[bold #6ee7b7]{label}[/] ")
+            label: str = "◆ 金手指" if round_num == 0 else "  ◇"
+            log.write(f"[bold #6ee7b7]{label}[/]  ")
 
-            # ⏳ 思考 loading
-            self._update_status_text("💭 思考中...")
+            # › 思考中
+            self._update_status_text("› 思考中...")
             await asyncio.sleep(0)  # 刷新 UI
 
             t_start: float = time.time()
@@ -411,13 +437,13 @@ class GoldenFingerApp(App[None]):
                 if len(reasoning) > 800:
                     reasoning_show = reasoning[:800]
                     log.write(
-                        f"[dim #545d68]💭 {reasoning_show}[/]"
+                        f"[dim #6b7280]  › {reasoning_show}[/]"
                     )
                     log.write(
-                        f"[dim #3d444d]   ... (推理共 {len(reasoning)} 字符，已截断)[/]"
+                        f"[dim #3d444d]     ... (推理共 {len(reasoning)} 字符，已截断)[/]"
                     )
                 else:
-                    log.write(f"[dim #545d68]💭 {reasoning}[/]")
+                    log.write(f"[dim #6b7280]  › {reasoning}[/]")
 
             text: str = self.llm.extract_text(resp)
             tool_calls: list[dict[str, Any]] = self.llm.extract_tool_calls(resp)
@@ -435,7 +461,7 @@ class GoldenFingerApp(App[None]):
 
             if not tool_calls:
                 log.write(
-                    f"[dim #484f58]⏱ {elapsed:.1f}s"
+                    f"[dim #484f58]  ⏱ {elapsed:.1f}s"
                     f"  ↑{usage.get('input', 0)} ↓{usage.get('output', 0)} tok[/]"
                 )
                 log.write("")
@@ -464,8 +490,8 @@ class GoldenFingerApp(App[None]):
                     f"{k}={str(v)[:40]!r}" for k, v in params.items()
                 )
 
-                # ⏳ 执行工具 loading
-                log.write(f"[#fbbf24]  ⏳ {tool_name}({preview})[/]")
+                # ⚙ 执行工具
+                log.write(f"[#fbbf24]  ⚙ {tool_name}({preview})[/]")
                 self._update_status_text(f"⚙ 执行 {tool_name}...")
                 await asyncio.sleep(0)
 
@@ -500,8 +526,8 @@ class GoldenFingerApp(App[None]):
         # ── 总结用量 ──
         if total_tokens["input"] > 0:
             log.write(
-                f"[dim #3d444d]══ 总计 ↑{total_tokens['input']}"
-                f" ↓{total_tokens['output']} tok ══[/]"
+                f"[dim #484f58]── 总计 ↑{total_tokens['input']}"
+                f" ↓{total_tokens['output']} tok ──[/]"
             )
         self._update_status_text("✦ 就绪")
         log.write("")
@@ -566,7 +592,7 @@ class GoldenFingerApp(App[None]):
                             for k, v in ev.get("params", {}).items()
                         )
                         log.write(
-                            f"[#fbbf24]    ⏳ {ev['tool_name']}({ps})[/]"
+                            f"[#fbbf24]    ⚙ {ev['tool_name']}({ps})[/]"
                         )
                     elif ev["phase"] == "tool_end":
                         if ev.get("error"):
@@ -590,7 +616,7 @@ class GoldenFingerApp(App[None]):
                             final_text: str = self.harness.get_final_response(execution_report)
                             if final_text and final_text != "（无输出）":
                                 log.write(
-                                    f"[bold #6ee7b7]金手指>[/] {final_text}"
+                                    f"[bold #6ee7b7]◆ 金手指[/]  {final_text}"
                                 )
                         except Exception:
                             pass

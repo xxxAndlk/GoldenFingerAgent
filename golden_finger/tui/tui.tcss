@@ -4,7 +4,6 @@
 
 Screen {
     background: #0d1117;
-    color: #c9d1d9;
 }
 
 /* ---- Chat Area ---- */
@@ -41,33 +40,37 @@ Screen {
     border-top: solid #21262d;
 }
 
+/* ---- Query Input: high-contrast for cross-terminal visibility ---- */
+
 #query-input {
     width: 100%;
-    border: solid #30363d;
-    background: #161b22;
-    color: #c9d1d9;
+    border: solid #444c56;
+    background: #000000;
+    color: #ffffff;
     padding: 1 1;
 }
 
 #query-input:focus {
     border: solid #c084fc;
-    background: #1a1f2b;
-    color: #e6edf3;
+    background: #111111;
+    color: #ffffff;
+}
+
+#query-input:ansi {
+    color: ansi_white;
+    background: ansi_black;
+}
+
+#query-input:ansi:focus {
+    color: ansi_bright_white;
+    background: ansi_black;
+    border: solid ansi_magenta;
 }
 
 #query-input:disabled {
     border: solid #21262d;
     background: #0d1117;
     color: #484f58;
-}
-
-/* Ensure Input text is always visible regardless of theme */
-Input {
-    color: #c9d1d9;
-}
-
-Input:focus {
-    color: #e6edf3;
 }
 
 /* ---- Status Bar ---- */
