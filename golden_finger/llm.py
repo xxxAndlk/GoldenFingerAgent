@@ -79,7 +79,7 @@ class LLMClient:
         max_tokens: int,
     ) -> dict[str, Any]:
         client = await self._get_client()
-        url = f"{config.openai_base_url}"
+        url = f"{config.openai_base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {config.openai_api_key}",
             "Content-Type": "application/json",
@@ -119,7 +119,7 @@ class LLMClient:
         max_tokens: int,
     ) -> AsyncGenerator[str, None]:
         client = await self._get_client()
-        url = f"{config.openai_base_url}"
+        url = f"{config.openai_base_url}/chat/completions"
         headers = {
             "Authorization": f"Bearer {config.openai_api_key}",
             "Content-Type": "application/json",
@@ -314,6 +314,28 @@ class LLMClient:
             return msg.get("content") or ""
         except (KeyError, IndexError):
             return ""
+
+    @staticmethod
+    def extract_reasoning(response: dict[str, Any]) -> str:
+        """从响应中提取推理/思考内容 (DeepSeek reasoning_content)"""
+        try:
+            msg = response["choices"][0]["message"]
+            return msg.get("reasoning_content") or ""
+        except (KeyError, IndexError):
+            return ""
+
+    @staticmethod
+    def extract_usage(response: dict[str, Any]) -> dict[str, int]:
+        """从响应中提取 token 用量"""
+        try:
+            usage = response.get("usage", {})
+            return {
+                "input": usage.get("prompt_tokens", usage.get("input_tokens", 0)),
+                "output": usage.get("completion_tokens", usage.get("output_tokens", 0)),
+                "total": usage.get("total_tokens", 0),
+            }
+        except (KeyError, AttributeError):
+            return {"input": 0, "output": 0, "total": 0}
 
     @staticmethod
     def extract_tool_calls(response: dict[str, Any]) -> list[dict[str, Any]]:

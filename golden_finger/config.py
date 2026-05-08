@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 # 加载 .env 文件
 _ENV_FILE = Path(os.environ.get("GOLDEN_FINGER_ENV", ".env"))
 if _ENV_FILE.exists():
-    load_dotenv(_ENV_FILE)
+    load_dotenv(_ENV_FILE, override=True)
 
 
 class Config:

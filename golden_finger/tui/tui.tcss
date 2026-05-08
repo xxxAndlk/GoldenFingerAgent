@@ -1,10 +1,10 @@
-/* Golden Finger TUI — 现代 Dark Theme 样式 */
+/* Golden Finger TUI — 暗黑主题 v2 */
 
 /* ---- 全局 ---- */
 
 Screen {
-    background: #0f1117;
-    color: #e1e4e8;
+    background: #0d1117;
+    color: #c9d1d9;
 }
 
 /* ---- Chat Area ---- */
@@ -16,12 +16,13 @@ Screen {
 }
 
 #chat-log {
-    background: #0f1117;
-    color: #e1e4e8;
+    background: #0d1117;
+    color: #c9d1d9;
     padding: 1 2;
-    scrollbar-color: #2d333b;
-    scrollbar-color-hover: #444c56;
-    scrollbar-background: #0f1117;
+    scrollbar-color: #21262d;
+    scrollbar-color-hover: #30363d;
+    scrollbar-color-active: #484f58;
+    scrollbar-background: #0d1117;
     scrollbar-size-vertical: 1;
     overflow-y: auto;
 }
@@ -35,8 +36,8 @@ Screen {
 #input-bar {
     dock: bottom;
     height: auto;
-    padding: 0 2 1 2;
-    background: #0f1117;
+    padding: 1 2 1 2;
+    background: #0d1117;
     border-top: solid #21262d;
 }
 
@@ -44,18 +45,29 @@ Screen {
     width: 100%;
     border: solid #30363d;
     background: #161b22;
-    color: #e1e4e8;
-    padding: 0 1;
+    color: #c9d1d9;
+    padding: 1 1;
 }
 
 #query-input:focus {
     border: solid #c084fc;
-    background: #161b22;
+    background: #1a1f2b;
+    color: #e6edf3;
 }
 
 #query-input:disabled {
-    border: solid #30363d;
-    opacity: 0.5;
+    border: solid #21262d;
+    background: #0d1117;
+    color: #484f58;
+}
+
+/* Ensure Input text is always visible regardless of theme */
+Input {
+    color: #c9d1d9;
+}
+
+Input:focus {
+    color: #e6edf3;
 }
 
 /* ---- Status Bar ---- */
@@ -64,25 +76,26 @@ Screen {
     dock: bottom;
     height: 1;
     background: #161b22;
-    border-top: solid #21262d;
+    border-top: solid #30363d;
     color: #8b949e;
     padding: 0 2;
 }
 
 #status-info {
     width: 100%;
-    text-style: dim;
+    text-style: bold;
     content-align: left middle;
 }
 
-/* ---- Footer ---- */
+/* ---- Footer (hide) ---- */
 
 Footer {
     display: none;
 }
 
-/* ---- RichLog custom markup overrides ---- */
+/* ---- RichLog ---- */
 
 RichLog {
     text-style: none;
+    scrollbar-size-vertical: 1;
 }
