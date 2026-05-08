@@ -1,9 +1,66 @@
-/* Golden Finger TUI — 暗黑主题 v2 */
+/* Golden Finger TUI — 现代化暗黑主题 (类似 Catppuccin Mocha) */
 
 /* ---- 全局 ---- */
 
 Screen {
-    background: #0d1117;
+    background: #1e1e2e;
+}
+
+/* ---- Layout ---- */
+
+#main-layout {
+    layout: horizontal;
+    height: 1fr;
+    margin: 0;
+    padding: 0;
+}
+
+#left-pane {
+    width: 1fr;
+    height: 1fr;
+    transition: width 0.3s;
+}
+
+#left-pane.-has-right {
+    width: 2fr;
+}
+
+#right-pane {
+    width: 1fr;
+    height: 1fr;
+    border-left: tall #313244;
+    display: none;
+}
+
+#right-pane.-visible {
+    display: block;
+}
+
+.side-panel {
+    height: 1fr;
+    border-bottom: tall #313244;
+    display: none;
+}
+
+.side-panel.-visible {
+    display: block;
+}
+
+.panel-title {
+    background: #181825;
+    color: #cba6f7;
+    text-style: bold;
+    padding: 1 1;
+    width: 100%;
+    border-bottom: solid #313244;
+}
+
+.panel-content {
+    height: 1fr;
+    overflow-y: auto;
+    padding: 0 1;
+    background: #1e1e2e;
+    scrollbar-size-vertical: 1;
 }
 
 /* ---- Chat Area ---- */
@@ -11,17 +68,17 @@ Screen {
 #chat-area {
     height: 1fr;
     margin: 0;
-    padding: 0;
+    padding: 0 1;
 }
 
 #chat-log {
-    background: #0d1117;
-    color: #c9d1d9;
+    background: #1e1e2e;
+    color: #cdd6f4;
     padding: 1 2;
-    scrollbar-color: #21262d;
-    scrollbar-color-hover: #30363d;
-    scrollbar-color-active: #484f58;
-    scrollbar-background: #0d1117;
+    scrollbar-color: #313244;
+    scrollbar-color-hover: #45475a;
+    scrollbar-color-active: #585b70;
+    scrollbar-background: #1e1e2e;
     scrollbar-size-vertical: 1;
     overflow-y: auto;
 }
@@ -35,42 +92,31 @@ Screen {
 #input-bar {
     dock: bottom;
     height: auto;
-    padding: 1 2 1 2;
-    background: #0d1117;
-    border-top: solid #21262d;
+    padding: 1 2;
+    background: #181825;
+    border-top: solid #313244;
 }
 
-/* ---- Query Input: high-contrast for cross-terminal visibility ---- */
+/* ---- Query Input ---- */
 
 #query-input {
     width: 100%;
-    border: solid #444c56;
-    background: #000000;
-    color: #ffffff;
-    padding: 1 1;
+    border: tall #313244;
+    background: #11111b;
+    color: #cdd6f4;
+    padding: 0 1;
 }
 
 #query-input:focus {
-    border: solid #c084fc;
-    background: #111111;
-    color: #ffffff;
-}
-
-#query-input:ansi {
-    color: ansi_white;
-    background: ansi_black;
-}
-
-#query-input:ansi:focus {
-    color: ansi_bright_white;
-    background: ansi_black;
-    border: solid ansi_magenta;
+    border: tall #cba6f7;
+    background: #11111b;
+    color: #cdd6f4;
 }
 
 #query-input:disabled {
-    border: solid #21262d;
-    background: #0d1117;
-    color: #484f58;
+    border: tall #313244;
+    background: #181825;
+    color: #585b70;
 }
 
 /* ---- Status Bar ---- */
@@ -78,9 +124,9 @@ Screen {
 #status-bar {
     dock: bottom;
     height: 1;
-    background: #161b22;
-    border-top: solid #30363d;
-    color: #8b949e;
+    background: #11111b;
+    border-top: solid #313244;
+    color: #a6adc8;
     padding: 0 2;
 }
 
@@ -101,4 +147,23 @@ Footer {
 RichLog {
     text-style: none;
     scrollbar-size-vertical: 1;
+}
+
+/* ---- Copy Mode ---- */
+
+#copy-log-modal {
+    width: 96%;
+    height: 92%;
+    margin: 1 2;
+    border: round #cba6f7;
+    background: #11111b;
+    padding: 1;
+}
+
+#copy-log-text {
+    width: 100%;
+    height: 100%;
+    border: tall #313244;
+    background: #1e1e2e;
+    color: #cdd6f4;
 }

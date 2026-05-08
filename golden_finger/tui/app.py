@@ -1,8 +1,10 @@
 """Golden Finger 终端 TUI — 现代 Chat 风格 (Textual)"""
 
 import asyncio
+import contextlib
 import json
 import os
+import sys
 import time
 from datetime import datetime
 from typing import Any, Optional
@@ -12,18 +14,9 @@ from textual import work
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container
-from textual.widgets import Input, RichLog, Static
-from textual.strip import Strip
-
-
-class VisibleInput(Input):
-    """Input with forced white-on-black text — bypasses CSS cascade entirely."""
-
-    def render_line(self, y: int) -> Strip:
-        strip = super().render_line(y)
-        from rich.style import Style
-        return strip.apply_style(Style(color="#ffffff", bgcolor="#000000"))
+from textual.containers import Container, Horizontal, Vertical
+from textual.screen import ModalScreen
+from textual.widgets import Input, RichLog, Static, TextArea
 
 from ..harness import GoldenFingerHarness
 from ..config import config
@@ -32,11 +25,143 @@ from ..tools.builtin import BUILTIN_TOOLS
 from ..domain_execution import ToolExecutionGuard
 
 
+class CopyLogScreen(ModalScreen[None]):
+    """复制模式：在只读文本区域中可选择并复制聊天记录。"""
+
+    BINDINGS = [
+        Binding("escape", "close", "关闭", show=False),
+        Binding("ctrl+c", "copy_to_clipboard", "复制", show=False),
+    ]
+
+    def __init__(self, content: str) -> None:
+        super().__init__()
+        self._content = content
+
+    def compose(self) -> ComposeResult:
+        with Container(id="copy-log-modal"):
+            yield TextArea(
+                self._content,
+                read_only=True,
+                id="copy-log-text",
+            )
+
+    def on_mount(self) -> None:
+        self.query_one("#copy-log-text", TextArea).focus()
+
+    def action_close(self) -> None:
+        self.dismiss()
+
+    def action_copy_to_clipboard(self) -> None:
+        """复制当前选择内容（无选择时复制全部）到系统剪贴板。"""
+        text_area = self.query_one("#copy-log-text", TextArea)
+        selected = ""
+        try:
+            selected = str(getattr(text_area, "selected_text", "") or "")
+        except Exception:
+            selected = ""
+        payload = selected.strip() or self._content
+        if not payload.strip():
+            return
+        self._copy_text(payload)
+        self.notify("已复制到剪贴板", title="Copy")
+
+    @staticmethod
+    def _copy_text(text: str) -> None:
+        # 优先走 Windows clip，失败再回退 tkinter
+        try:
+            if os.name == "nt":
+                import subprocess
+                subprocess.run(["clip"], input=text, text=True, check=True)
+                return
+        except Exception:
+            pass
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+            root.withdraw()
+            root.clipboard_clear()
+            root.clipboard_append(text)
+            root.update()
+            root.destroy()
+        except Exception:
+            pass
+
+
 class StatusBar(Static):
     """底部状态栏"""
 
     def compose(self) -> ComposeResult:
         yield Static(id="status-info")
+
+
+class TaskPanel(Static):
+    """右上角：任务计划面板"""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.tasks: list[dict[str, Any]] = []
+
+    def compose(self) -> ComposeResult:
+        yield Static("🎯 任务计划", classes="panel-title")
+        yield RichLog(id="task-log", classes="panel-content", wrap=True, auto_scroll=True)
+
+    def update_tasks(self, plan: Any) -> None:
+        self.tasks = []
+        log = self.query_one("#task-log", RichLog)
+        log.clear()
+        if not plan or not plan.tasks:
+            log.write("[dim #6c7086]暂无任务[/]")
+            return
+        
+        for i, task in enumerate(plan.tasks):
+            self.tasks.append({
+                "id": task.task_id,
+                "desc": task.description,
+                "status": "pending"
+            })
+        self._render_tasks()
+
+    def set_task_status(self, task_id: str, status: str) -> None:
+        changed = False
+        for t in self.tasks:
+            if t["id"] == task_id and t["status"] != status:
+                t["status"] = status
+                changed = True
+        if changed:
+            self._render_tasks()
+
+    def _render_tasks(self) -> None:
+        log = self.query_one("#task-log", RichLog)
+        log.clear()
+        for i, t in enumerate(self.tasks):
+            status = t["status"]
+            if status == "pending":
+                icon = "[dim]⏳[/]"
+                color = "dim #6c7086"
+            elif status == "running":
+                icon = "[#f9e2af]▶[/]"
+                color = "#f9e2af"
+            elif status == "completed":
+                icon = "[#a6e3a1]✓[/]"
+                color = "#a6e3a1"
+            elif status == "error":
+                icon = "[#f38ba8]✗[/]"
+                color = "#f38ba8"
+            else:
+                icon = "[dim]-[/]"
+                color = "dim"
+            
+            log.write(f"{icon} [{color}]{i+1}. {t['desc']}[/]")
+
+
+class AgentPanel(Static):
+    """右下角：子 Agent 执行状态面板"""
+    def compose(self) -> ComposeResult:
+        yield Static("🤖 子Agent/工具 协同", classes="panel-title")
+        yield RichLog(id="agent-log", classes="panel-content", wrap=True, auto_scroll=True)
+
+    def write_log(self, text: str) -> None:
+        log = self.query_one("#agent-log", RichLog)
+        log.write(text)
 
 
 class GoldenFingerApp(App[None]):
@@ -47,9 +172,10 @@ class GoldenFingerApp(App[None]):
 
     BINDINGS = [
         Binding("ctrl+d", "quit", "退出", show=False),
-        Binding("ctrl+c", "quit", "", show=False),
+        Binding("ctrl+q", "quit", "", show=False),
         Binding("ctrl+s", "save_session", "保存", show=False),
         Binding("ctrl+m", "export_log", "导出", show=False),
+        Binding("ctrl+shift+c", "copy_mode", "复制模式", show=False),
         Binding("escape", "focus_input", "聚焦输入", show=False),
         Binding("up", "history_prev", "", show=False),
         Binding("down", "history_next", "", show=False),
@@ -60,6 +186,11 @@ class GoldenFingerApp(App[None]):
         super().__init__()
         self.harness: GoldenFingerHarness | None = None
         self.llm: LLMClient | None = None
+        self.chat_memory: list[dict[str, str]] = []
+        self.chat_memory_turn_limit: int = 10
+        self.chat_memory_level2_threshold: int = 12  # 消息条数阈值（超过触发 L2）
+        self.chat_memory_level3_threshold: int = 20  # 消息条数阈值（超过触发 L3）
+        self.chat_memory_keep_recent: int = 8
         self.input_history: list[str] = []
         self.history_index: int = -1
         self.current_input: str = ""
@@ -67,38 +198,54 @@ class GoldenFingerApp(App[None]):
         self._processing_timer: Optional[asyncio.Task] = None
         self._pasted_lines: int = 0
         self._pipeline_mode: bool = False
+        self.cli_context_prompt: str = ""
 
     # ---- Lifecycle ----
 
     async def on_mount(self) -> None:
+        from rich.panel import Panel
         self.harness = GoldenFingerHarness()
         self.llm = LLMClient()
         log = self.query_one("#chat-log", RichLog)
         s = self.harness.get_status()
         realm_info = f"{s['realm']} · {s['realm_stage']}"
         spirit = s['spirit_root']['dominant']
-        log.write("[bold #c084fc]╔══════════════════════════════════════════════╗[/]")
-        log.write("[bold #c084fc]║    ✦ 金手指 Agent System 已就绪 ✦            ║[/]")
-        log.write("[bold #c084fc]╟──────────────────────────────────────────────╢[/]")
-        log.write(f"[bold #c084fc]║[/]  [dim #8b949e]模型: {config.openai_model}[/]")
-        log.write(f"[bold #c084fc]║[/]  [dim #8b949e]境界: {realm_info}  |  灵根: {spirit}[/]")
-        log.write(f"[bold #c084fc]║[/]  [dim #545d68]输入问题开始修炼  ·  /help 查看指令  ·  ↑↓ 历史[/]")
-        log.write("[bold #c084fc]╚══════════════════════════════════════════════╝[/]")
+        
+        welcome_text = (
+            f"[#a6adc8]模型:[/] [#89b4fa]{config.openai_model}[/]\n"
+            f"[#a6adc8]境界:[/] [#89b4fa]{realm_info}[/]  |  [#a6adc8]灵根:[/] [#89b4fa]{spirit}[/]\n\n"
+            f"[dim #6c7086]输入问题开始修炼 · /help 查看指令 · ↑↓ 历史[/]"
+        )
+        panel = Panel(
+            welcome_text,
+            title="✨ [bold #cba6f7]金手指 Agent System 已就绪[/] ✨",
+            border_style="#cba6f7",
+            expand=False,
+            padding=(1, 2)
+        )
+        log.write(panel)
         log.write("")
         self._update_status()
         inp = self.query_one("#query-input", Input)
-        # Force high-contrast text via inline styles (highest CSS priority)
-        self._force_input_colors(inp)
         inp.focus()
 
         self._pipeline_mode = False
+        self.cli_context_prompt = self._detect_cli_context()
         self._warm_chromadb(log)
 
-    @staticmethod
-    def _force_input_colors(inp: Input) -> None:
-        """Force white-on-black text on input widget for all terminal types."""
-        inp.styles.color = "#ffffff"
-        inp.styles.background = "#000000"
+    def _detect_cli_context(self) -> str:
+        """检测当前命令行上下文，供提示词约束命令生成。"""
+        if os.name == "nt":
+            # 当前内置 shell_exec 在 win32 下使用 cmd /c 执行
+            return (
+                "当前系统为 Windows。命令执行工具 shell_exec 在本系统下使用 cmd /c。"
+                "生成命令时请使用 Windows CMD 兼容语法，避免 bash 专有语法。"
+            )
+        shell_name = os.environ.get("SHELL", "/bin/sh")
+        return (
+            f"当前系统为类 Unix，默认 shell 为 {shell_name}。"
+            "生成命令时请使用 POSIX shell 兼容语法。"
+        )
 
     # ---- ChromaDB 预热 ----
 
@@ -120,7 +267,7 @@ class GoldenFingerApp(App[None]):
             chroma_db = Path(config.memory_dir) / "chroma.sqlite3"
             if not (chroma_db.exists() and chroma_db.stat().st_size > 0):
                 log.write(
-                    "[dim #6b7280]⏳ 向量数据库初始化中..."
+                    "[dim #6c7086]⏳ 向量数据库初始化中..."
                     " 首次运行需下载嵌入模型 (~79MB)，请耐心等待[/]"
                 )
 
@@ -132,23 +279,23 @@ class GoldenFingerApp(App[None]):
             )
 
             count: int = vector_store.count()
-            log.write(f"[#34d399]✓ 向量数据库就绪 ({count} 条记忆)[/]")
+            log.write(f"[#a6e3a1]✓ 向量数据库就绪 ({count} 条记忆)[/]")
             log.write("")
         except asyncio.TimeoutError:
             log.write(
-                "[#fbbf24]⚠ 向量数据库初始化超时 (下载过慢)[/]"
+                "[#f9e2af]⚠ 向量数据库初始化超时 (下载过慢)[/]"
             )
             log.write(
-                "[dim #6b7280]  可手动下载 ONNX 模型到 ChromaDB 缓存目录，"
+                "[dim #6c7086]  可手动下载 ONNX 模型到 ChromaDB 缓存目录，"
                 "或设置 HF_ENDPOINT 环境变量[/]"
             )
             log.write("")
         except Exception as e:
             log.write(
-                f"[#fbbf24]⚠ 向量数据库初始化失败: {str(e)[:200]}[/]"
+                f"[#f9e2af]⚠ 向量数据库初始化失败: {str(e)[:200]}[/]"
             )
             log.write(
-                "[dim #6b7280]  技能匹配功能暂不可用，其他功能正常[/]"
+                "[dim #6c7086]  技能匹配功能暂不可用，其他功能正常[/]"
             )
             log.write("")
         finally:
@@ -163,20 +310,25 @@ class GoldenFingerApp(App[None]):
     # ---- Layout ----
 
     def compose(self) -> ComposeResult:
-        with Container(id="chat-area"):
-            yield RichLog(
-                id="chat-log",
-                highlight=True,
-                markup=True,
-                wrap=True,
-                auto_scroll=True,
-                max_lines=10_000,
-            )
-        with Container(id="input-bar"):
-            yield VisibleInput(
-                placeholder="宿主> 输入问题或指令...",
-                id="query-input",
-            )
+        with Horizontal(id="main-layout"):
+            with Vertical(id="left-pane"):
+                with Container(id="chat-area"):
+                    yield RichLog(
+                        id="chat-log",
+                        highlight=True,
+                        markup=True,
+                        wrap=True,
+                        auto_scroll=True,
+                        max_lines=10_000,
+                    )
+                with Container(id="input-bar"):
+                    yield Input(
+                        placeholder="宿主> 输入问题或指令...",
+                        id="query-input",
+                    )
+            with Vertical(id="right-pane"):
+                yield TaskPanel(id="task-panel", classes="side-panel")
+                yield AgentPanel(id="agent-panel", classes="side-panel")
         yield StatusBar(id="status-bar")
 
     # ---- Input ----
@@ -209,12 +361,11 @@ class GoldenFingerApp(App[None]):
             await self._handle_command(query)
             self._cancel_processing_timer()
             inp.disabled = False
-            self._force_input_colors(inp)
             inp.focus()
             return
 
         log = self.query_one("#chat-log", RichLog)
-        log.write(f"[bold #fbbf24]▸ 宿主[/]  {query}")
+        log.write(f"[bold #f9e2af]▸ 宿主[/]  {query}")
 
         self.is_processing = True
         self._update_status()
@@ -226,7 +377,6 @@ class GoldenFingerApp(App[None]):
         try:
             inp = self.query_one("#query-input", Input)
             inp.disabled = False
-            self._force_input_colors(inp)
             inp.focus()
             self.is_processing = False
         except Exception:
@@ -247,27 +397,30 @@ class GoldenFingerApp(App[None]):
         arg: str = parts[1] if len(parts) > 1 else ""
 
         if action == "/help":
-            log.write("[bold #c084fc]✦ 可用指令[/]")
+            log.write("[bold #cba6f7]✦ 可用指令[/]")
             for item in [
                 "/help            显示此帮助",
                 "/status          显示宿主状态",
                 "/clear           清空对话",
                 "/save  [name]    保存会话",
                 "/export          导出对话日志",
+                "/copy            打开可选择复制视图",
                 "/pipeline        切换至完整五域流水线",
                 "",
                 "Ctrl+S           保存会话",
                 "Ctrl+M           导出日志",
+                "Ctrl+Shift+C     复制模式",
+                "复制视图内 Ctrl+C 复制",
                 "↑/↓              历史命令",
                 "Esc              聚焦输入框",
-                "Ctrl+D           退出",
+                "Ctrl+D / Ctrl+Q  退出",
             ]:
-                log.write(f"[dim #8b949e]  {item}[/]")
+                log.write(f"[dim #a6adc8]  {item}[/]")
             log.write("")
         elif action == "/status":
             assert self.harness is not None
             s: dict[str, Any] = self.harness.get_status()
-            log.write("[bold #c084fc]✦ 宿主状态[/]")
+            log.write("[bold #cba6f7]✦ 宿主状态[/]")
             log.write(f"  [dim]灵魂印记:[/] {s['soul_mark'][:12]}")
             log.write(
                 f"  [dim]修炼境界:[/] {s['realm']} {s['realm_stage']}"
@@ -280,16 +433,20 @@ class GoldenFingerApp(App[None]):
             log.write("")
         elif action == "/clear":
             log.clear()
+            self.chat_memory.clear()
+            log.write("[dim #6c7086]已清空对话与会话记忆上下文[/]")
         elif action == "/save":
             await self._save_session(arg)
         elif action == "/export":
             await self._export_log()
+        elif action == "/copy":
+            self.action_copy_mode()
         elif action == "/pipeline":
             self._pipeline_mode = not self._pipeline_mode
             mode_status: str = "已启用" if self._pipeline_mode else "已关闭"
-            log.write(f"[#fbbf24]五域流水线模式: {mode_status}[/]")
+            log.write(f"[#f9e2af]五域流水线模式: {mode_status}[/]")
         else:
-            log.write(f"[#ef4444]未知指令: {action}，输入 /help 查看[/]")
+            log.write(f"[#f38ba8]未知指令: {action}，输入 /help 查看[/]")
 
     # ---- Chat Handler ----
 
@@ -303,7 +460,7 @@ class GoldenFingerApp(App[None]):
                 await self._chat_loop(query, log)
         except Exception as e:
             try:
-                log.write(f"[bold #ef4444]✗ 出错: {e}[/]")
+                log.write(f"[bold #f38ba8]✗ 出错: {e}[/]")
             except Exception:
                 pass
         finally:
@@ -313,7 +470,6 @@ class GoldenFingerApp(App[None]):
             try:
                 inp = self.query_one("#query-input", Input)
                 inp.disabled = False
-                self._force_input_colors(inp)
                 inp.focus()
             except Exception:
                 pass
@@ -353,7 +509,7 @@ class GoldenFingerApp(App[None]):
             try:
                 log = self.query_one("#chat-log", RichLog)
                 log.write(
-                    f"[dim #545d68]📋 粘贴了 {line_count} 行数据"
+                    f"[dim #6c7086]📋 粘贴了 {line_count} 行数据"
                     f"（{len(stripped)} 字符），已合并为一行[/]"
                 )
             except Exception:
@@ -386,6 +542,7 @@ class GoldenFingerApp(App[None]):
     async def _chat_loop(self, query: str, log: RichLog) -> None:
         """LLM ↔ Tool 循环（每轮一次 LLM 调用，含思考日志与 loading 状态）"""
         assert self.llm is not None
+        await self._compress_chat_memory_if_needed(log)
 
         messages: list[dict[str, Any]] = [
             {
@@ -394,29 +551,35 @@ class GoldenFingerApp(App[None]):
                     "你是金手指(GoldenFinger)，一个运行在终端TUI中的AI编程助手。"
                     "使用中文回复。可以调用工具：读文件、写文件、执行命令、搜索网页。"
                     "代码用 ``` 语法高亮。回复简洁，重点突出。"
+                    f"{self.cli_context_prompt}"
                 ),
             },
-            {"role": "user", "content": query},
         ]
+        messages.extend(self.chat_memory)
+        messages.append({"role": "user", "content": query})
         tool_schemas: list[dict[str, Any]] = [
             t.to_openai_schema() for t in BUILTIN_TOOLS.values()
         ]
         max_rounds: int = 6
         total_tokens: dict[str, int] = {"input": 0, "output": 0}
+        final_text_for_memory: str = ""
 
         for round_num in range(max_rounds):
             # ── 轮次分隔 ──
             if round_num > 0:
-                log.write(f"[dim #444c56]── 第{round_num + 1}轮 ──[/]")
+                log.write(f"[dim #585b70]── 第{round_num + 1}轮 ──[/]")
 
             label: str = "◆ 金手指" if round_num == 0 else "  ◇"
-            log.write(f"[bold #6ee7b7]{label}[/]  ")
+            log.write(f"[bold #94e2d5]{label}[/]  ")
 
             # › 思考中
             self._update_status_text("› 思考中...")
             await asyncio.sleep(0)  # 刷新 UI
 
             t_start: float = time.time()
+            thinking_task = asyncio.create_task(
+                self._emit_thinking_trace(log, t_start)
+            )
             try:
                 resp: dict[str, Any] = await self.llm.chat(
                     messages=messages,
@@ -424,9 +587,16 @@ class GoldenFingerApp(App[None]):
                     max_tokens=4096,
                 )
             except Exception as e:
-                log.write(f"[#ef4444]✗ LLM 调用失败: {e}[/]")
+                thinking_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await thinking_task
+                log.write(f"[#f38ba8]✗ LLM 调用失败: {e}[/]")
                 self._update_status_text("✗ 调用失败")
                 return
+            else:
+                thinking_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await thinking_task
 
             elapsed: float = time.time() - t_start
 
@@ -437,13 +607,13 @@ class GoldenFingerApp(App[None]):
                 if len(reasoning) > 800:
                     reasoning_show = reasoning[:800]
                     log.write(
-                        f"[dim #6b7280]  › {reasoning_show}[/]"
+                        f"[dim #6c7086]  › {reasoning_show}[/]"
                     )
                     log.write(
-                        f"[dim #3d444d]     ... (推理共 {len(reasoning)} 字符，已截断)[/]"
+                        f"[dim #45475a]     ... (推理共 {len(reasoning)} 字符，已截断)[/]"
                     )
                 else:
-                    log.write(f"[dim #6b7280]  › {reasoning}[/]")
+                    log.write(f"[dim #6c7086]  › {reasoning}[/]")
 
             text: str = self.llm.extract_text(resp)
             tool_calls: list[dict[str, Any]] = self.llm.extract_tool_calls(resp)
@@ -455,13 +625,14 @@ class GoldenFingerApp(App[None]):
             # ── 显示回复 ──
             if text:
                 log.write(RichText(text))
+                final_text_for_memory = text
 
             if not tool_calls and not text:
-                log.write("[dim #6b7280](空响应)[/]")
+                log.write("[dim #6c7086](空响应)[/]")
 
             if not tool_calls:
                 log.write(
-                    f"[dim #484f58]  ⏱ {elapsed:.1f}s"
+                    f"[dim #585b70]  ⏱ {elapsed:.1f}s"
                     f"  ↑{usage.get('input', 0)} ↓{usage.get('output', 0)} tok[/]"
                 )
                 log.write("")
@@ -472,6 +643,9 @@ class GoldenFingerApp(App[None]):
                 "role": "assistant",
                 "content": text or None,
             }
+            if reasoning:
+                # thinking 模式下必须把 reasoning_content 原样回传给下一轮 API
+                assistant_msg["reasoning_content"] = reasoning
             if tool_calls:
                 assistant_msg["tool_calls"] = tool_calls
             messages.append(assistant_msg)
@@ -491,7 +665,7 @@ class GoldenFingerApp(App[None]):
                 )
 
                 # ⚙ 执行工具
-                log.write(f"[#fbbf24]  ⚙ {tool_name}({preview})[/]")
+                log.write(f"[#f9e2af]  ⚙ {tool_name}({preview})[/]")
                 self._update_status_text(f"⚙ 执行 {tool_name}...")
                 await asyncio.sleep(0)
 
@@ -504,13 +678,13 @@ class GoldenFingerApp(App[None]):
                         str(tool_log.result)[:200].replace("\n", " ")
                     )
                     log.write(
-                        f"[#34d399]    ✓ {tool_elapsed:.1f}s"
+                        f"[#a6e3a1]    ✓ {tool_elapsed:.1f}s"
                         f"  |  {result_preview}[/]"
                     )
                 elif tool_log.success:
-                    log.write(f"[#34d399]    ✓ {tool_elapsed:.1f}s[/]")
+                    log.write(f"[#a6e3a1]    ✓ {tool_elapsed:.1f}s[/]")
                 else:
-                    log.write(f"[#ef4444]    ✗ {tool_elapsed:.1f}s  |  {tool_log.error}[/]")
+                    log.write(f"[#f38ba8]    ✗ {tool_elapsed:.1f}s  |  {tool_log.error}[/]")
 
                 result_content: str = (
                     json.dumps(tool_log.result, ensure_ascii=False)
@@ -526,16 +700,181 @@ class GoldenFingerApp(App[None]):
         # ── 总结用量 ──
         if total_tokens["input"] > 0:
             log.write(
-                f"[dim #484f58]── 总计 ↑{total_tokens['input']}"
+                f"[dim #585b70]── 总计 ↑{total_tokens['input']}"
                 f" ↓{total_tokens['output']} tok ──[/]"
             )
+        self._remember_chat_turn(query, final_text_for_memory)
         self._update_status_text("✦ 就绪")
         log.write("")
+
+    def _remember_chat_turn(self, user_query: str, assistant_text: str) -> None:
+        """记录会话短期记忆，用于连续对话上下文。"""
+        if user_query.strip():
+            self.chat_memory.append({"role": "user", "content": user_query.strip()})
+        if assistant_text.strip():
+            self.chat_memory.append({"role": "assistant", "content": assistant_text.strip()})
+
+        max_messages = self.chat_memory_turn_limit * 2
+        if len(self.chat_memory) > max_messages:
+            self.chat_memory = self.chat_memory[-max_messages:]
+
+    async def _compress_chat_memory_if_needed(self, log: RichLog) -> None:
+        """三级上下文压缩：
+        L1: 不压缩；
+        L2: 用大模型总结工具调用过程并回填；
+        L3: 触发规则化工具式压缩（保留关键摘要+近期对话）。
+        """
+        if not self.chat_memory:
+            return
+
+        message_count = len(self.chat_memory)
+
+        # L1：不压缩
+        if message_count <= self.chat_memory_level2_threshold:
+            return
+
+        # L2：模型压缩（无上下文）
+        if message_count <= self.chat_memory_level3_threshold:
+            await self._compress_chat_memory_level2(log)
+            return
+
+        # L3：按需触发“工具式压缩”
+        await self._compress_chat_memory_level3(log)
+
+    async def _compress_chat_memory_level2(self, log: RichLog) -> None:
+        """二级压缩：使用独立压缩提示，不携带历史上下文。"""
+        if self.llm is None:
+            return
+        if len(self.chat_memory) <= self.chat_memory_keep_recent:
+            return
+
+        compress_part = self.chat_memory[:-self.chat_memory_keep_recent]
+        keep_part = self.chat_memory[-self.chat_memory_keep_recent:]
+        transcript = self._format_memory_transcript(compress_part)
+        if not transcript.strip():
+            return
+
+        prompt = (
+            "你是“上下文压缩器”。请在不依赖外部上下文的前提下，"
+            "压缩以下对话，重点提取：\n"
+            "1) 用户目标与约束\n"
+            "2) 关键决策与结论\n"
+            "3) 工具调用过程与结果（成功/失败）\n"
+            "4) 尚未完成事项\n"
+            "输出要求：简洁中文，最多 10 条，每条不超过 50 字。"
+        )
+
+        try:
+            resp = await self.llm.chat(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": transcript[:12000]},
+                ],
+                max_tokens=600,
+            )
+            summary = self.llm.extract_text(resp).strip()
+            if not summary:
+                return
+
+            self.chat_memory = [
+                {
+                    "role": "assistant",
+                    "content": (
+                        "【上下文压缩摘要-L2】\n"
+                        f"{summary}"
+                    ),
+                },
+                *keep_part,
+            ]
+            log.write("[dim #6c7086]🧠 已执行二级上下文压缩（模型摘要）[/]")
+        except Exception:
+            # 压缩失败时不影响主流程
+            pass
+
+    async def _compress_chat_memory_level3(self, log: RichLog) -> None:
+        """三级压缩：按需触发规则化压缩（工具式清理），进一步瘦身上下文。"""
+        if len(self.chat_memory) <= self.chat_memory_keep_recent:
+            return
+
+        # 先做一次 L2（若可用）以提炼关键信息
+        await self._compress_chat_memory_level2(log)
+
+        # 再做规则化收敛：仅保留压缩摘要 + 最近对话
+        anchor = None
+        for msg in self.chat_memory:
+            if "上下文压缩摘要" in msg.get("content", ""):
+                anchor = msg
+                break
+
+        tail = self.chat_memory[-self.chat_memory_keep_recent:]
+        compact_header = {
+            "role": "assistant",
+            "content": "【上下文压缩摘要-L3】已执行工具式压缩：保留关键摘要与近期对话。",
+        }
+        self.chat_memory = [compact_header]
+        if anchor is not None and anchor is not compact_header:
+            self.chat_memory.append(anchor)
+        self.chat_memory.extend(tail)
+        log.write("[dim #6c7086]🧠 已执行三级上下文压缩（按需工具式压缩）[/]")
+
+    @staticmethod
+    def _format_memory_transcript(messages: list[dict[str, str]]) -> str:
+        """将历史消息转换为可压缩文本。"""
+        lines: list[str] = []
+        for m in messages:
+            role = m.get("role", "unknown")
+            content = (m.get("content", "") or "").strip()
+            if not content:
+                continue
+            lines.append(f"[{role}] {content}")
+        return "\n".join(lines)
+
+    async def _emit_thinking_trace(self, log: RichLog, started_at: float) -> None:
+        """在 LLM 返回前，周期性输出思考进度，避免等待时无反馈。"""
+        phases = [
+            "解析问题",
+            "规划方案",
+            "组织回复",
+        ]
+        index = 0
+        log.write("[dim #6c7086]  › 思考开始：正在解析你的问题...[/]")
+        while True:
+            await asyncio.sleep(1.2)
+            elapsed = time.time() - started_at
+            dots = "." * ((index % 3) + 1)
+            phase = phases[index % len(phases)]
+            log.write(
+                f"[dim #6c7086]  › 思考中{dots} {phase}（{elapsed:.1f}s）[/]"
+            )
+            index += 1
+
+    def _show_panel(self, panel_id: str) -> None:
+        """显示指定的右侧面板，并联动显示右侧容器"""
+        try:
+            panel = self.query_one(panel_id)
+            panel.add_class("-visible")
+            self.query_one("#right-pane").add_class("-visible")
+            self.query_one("#left-pane").add_class("-has-right")
+        except Exception:
+            pass
+
+    def _hide_panels(self) -> None:
+        """隐藏所有右侧面板及容器"""
+        try:
+            self.query_one("#task-panel").remove_class("-visible")
+            self.query_one("#agent-panel").remove_class("-visible")
+            self.query_one("#right-pane").remove_class("-visible")
+            self.query_one("#left-pane").remove_class("-has-right")
+        except Exception:
+            pass
 
     async def _run_pipeline(self, query: str, log: RichLog) -> None:
         """完整五域流水线（/pipeline 模式，含 loading 状态）"""
         assert self.harness is not None
         execution_report = None
+        
+        # 每次新提问时，隐藏右侧面板
+        self._hide_panels()
         try:
             async for event in self.harness.run_query_stream(query):
                 domain: str = str(event.get("domain", ""))
@@ -549,7 +888,7 @@ class GoldenFingerApp(App[None]):
                         "persistence": "📝 刻碑沉淀",
                     }
                     label = icons.get(domain, domain)
-                    log.write(f"[bold #c084fc]⏳ {label}中...[/]")
+                    log.write(f"[bold #cba6f7]⏳ {label}中...[/]")
                     self._update_status_text(f"⏳ {label}...")
                     await asyncio.sleep(0)
                 elif status == "completed":
@@ -557,73 +896,174 @@ class GoldenFingerApp(App[None]):
                         plan = event.get("plan")
                         if plan is not None:
                             log.write(
-                                f"[#34d399]  ✓ 拆解为 {len(plan.tasks)} 个任务[/]"
+                                f"[#a6e3a1]  ✓ 拆解为 {len(plan.tasks)} 个任务[/]"
                             )
+                            try:
+                                tp = self.query_one("#task-panel", TaskPanel)
+                                tp.update_tasks(plan)
+                                self._show_panel("#task-panel")
+                            except Exception:
+                                pass
                     elif domain == "execution":
                         report = event.get("report")
                         if report is not None:
                             execution_report = report
                             log.write(
-                                f"[#34d399]  ✓ 执行完成 "
+                                f"[#a6e3a1]  ✓ 执行完成 "
                                 f"({report.total_duration_ms}ms)[/]"
                             )
                             for a in report.anomalies:
-                                log.write(f"[#fbbf24]    ⚠ {a}[/]")
+                                log.write(f"[#f9e2af]    ⚠ {a}[/]")
+                            try:
+                                tp = self.query_one("#task-panel", TaskPanel)
+                                for tid, t_res in report.task_results.items():
+                                    if t_res.get("success"):
+                                        tp.set_task_status(tid, "completed")
+                                    else:
+                                        tp.set_task_status(tid, "error")
+                            except Exception:
+                                pass
                     elif domain == "verification":
                         ver = event.get("verification")
                         if ver is not None:
                             color: str = (
-                                "#34d399" if ver.overall_pass else "#ef4444"
+                                "#a6e3a1" if ver.overall_pass else "#f38ba8"
                             )
                             act: str = "通过" if ver.overall_pass else ver.action
                             log.write(f"[{color}]  ✓ 校验: {act}[/]")
                     elif domain == "persistence":
-                        log.write("[#34d399]  ✓ 经验已沉淀[/]")
+                        log.write("[#a6e3a1]  ✓ 经验已沉淀[/]")
                 elif status == "error":
                     log.write(
-                        f"[#ef4444]  ✗ {event.get('error', '未知错误')}[/]"
+                        f"[#f38ba8]  ✗ {event.get('error', '未知错误')}[/]"
                     )
                     self._update_status_text("✗ 流水线出错")
                 elif status == "tool_call":
                     ev: dict[str, Any] = event["event"]
-                    if ev["phase"] == "tool_start":
+                    task_id = ev.get("task_id", "")
+                    try:
+                        agent_panel = self.query_one("#agent-panel", AgentPanel)
+                        task_panel = self.query_one("#task-panel", TaskPanel)
+                    except Exception:
+                        agent_panel = None
+                        task_panel = None
+
+                    phase = ev.get("phase", "")
+                    if phase in {"task_publish", "task_claim"}:
+                        self._show_panel("#agent-panel")
+                        if phase == "task_publish":
+                            msg = (
+                                f"[#89b4fa]📌 发布任务[/] "
+                                f"{ev.get('task_id','')} → {ev.get('to_agent','')}"
+                            )
+                        else:
+                            if task_panel and task_id:
+                                task_panel.set_task_status(task_id, "running")
+                            msg = (
+                                f"[#f9e2af]👤 领取任务[/] "
+                                f"{ev.get('to_agent','')} ({ev.get('message','')})"
+                            )
+                        log.write(f"    {msg}")
+                        if agent_panel:
+                            agent_panel.write_log(msg)
+                    elif phase in {"agent_start", "agent_end"}:
+                        self._show_panel("#agent-panel")
+                        icon = "🚀" if phase == "agent_start" else "🏁"
+                        color = "#94e2d5" if phase == "agent_start" else "#a6e3a1"
+                        msg = (
+                            f"[{color}]{icon} {ev.get('from_agent','')}[/] "
+                            f"{ev.get('message','')}"
+                        )
+                        log.write(f"    {msg}")
+                        if agent_panel:
+                            agent_panel.write_log(msg)
+                    elif phase in {"mail_send", "mail_recv"}:
+                        self._show_panel("#agent-panel")
+                        icon = "✉️" if phase == "mail_send" else "📥"
+                        color = "#cba6f7" if phase == "mail_send" else "#89b4fa"
+                        msg = (
+                            f"[{color}]{icon} {ev.get('from_agent','')} → "
+                            f"{ev.get('to_agent','')}[/] {ev.get('message','')}"
+                        )
+                        log.write(f"    {msg}")
+                        if agent_panel:
+                            agent_panel.write_log(msg)
+                    elif phase in {"subtask_schedule", "subtask_result"}:
+                        self._show_panel("#agent-panel")
+                        if phase == "subtask_schedule":
+                            if task_panel and task_id:
+                                task_panel.set_task_status(task_id, "running")
+                            msg = f"[#f9e2af]🧵 异步派发[/] {task_id}"
+                        else:
+                            if task_panel and task_id:
+                                msg_text = ev.get("message", "")
+                                if "失败" in msg_text:
+                                    task_panel.set_task_status(task_id, "error")
+                                else:
+                                    task_panel.set_task_status(task_id, "completed")
+                            msg = f"[#a6e3a1]📬 异步回收[/] {task_id} {ev.get('message','')}"
+                        log.write(f"    {msg}")
+                        if agent_panel:
+                            agent_panel.write_log(msg)
+                    elif phase in {"task_close", "task_force_close"}:
+                        self._show_panel("#agent-panel")
+                        if task_panel and task_id:
+                            if phase == "task_close":
+                                task_panel.set_task_status(task_id, "completed")
+                            else:
+                                task_panel.set_task_status(task_id, "error")
+                        msg = (
+                            f"[#a6e3a1]🔒 任务关闭[/] {task_id}"
+                            if phase == "task_close"
+                            else f"[#f38ba8]🛑 强制关闭[/] {task_id} {ev.get('message','')}"
+                        )
+                        log.write(f"    {msg}")
+                        if agent_panel:
+                            agent_panel.write_log(msg)
+                    elif phase == "tool_start":
+                        self._show_panel("#agent-panel")
+                        if task_panel and task_id:
+                            task_panel.set_task_status(task_id, "running")
+
                         ps: str = ", ".join(
                             f"{k}={str(v)[:40]!r}"
                             for k, v in ev.get("params", {}).items()
                         )
-                        log.write(
-                            f"[#fbbf24]    ⚙ {ev['tool_name']}({ps})[/]"
-                        )
-                    elif ev["phase"] == "tool_end":
+                        msg = f"[#f9e2af]⚙ {ev['tool_name']}({ps})[/]"
+                        log.write(f"    {msg}")
+                        if agent_panel:
+                            agent_panel.write_log(msg)
+                    elif phase == "tool_end":
                         if ev.get("error"):
-                            log.write(
-                                f"[#ef4444]      ✗ {str(ev['error'])[:200]}[/]"
-                            )
+                            if task_panel and task_id:
+                                task_panel.set_task_status(task_id, "error")
+                            msg = f"[#f38ba8]✗ {str(ev['error'])[:200]}[/]"
                         else:
                             pv: str = (
                                 str(ev.get("result", ""))[:150].replace("\n", " ")
                             )
-                            log.write(
-                                f"[#34d399]      ✓ "
-                                f"{ev.get('duration_ms', 0)}ms | {pv}[/]"
-                            )
+                            msg = f"[#a6e3a1]✓ {ev.get('duration_ms', 0)}ms | {pv}[/]"
+                        
+                        log.write(f"      {msg}")
+                        if agent_panel:
+                            agent_panel.write_log(msg)
                 elif domain == "complete":
                     log.write(
-                        "[bold #c084fc]━━━ 修炼结束 ━━━[/]"
+                        "[bold #cba6f7]━━━ 修炼结束 ━━━[/]"
                     )
                     if execution_report:
                         try:
                             final_text: str = self.harness.get_final_response(execution_report)
                             if final_text and final_text != "（无输出）":
                                 log.write(
-                                    f"[bold #6ee7b7]◆ 金手指[/]  {final_text}"
+                                    f"[bold #94e2d5]◆ 金手指[/]  {final_text}"
                                 )
                         except Exception:
                             pass
                     self._update_status_text("✦ 就绪")
                 await asyncio.sleep(0)
         except Exception as e:
-            log.write(f"[#ef4444]走火入魔: {e}[/]")
+            log.write(f"[#f38ba8]走火入魔: {e}[/]")
             self._update_status_text("✗ 流水线错误")
 
     # ---- History ----
@@ -662,9 +1102,9 @@ class GoldenFingerApp(App[None]):
         try:
             content: str = "\n".join(str(line) for line in log.lines)
             path.write_text(content, encoding="utf-8")
-            log.write(f"[#34d399]✓ 会话已保存: {path}[/]")
+            log.write(f"[#a6e3a1]✓ 会话已保存: {path}[/]")
         except Exception as e:
-            log.write(f"[#ef4444]✗ 保存失败: {e}[/]")
+            log.write(f"[#f38ba8]✗ 保存失败: {e}[/]")
 
     async def _export_log(self) -> None:
         log = self.query_one("#chat-log", RichLog)
@@ -673,9 +1113,9 @@ class GoldenFingerApp(App[None]):
         try:
             content: str = "\n".join(str(line) for line in log.lines)
             path.write_text(content, encoding="utf-8")
-            log.write(f"[#34d399]✓ 日志已导出: {path}[/]")
+            log.write(f"[#a6e3a1]✓ 日志已导出: {path}[/]")
         except Exception as e:
-            log.write(f"[#ef4444]✗ 导出失败: {e}[/]")
+            log.write(f"[#f38ba8]✗ 导出失败: {e}[/]")
 
     def action_save_session(self) -> None:
         self.run_worker(self._save_session(), exclusive=False)
@@ -685,6 +1125,12 @@ class GoldenFingerApp(App[None]):
 
     def action_focus_input(self) -> None:
         self.query_one("#query-input", Input).focus()
+
+    def action_copy_mode(self) -> None:
+        """打开复制模式：支持鼠标选择与 Ctrl+C。"""
+        log = self.query_one("#chat-log", RichLog)
+        content: str = "\n".join(str(line) for line in log.lines) or "（暂无日志）"
+        self.push_screen(CopyLogScreen(content))
 
     # ---- Status Bar ----
 

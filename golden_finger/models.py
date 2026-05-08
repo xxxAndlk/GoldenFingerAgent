@@ -208,6 +208,10 @@ class AtomTask(BaseModel):
     timeout_ms: int = 120_000
     max_retries: int = 2
     status: str = "pending"  # pending / running / done / failed / skipped
+    dispatch_mode: str = "sync"  # sync / async
+    chief_agent: str = "chief-general"
+    agent_kind: str = "reusable"  # reusable / ephemeral
+    protocol_status: str = "draft"  # draft/published/claimed/running/closed/failed_closed
 
 
 class TaskPlan(BaseModel):
@@ -246,6 +250,16 @@ class ToolCallPhase(str, Enum):
     """工具调用阶段"""
     TOOL_START = "tool_start"
     TOOL_END = "tool_end"
+    TASK_PUBLISH = "task_publish"
+    TASK_CLAIM = "task_claim"
+    TASK_CLOSE = "task_close"
+    TASK_FORCE_CLOSE = "task_force_close"
+    AGENT_START = "agent_start"
+    AGENT_END = "agent_end"
+    SUBTASK_SCHEDULE = "subtask_schedule"
+    SUBTASK_RESULT = "subtask_result"
+    MAIL_SEND = "mail_send"
+    MAIL_RECV = "mail_recv"
 
 
 class ToolCallEvent(BaseModel):
@@ -257,6 +271,9 @@ class ToolCallEvent(BaseModel):
     result: Any = None
     error: str | None = None
     duration_ms: int = 0
+    from_agent: str = ""
+    to_agent: str = ""
+    message: str = ""
 
 
 class ExecutionReport(BaseModel):
@@ -269,6 +286,7 @@ class ExecutionReport(BaseModel):
     total_duration_ms: int = 0
     anomalies: list[str] = Field(default_factory=list)
     llm_messages: list[dict[str, Any]] = Field(default_factory=list)
+    agent_messages: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ============================================================
