@@ -227,11 +227,7 @@ class SkillUpdater:
 
         # 更新 Skill 统计
         skill.manifest.stats.total_uses += 1
-        if summary.problems_encountered:
-            skill.manifest.stats.success_count = max(
-                0, skill.manifest.stats.success_count - 1
-            )
-        else:
+        if not summary.problems_encountered:
             skill.manifest.stats.success_count += 1
 
     def create_new_skill_from_summary(
@@ -374,7 +370,7 @@ class PersistenceEngine:
         self.profile_updater.update_profile(host_profile, summary)
 
         # 6. 持久化
-        self.store.save_execution_report(report)
+        self.store.save_execution_report(report, plan.original_query)
         self.store.save_execution_summary(summary)
         self.store.log_event("persistence", "consolidation_complete",
                              f"摘要: {summary.what_was_done[:100]}")

@@ -79,7 +79,7 @@ class LLMClient:
         max_tokens: int,
     ) -> dict[str, Any]:
         client = await self._get_client()
-        url = f"{config.openai_base_url}/chat/completions"
+        url = f"{config.openai_base_url}"
         headers = {
             "Authorization": f"Bearer {config.openai_api_key}",
             "Content-Type": "application/json",
@@ -119,7 +119,7 @@ class LLMClient:
         max_tokens: int,
     ) -> AsyncGenerator[str, None]:
         client = await self._get_client()
-        url = f"{config.openai_base_url}/chat/completions"
+        url = f"{config.openai_base_url}"
         headers = {
             "Authorization": f"Bearer {config.openai_api_key}",
             "Content-Type": "application/json",

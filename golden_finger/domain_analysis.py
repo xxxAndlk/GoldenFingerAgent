@@ -28,12 +28,12 @@ from .domain_isolation import EgressAnonymizer
 
 INTENT_CLASSIFY_PROMPT = """分析用户输入，返回 JSON：
 
-{
+{{
   "complexity": "simple_qa | skill_single | skill_chain | long_running",
   "domain": "知识学习 | 编程技术 | 文件操作 | 日常咨询 | 复合任务",
   "estimated_steps": 1-10,
   "summary": "任务简述"
-}
+}}
 
 用户输入: {query}"""
 
@@ -91,16 +91,16 @@ class IntentClassifier:
 TASK_DECOMPOSE_PROMPT = """你需要将用户的复杂需求拆解为原子任务列表。每个原子任务是一个独立的、可执行的小步骤。
 
 返回 JSON 格式：
-{
+{{
   "tasks": [
-    {
+    {{
       "description": "任务描述",
       "depends_on": [],  // 依赖的前置任务索引列表（从0开始）
       "skill_hint": "",  // 适合的 Skill 类型提示（knowledge/code/file/general）
       "needs_tools": []  // 需要的工具列表
-    }
+    }}
   ]
-}
+}}
 
 规则：
 - 每个任务必须足够原子化，能被单次 LLM 调用完成

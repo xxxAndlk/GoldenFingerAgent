@@ -1,44 +1,88 @@
+/* Golden Finger TUI — 现代 Dark Theme 样式 */
+
+/* ---- 全局 ---- */
+
 Screen {
-    layout: grid;
-    grid-size: 1;
-    grid-rows: auto 1fr auto;
-    background: $surface;
+    background: #0f1117;
+    color: #e1e4e8;
 }
 
-#execution-log {
+/* ---- Chat Area ---- */
+
+#chat-area {
     height: 1fr;
-    min-height: 5;
-    margin: 1 2;
-    border: solid $primary;
-    padding: 0 1;
+    margin: 0;
+    padding: 0;
 }
 
-#final-output {
-    margin: 1 2;
-    border: solid $success;
-    padding: 1;
-    height: auto;
-    max-height: 15;
+#chat-log {
+    background: #0f1117;
+    color: #e1e4e8;
+    padding: 1 2;
+    scrollbar-color: #2d333b;
+    scrollbar-color-hover: #444c56;
+    scrollbar-background: #0f1117;
+    scrollbar-size-vertical: 1;
     overflow-y: auto;
 }
 
-#input-area {
+#chat-log:focus {
+    border: none;
+}
+
+/* ---- Input Bar ---- */
+
+#input-bar {
     dock: bottom;
     height: auto;
-    padding: 1 2;
-    background: $panel;
+    padding: 0 2 1 2;
+    background: #0f1117;
+    border-top: solid #21262d;
 }
 
 #query-input {
     width: 100%;
-    border: solid $accent;
+    border: solid #30363d;
+    background: #161b22;
+    color: #e1e4e8;
+    padding: 0 1;
 }
 
 #query-input:focus {
-    border: solid $secondary;
+    border: solid #c084fc;
+    background: #161b22;
 }
 
 #query-input:disabled {
-    border: solid #555555;
-    opacity: 0.7;
+    border: solid #30363d;
+    opacity: 0.5;
+}
+
+/* ---- Status Bar ---- */
+
+#status-bar {
+    dock: bottom;
+    height: 1;
+    background: #161b22;
+    border-top: solid #21262d;
+    color: #8b949e;
+    padding: 0 2;
+}
+
+#status-info {
+    width: 100%;
+    text-style: dim;
+    content-align: left middle;
+}
+
+/* ---- Footer ---- */
+
+Footer {
+    display: none;
+}
+
+/* ---- RichLog custom markup overrides ---- */
+
+RichLog {
+    text-style: none;
 }

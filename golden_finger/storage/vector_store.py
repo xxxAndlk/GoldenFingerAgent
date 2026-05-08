@@ -28,6 +28,10 @@ class VectorStore:
         )
         return self._collection
 
+    def warm_up(self):
+        """预初始化向量数据库（首次调用时下载 ONNX 嵌入模型）"""
+        self._ensure_init()
+
     def add_skill_knowledge(
         self,
         skill_name: str,

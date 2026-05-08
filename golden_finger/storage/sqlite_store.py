@@ -88,10 +88,10 @@ class SQLiteStore:
 
     # ---- 执行日志 ----
 
-    def save_execution_report(self, report: ExecutionReport):
+    def save_execution_report(self, report: ExecutionReport, original_query: str = ""):
         self.conn.execute(
             "INSERT OR REPLACE INTO execution_logs (execution_id, plan_id, original_query, report_json, created_at) VALUES (?, ?, ?, ?, ?)",
-            (report.execution_id, report.plan_id, "", report.model_dump_json(), __import__('datetime').datetime.now().isoformat())  # noqa
+            (report.execution_id, report.plan_id, original_query, report.model_dump_json(), __import__('datetime').datetime.now().isoformat())  # noqa
         )
         self.conn.commit()
 

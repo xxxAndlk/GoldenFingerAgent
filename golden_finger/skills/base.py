@@ -63,7 +63,6 @@ class BaseSkill(ABC):
     def add_knowledge(self, entry: KnowledgeEntry):
         """添加知识条目"""
         self.manifest.knowledge.append(entry)
-        self.manifest.stats.total_uses += 1
 
     # ---- 前置检查 ----
 
@@ -79,10 +78,10 @@ class BaseSkill(ABC):
         """根据灵根计算技能契合度"""
         affinity_map = {
             "metal": ["code_assistant", "data_processing", "logical_analysis"],
-            "wood": ["knowledge", "creative_design", "content_creation"],
-            "water": ["communication", "negotiation", "language_learning"],
-            "fire": ["project_management", "decision_making", "execution"],
-            "earth": ["quality_assurance", "research", "maintenance"],
+            "wood": ["knowledge_absorption", "creative_design", "content_creation"],
+            "water": ["knowledge_absorption", "file_operations", "communication"],
+            "fire": ["code_assistant", "project_management", "execution"],
+            "earth": ["file_operations", "quality_assurance", "research"],
         }
         dominant = spirit_root.dominant
         if self.name in affinity_map.get(dominant, []):

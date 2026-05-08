@@ -59,7 +59,11 @@ async def query(request: Request):
 
     h = get_harness()
 
+    # 缓存执行报告，避免在 complete 阶段重复执行流水线
+    execution_report = None
+
     async def event_stream():
+        nonlocal execution_report
         try:
             async for event in h.run_query_stream(query_text):
                 domain = event.get("domain", "")
@@ -93,6 +97,7 @@ async def query(request: Request):
                     elif status == "completed":
                         report = event.get("report")
                         if report:
+                            execution_report = report
                             data["total_duration_ms"] = report.total_duration_ms
                             data["anomalies"] = report.anomalies
 
@@ -108,13 +113,12 @@ async def query(request: Request):
                         ]
 
                 elif domain == "complete":
-                    # 获取最终回复
-                    try:
-                        result = await h.run_query(query_text)
-                        if not result.get("error") and result.get("execution"):
-                            data["final_text"] = h.get_final_response(result["execution"])
-                    except Exception:
-                        pass
+                    # 从缓存的执行报告提取最终回复，不再重复执行流水线
+                    if execution_report:
+                        try:
+                            data["final_text"] = h.get_final_response(execution_report)
+                        except Exception:
+                            pass
 
                 elif domain == "error" or status == "error":
                     data["error"] = event.get("error", "")
