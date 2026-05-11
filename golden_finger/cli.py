@@ -171,7 +171,7 @@ def run_server(port: int | None = None):
 
 
 def run_tui():
-    """启动终端 TUI 模式"""
+    """启动终端 TUI 模式（同时启动后台 HTTP 监控服务）"""
     from .tui.app import GoldenFingerApp
 
     if not config.is_configured():
@@ -180,8 +180,37 @@ def run_tui():
         console.print("[dim]支持 OpenAI (OPENAI_API_KEY) 和 Anthropic (ANTHROPIC_API_KEY)[/dim]\n")
         sys.exit(1)
 
+    # 后台启动监控 HTTP 服务
+    monitor_port = _find_free_port()
+    _start_monitor_server(monitor_port)
+
+    console.print(f"\n[dim]📊 监控大屏: http://127.0.0.1:{monitor_port}[/]")
+    console.print("[dim]   在浏览器中打开上述地址，可实时观察系统日志[/]\n")
+
     app = GoldenFingerApp()
     app.run()
+
+
+def _start_monitor_server(port: int):
+    """在后台线程中启动监控 HTTP 服务（供 TUI 模式使用）"""
+    import threading
+    import uvicorn
+    from .api import app, setup_static
+
+    static_dir = _frontend_dist()
+    if static_dir:
+        setup_static(app, static_dir)
+
+    def _serve():
+        uvicorn.run(
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+        )
+
+    t = threading.Thread(target=_serve, daemon=True, name="monitor-server")
+    t.start()
 
 
 async def run_single_query(query: str):
@@ -209,6 +238,10 @@ async def run_single_query(query: str):
 
 def main():
     """CLI 入口"""
+    # 初始化日志系统
+    from .logging import log_manager
+    log_manager.setup()
+
     import argparse
 
     parser = argparse.ArgumentParser(

@@ -23,6 +23,7 @@ from ..config import config
 from ..llm import LLMClient
 from ..tools.builtin import BUILTIN_TOOLS
 from ..domain_execution import ToolExecutionGuard
+from ..logging import log_system, log_step, log_api_request, log_api_response
 
 
 class CopyLogScreen(ModalScreen[None]):
@@ -171,12 +172,11 @@ class GoldenFingerApp(App[None]):
     AUTO_FOCUS = "#query-input"
 
     BINDINGS = [
-        Binding("ctrl+d", "quit", "退出", show=False),
-        Binding("ctrl+q", "quit", "", show=False),
+        Binding("ctrl+c", "ctrl_c_action", "复制/退出", show=False),
         Binding("ctrl+s", "save_session", "保存", show=False),
         Binding("ctrl+m", "export_log", "导出", show=False),
         Binding("ctrl+shift+c", "copy_mode", "复制模式", show=False),
-        Binding("escape", "focus_input", "聚焦输入", show=False),
+        Binding("escape", "escape_action", "中止/聚焦", show=False),
         Binding("up", "history_prev", "", show=False),
         Binding("down", "history_next", "", show=False),
         Binding("ctrl+shift+v", "paste_multiline", "粘贴", show=False),
@@ -199,6 +199,12 @@ class GoldenFingerApp(App[None]):
         self._pasted_lines: int = 0
         self._pipeline_mode: bool = False
         self.cli_context_prompt: str = ""
+        self._chat_worker: Any = None
+        self._last_ctrl_d_ts: float = 0.0
+        self._last_ctrl_c_ts: float = 0.0
+        self._last_esc_ts: float = 0.0
+        self._double_press_window_sec: float = 1.2
+        self._inline_copy_mode: bool = False
 
     # ---- Lifecycle ----
 
@@ -206,6 +212,8 @@ class GoldenFingerApp(App[None]):
         from rich.panel import Panel
         self.harness = GoldenFingerHarness()
         self.llm = LLMClient()
+        log_system("TUI 模式启动", mode="tui", model=config.openai_model,
+                    llm_provider=config.llm_provider)
         log = self.query_one("#chat-log", RichLog)
         s = self.harness.get_status()
         realm_info = f"{s['realm']} · {s['realm_stage']}"
@@ -281,6 +289,7 @@ class GoldenFingerApp(App[None]):
             count: int = vector_store.count()
             log.write(f"[#a6e3a1]✓ 向量数据库就绪 ({count} 条记忆)[/]")
             log.write("")
+            log_system("向量数据库就绪", count=count)
         except asyncio.TimeoutError:
             log.write(
                 "[#f9e2af]⚠ 向量数据库初始化超时 (下载过慢)[/]"
@@ -290,6 +299,7 @@ class GoldenFingerApp(App[None]):
                 "或设置 HF_ENDPOINT 环境变量[/]"
             )
             log.write("")
+            log_system("向量数据库初始化超时", level="WARNING")
         except Exception as e:
             log.write(
                 f"[#f9e2af]⚠ 向量数据库初始化失败: {str(e)[:200]}[/]"
@@ -298,6 +308,7 @@ class GoldenFingerApp(App[None]):
                 "[dim #6c7086]  技能匹配功能暂不可用，其他功能正常[/]"
             )
             log.write("")
+            log_system(f"向量数据库初始化失败: {str(e)[:200]}", level="ERROR")
         finally:
             self._update_status()
 
@@ -320,6 +331,11 @@ class GoldenFingerApp(App[None]):
                         wrap=True,
                         auto_scroll=True,
                         max_lines=10_000,
+                    )
+                    yield TextArea(
+                        "",
+                        id="chat-copy-inline",
+                        read_only=True,
                     )
                 with Container(id="input-bar"):
                     yield Input(
@@ -369,7 +385,9 @@ class GoldenFingerApp(App[None]):
 
         self.is_processing = True
         self._update_status()
-        self._handle_chat(query)
+        log_step(f"收到查询: {query[:80]}", mode="tui_chat" if not self._pipeline_mode else "tui_pipeline",
+                  query=query[:200])
+        self._chat_worker = self._handle_chat(query)
 
     async def _force_enable_input_after(self, seconds: float) -> None:
         """超时保护：强制恢复输入框"""
@@ -409,11 +427,11 @@ class GoldenFingerApp(App[None]):
                 "",
                 "Ctrl+S           保存会话",
                 "Ctrl+M           导出日志",
-                "Ctrl+Shift+C     复制模式",
-                "复制视图内 Ctrl+C 复制",
+                "Ctrl+C           当前页复制模式（鼠标可选）",
+                "Ctrl+C×2         退出",
+                "复制模式内 Ctrl+C 复制",
                 "↑/↓              历史命令",
-                "Esc              聚焦输入框",
-                "Ctrl+D / Ctrl+Q  退出",
+                "Esc×2            中止当前对话",
             ]:
                 log.write(f"[dim #a6adc8]  {item}[/]")
             log.write("")
@@ -445,6 +463,7 @@ class GoldenFingerApp(App[None]):
             self._pipeline_mode = not self._pipeline_mode
             mode_status: str = "已启用" if self._pipeline_mode else "已关闭"
             log.write(f"[#f9e2af]五域流水线模式: {mode_status}[/]")
+            log_system(f"流水线模式切换: {mode_status}")
         else:
             log.write(f"[#f38ba8]未知指令: {action}，输入 /help 查看[/]")
 
@@ -458,13 +477,24 @@ class GoldenFingerApp(App[None]):
                 await self._run_pipeline(query, log)
             else:
                 await self._chat_loop(query, log)
+        except asyncio.CancelledError:
+            try:
+                log = self.query_one("#chat-log", RichLog)
+                log.write("[#f9e2af]⏹ 已中止当前对话[/]")
+            except Exception:
+                pass
+            self._update_status_text("⏹ 已中止")
+            log_step("用户中止对话", mode="tui_chat", status="cancelled")
+            return
         except Exception as e:
             try:
                 log.write(f"[bold #f38ba8]✗ 出错: {e}[/]")
             except Exception:
                 pass
+            log_system(f"对话处理异常: {e}", level="ERROR")
         finally:
             self.is_processing = False
+            self._chat_worker = None
             self._cancel_processing_timer()
             # 恢复输入框 — 放最前面，确保执行
             try:
@@ -592,6 +622,7 @@ class GoldenFingerApp(App[None]):
                     await thinking_task
                 log.write(f"[#f38ba8]✗ LLM 调用失败: {e}[/]")
                 self._update_status_text("✗ 调用失败")
+                log_system(f"LLM 调用失败 (chat loop): {e}", level="ERROR")
                 return
             else:
                 thinking_task.cancel()
@@ -670,6 +701,9 @@ class GoldenFingerApp(App[None]):
                 await asyncio.sleep(0)
 
                 t_tool: float = time.time()
+                log_step(f"工具调用开始: {tool_name}", domain="execution",
+                          status="tool_start", tool_name=tool_name,
+                          params_preview=preview, round=round_num + 1)
                 tool_log = await ToolExecutionGuard.execute_tool(tool_name, params)
                 tool_elapsed: float = time.time() - t_tool
 
@@ -681,10 +715,20 @@ class GoldenFingerApp(App[None]):
                         f"[#a6e3a1]    ✓ {tool_elapsed:.1f}s"
                         f"  |  {result_preview}[/]"
                     )
+                    log_step(f"工具调用完成: {tool_name}", domain="execution",
+                              status="tool_end", tool_name=tool_name,
+                              duration_ms=int(tool_elapsed * 1000), success=True)
                 elif tool_log.success:
                     log.write(f"[#a6e3a1]    ✓ {tool_elapsed:.1f}s[/]")
+                    log_step(f"工具调用完成: {tool_name}", domain="execution",
+                              status="tool_end", tool_name=tool_name,
+                              duration_ms=int(tool_elapsed * 1000), success=True)
                 else:
                     log.write(f"[#f38ba8]    ✗ {tool_elapsed:.1f}s  |  {tool_log.error}[/]")
+                    log_step(f"工具调用失败: {tool_name}", domain="execution",
+                              status="tool_end", tool_name=tool_name,
+                              duration_ms=int(tool_elapsed * 1000), success=False,
+                              error=str(tool_log.error)[:200])
 
                 result_content: str = (
                     json.dumps(tool_log.result, ensure_ascii=False)
@@ -700,9 +744,12 @@ class GoldenFingerApp(App[None]):
         # ── 总结用量 ──
         if total_tokens["input"] > 0:
             log.write(
-                f"[dim #585b70]── 总计 ↑{total_tokens['input']}"
-                f" ↓{total_tokens['output']} tok ──[/]"
+                f"[dim #585b70]── 总计 输入：{total_tokens['input']}"
+                f" 输出：{total_tokens['output']} tokens ──[/]"
             )
+        log_step(f"对话轮次完成", mode="tui_chat", rounds=round_num + 1,
+                  total_input_tokens=total_tokens["input"],
+                  total_output_tokens=total_tokens["output"])
         self._remember_chat_turn(query, final_text_for_memory)
         self._update_status_text("✦ 就绪")
         log.write("")
@@ -787,6 +834,7 @@ class GoldenFingerApp(App[None]):
                 *keep_part,
             ]
             log.write("[dim #6c7086]🧠 已执行二级上下文压缩（模型摘要）[/]")
+            log_system("L2 上下文压缩完成", level="L2", kept_recent=self.chat_memory_keep_recent)
         except Exception:
             # 压缩失败时不影响主流程
             pass
@@ -816,6 +864,7 @@ class GoldenFingerApp(App[None]):
             self.chat_memory.append(anchor)
         self.chat_memory.extend(tail)
         log.write("[dim #6c7086]🧠 已执行三级上下文压缩（按需工具式压缩）[/]")
+        log_system("L3 上下文压缩完成", level="L3")
 
     @staticmethod
     def _format_memory_transcript(messages: list[dict[str, str]]) -> str:
@@ -830,7 +879,7 @@ class GoldenFingerApp(App[None]):
         return "\n".join(lines)
 
     async def _emit_thinking_trace(self, log: RichLog, started_at: float) -> None:
-        """在 LLM 返回前，周期性输出思考进度，避免等待时无反馈。"""
+        """在 LLM 返回前输出有限节奏的思考进度，避免刷屏。"""
         phases = [
             "解析问题",
             "规划方案",
@@ -838,15 +887,29 @@ class GoldenFingerApp(App[None]):
         ]
         index = 0
         log.write("[dim #6c7086]  › 思考开始：正在解析你的问题...[/]")
-        while True:
-            await asyncio.sleep(1.2)
+        try:
+            while True:
+                await asyncio.sleep(1.2)
+                elapsed = time.time() - started_at
+                dots = "." * ((index % 3) + 1)
+
+                # 前三次输出对应阶段；之后降低频率，避免无限刷屏
+                if index < len(phases):
+                    phase = phases[index]
+                    log.write(
+                        f"[dim #6c7086]  › 思考中{dots} {phase}（{elapsed:.1f}s）[/]"
+                    )
+                elif index % 5 == 0:
+                    log.write(
+                        f"[dim #6c7086]  › 思考中{dots} 深度推理（{elapsed:.1f}s）[/]"
+                    )
+                index += 1
+        except asyncio.CancelledError:
             elapsed = time.time() - started_at
-            dots = "." * ((index % 3) + 1)
-            phase = phases[index % len(phases)]
             log.write(
-                f"[dim #6c7086]  › 思考中{dots} {phase}（{elapsed:.1f}s）[/]"
+                f"[dim #585b70]  › 思考结束，开始输出结果（{elapsed:.1f}s）[/]"
             )
-            index += 1
+            return
 
     def _show_panel(self, panel_id: str) -> None:
         """显示指定的右侧面板，并联动显示右侧容器"""
@@ -1051,6 +1114,7 @@ class GoldenFingerApp(App[None]):
                     log.write(
                         "[bold #cba6f7]━━━ 修炼结束 ━━━[/]"
                     )
+                    log_step("流水线执行完成", mode="tui_pipeline", status="complete")
                     if execution_report:
                         try:
                             final_text: str = self.harness.get_final_response(execution_report)
@@ -1065,6 +1129,7 @@ class GoldenFingerApp(App[None]):
         except Exception as e:
             log.write(f"[#f38ba8]走火入魔: {e}[/]")
             self._update_status_text("✗ 流水线错误")
+            log_system(f"流水线执行异常: {e}", level="ERROR")
 
     # ---- History ----
 
@@ -1103,8 +1168,10 @@ class GoldenFingerApp(App[None]):
             content: str = "\n".join(str(line) for line in log.lines)
             path.write_text(content, encoding="utf-8")
             log.write(f"[#a6e3a1]✓ 会话已保存: {path}[/]")
+            log_system(f"会话已保存", path=str(path))
         except Exception as e:
             log.write(f"[#f38ba8]✗ 保存失败: {e}[/]")
+            log_system(f"会话保存失败: {e}", level="ERROR")
 
     async def _export_log(self) -> None:
         log = self.query_one("#chat-log", RichLog)
@@ -1114,8 +1181,10 @@ class GoldenFingerApp(App[None]):
             content: str = "\n".join(str(line) for line in log.lines)
             path.write_text(content, encoding="utf-8")
             log.write(f"[#a6e3a1]✓ 日志已导出: {path}[/]")
+            log_system(f"日志已导出", path=str(path))
         except Exception as e:
             log.write(f"[#f38ba8]✗ 导出失败: {e}[/]")
+            log_system(f"日志导出失败: {e}", level="ERROR")
 
     def action_save_session(self) -> None:
         self.run_worker(self._save_session(), exclusive=False)
@@ -1126,11 +1195,91 @@ class GoldenFingerApp(App[None]):
     def action_focus_input(self) -> None:
         self.query_one("#query-input", Input).focus()
 
+    def action_request_quit(self) -> None:
+        """Ctrl+D 连按两次退出。"""
+        now = time.monotonic()
+        if now - self._last_ctrl_d_ts <= self._double_press_window_sec:
+            self.exit()
+            return
+        self._last_ctrl_d_ts = now
+        self._update_status_text("再按一次 Ctrl+D 退出")
+
+    def action_ctrl_c_action(self) -> None:
+        """Ctrl+C：复制模式内复制；普通模式单击开复制、双击退出。"""
+        if self._inline_copy_mode:
+            self._copy_inline_selection()
+            return
+
+        now = time.monotonic()
+        if now - self._last_ctrl_c_ts <= self._double_press_window_sec:
+            self.exit()
+            return
+        self._last_ctrl_c_ts = now
+        self.action_copy_mode()
+        self._update_status_text("复制模式已开启：鼠标选择文本后 Ctrl+C 复制；Esc 返回输入")
+
+    def action_escape_action(self) -> None:
+        """Esc 连按两次：处理中则中止；否则聚焦输入框。"""
+        if self._inline_copy_mode:
+            self._set_inline_copy_mode(False)
+            self.action_focus_input()
+            return
+
+        now = time.monotonic()
+        second_press = now - self._last_esc_ts <= self._double_press_window_sec
+        self._last_esc_ts = now
+
+        if not second_press:
+            self.action_focus_input()
+            if self.is_processing:
+                self._update_status_text("再按一次 Esc 中止当前对话")
+            return
+
+        if not self.is_processing:
+            self.action_focus_input()
+            return
+
+        try:
+            if self._chat_worker is not None and hasattr(self._chat_worker, "cancel"):
+                self._chat_worker.cancel()
+            self.is_processing = False
+            self._cancel_processing_timer()
+            inp = self.query_one("#query-input", Input)
+            inp.disabled = False
+            inp.focus()
+        except Exception:
+            pass
+
     def action_copy_mode(self) -> None:
-        """打开复制模式：支持鼠标选择与 Ctrl+C。"""
+        """在当前页面切换复制模式（支持鼠标选择与 Ctrl+C）。"""
+        self._set_inline_copy_mode(not self._inline_copy_mode)
+
+    def _set_inline_copy_mode(self, enabled: bool) -> None:
+        self._inline_copy_mode = enabled
         log = self.query_one("#chat-log", RichLog)
-        content: str = "\n".join(str(line) for line in log.lines) or "（暂无日志）"
-        self.push_screen(CopyLogScreen(content))
+        copy_area = self.query_one("#chat-copy-inline", TextArea)
+        if enabled:
+            content: str = "\n".join(str(line) for line in log.lines) or "（暂无日志）"
+            copy_area.text = content
+            copy_area.add_class("-visible")
+            log.add_class("-hidden")
+            copy_area.focus()
+        else:
+            copy_area.remove_class("-visible")
+            log.remove_class("-hidden")
+
+    def _copy_inline_selection(self) -> None:
+        copy_area = self.query_one("#chat-copy-inline", TextArea)
+        selected = ""
+        try:
+            selected = str(getattr(copy_area, "selected_text", "") or "")
+        except Exception:
+            selected = ""
+        payload = selected.strip() or (copy_area.text or "")
+        if not payload.strip():
+            return
+        CopyLogScreen._copy_text(payload)
+        self._update_status_text("已复制到剪贴板")
 
     # ---- Status Bar ----
 
@@ -1161,5 +1310,5 @@ class GoldenFingerApp(App[None]):
             f"  |  {config.openai_model}"
             f"  |  模式: {mode}"
             f"  |  已完成 {tasks} 任务"
-            f"  |  Ctrl+D 退出"
+            f"  |  Ctrl+C 复制 / Ctrl+C×2 退出"
         )

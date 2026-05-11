@@ -11,6 +11,7 @@ from typing import Any, AsyncGenerator
 from .models import HostProfile, ExecutionReport, ToolCallEvent
 from .config import config
 from .llm import LLMClient
+from .logging import log_system, log_step
 from .domain_analysis import PlanGenerator
 from .domain_execution import ExecutionOrchestrator
 from .domain_verification import VerificationEngine
@@ -50,7 +51,9 @@ class GoldenFingerHarness:
         skill_registry.register(KnowledgeAbsorption())
         skill_registry.register(CodeAssistant())
         skill_registry.register(FileOperations())
-        logger.info(f"已注册 {len(skill_registry.list_all())} 个 Skill")
+        skill_count = len(skill_registry.list_all())
+        logger.info(f"已注册 {skill_count} 个 Skill")
+        log_system(f"已注册 {skill_count} 个 Skill", skill_names=[s.name for s in skill_registry.list_all()])
 
     def _load_or_create_profile(self):
         """加载或创建宿主画像"""
@@ -59,8 +62,11 @@ class GoldenFingerHarness:
             self.host_profile = HostProfile()
             self.store.save_host_profile(self.host_profile)
             logger.info("创建新宿主画像 — 欢迎觉醒")
+            log_system("创建新宿主画像", host_id=self.host_profile.host_id)
         else:
             logger.info(f"加载宿主画像 — {self.host_profile.realm.display}")
+            log_system("加载宿主画像", host_id=self.host_profile.host_id,
+                        realm=self.host_profile.realm.display)
 
     async def run_query(self, query: str) -> dict[str, Any]:
         """执行一次完整的五域流水线"""
@@ -109,15 +115,20 @@ class GoldenFingerHarness:
 
         # ① 天机推演
         yield {"domain": "analysis", "status": "started", "message": "正在推演天机..."}
+        log_step("天机推演开始", domain="analysis", status="started", query=query[:80])
         try:
             plan = await self.planner.generate_plan(query, profile)
             yield {"domain": "analysis", "status": "completed", "plan": plan}
+            log_step("天机推演完成", domain="analysis", status="completed",
+                      task_count=len(plan.tasks), complexity=plan.complexity.value)
         except Exception as e:
             yield {"domain": "analysis", "status": "error", "error": str(e)}
+            log_step(f"天机推演失败: {e}", domain="analysis", status="error", level="ERROR")
             return
 
         # ② 施法执行
         yield {"domain": "execution", "status": "started", "message": "正在施法执行..."}
+        log_step("施法执行开始", domain="execution", status="started")
         exec_task: asyncio.Task[ExecutionReport] | None = None
         try:
             tool_events: asyncio.Queue[ToolCallEvent] = asyncio.Queue()
@@ -145,28 +156,45 @@ class GoldenFingerHarness:
                             "duration_ms": tool_event.duration_ms,
                         },
                     }
+                    if tool_event.phase.value == "tool_start":
+                        log_step(f"工具调用: {tool_event.tool_name}", domain="execution",
+                                  status="tool_call", phase="start", tool_name=tool_event.tool_name)
+                    else:
+                        log_step(f"工具完成: {tool_event.tool_name} ({tool_event.duration_ms}ms)",
+                                  domain="execution", status="tool_call", phase="end",
+                                  tool_name=tool_event.tool_name, duration_ms=tool_event.duration_ms,
+                                  error=tool_event.error)
                 except asyncio.TimeoutError:
                     continue
 
             report = exec_task.result()
             yield {"domain": "execution", "status": "completed", "report": report}
+            log_step(f"施法执行完成 ({report.total_duration_ms}ms)", domain="execution",
+                      status="completed", total_duration_ms=report.total_duration_ms,
+                      anomalies=report.anomalies)
         except Exception as e:
             if exec_task is not None and not exec_task.done():
                 exec_task.cancel()
             yield {"domain": "execution", "status": "error", "error": str(e)}
+            log_step(f"施法执行失败: {e}", domain="execution", status="error", level="ERROR")
             return
 
         # ③ 验道校验
         yield {"domain": "verification", "status": "started", "message": "正在验道校验..."}
+        log_step("验道校验开始", domain="verification", status="started")
         try:
             verification = await self.verifier.verify(report, query)
             yield {"domain": "verification", "status": "completed", "verification": verification}
+            log_step(f"验道校验完成 (passed={verification.overall_pass})", domain="verification",
+                      status="completed", overall_pass=verification.overall_pass)
         except Exception as e:
             yield {"domain": "verification", "status": "error", "error": str(e)}
+            log_step(f"验道校验失败: {e}", domain="verification", status="error", level="ERROR")
             return
 
         # ④ 刻碑沉淀
         yield {"domain": "persistence", "status": "started", "message": "正在刻碑沉淀..."}
+        log_step("刻碑沉淀开始", domain="persistence", status="started")
         try:
             if profile:
                 persist_result = await self.persister.persist(
@@ -174,8 +202,10 @@ class GoldenFingerHarness:
                 )
                 self.host_profile = self.store.load_host_profile()
                 yield {"domain": "persistence", "status": "completed", "result": persist_result}
+                log_step("刻碑沉淀完成", domain="persistence", status="completed")
         except Exception as e:
             yield {"domain": "persistence", "status": "error", "error": str(e)}
+            log_step(f"刻碑沉淀失败: {e}", domain="persistence", status="error", level="ERROR")
 
         yield {"domain": "complete", "status": "done"}
 

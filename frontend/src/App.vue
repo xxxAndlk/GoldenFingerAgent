@@ -2,6 +2,7 @@
 import { ref, nextTick } from 'vue'
 import { marked } from 'marked'
 import { useSSE, type SSEEvent } from './composables/useSSE'
+import MonitorDashboard from './components/MonitorDashboard.vue'
 
 interface LogEntry {
   id: number
@@ -10,6 +11,7 @@ interface LogEntry {
   category?: string
 }
 
+const currentPage = ref<'chat' | 'monitor'>('chat')
 const logEntries = ref<LogEntry[]>([])
 const inputQuery = ref('')
 const isRunning = ref(false)
@@ -151,15 +153,26 @@ loadStatus()
     <!-- Header -->
     <header class="app-header">
       <span class="app-title">✦ 金手指 Agent System</span>
-      <span class="app-status">
-        宿主: {{ hostStatus.soul_mark?.slice(0, 8) }} |
-        {{ hostStatus.realm }} {{ hostStatus.realm_stage }} |
-        已完成: {{ hostStatus.total_tasks }}
-      </span>
+      <div class="header-right">
+        <button class="header-nav-btn" @click="currentPage = 'chat'">
+          💬 对话
+        </button>
+        <button class="header-nav-btn" @click="currentPage = 'monitor'">
+          📊 监控
+        </button>
+        <span class="app-status">
+          宿主: {{ hostStatus.soul_mark?.slice(0, 8) }} |
+          {{ hostStatus.realm }} {{ hostStatus.realm_stage }} |
+          已完成: {{ hostStatus.total_tasks }}
+        </span>
+      </div>
     </header>
 
-    <!-- Main content -->
-    <main class="app-main">
+    <!-- Monitor Dashboard Page -->
+    <MonitorDashboard v-if="currentPage === 'monitor'" />
+
+    <!-- Main content (Chat Page) -->
+    <main v-else class="app-main">
       <!-- Log area -->
       <div id="log-area" ref="logRef" class="log-area">
         <div

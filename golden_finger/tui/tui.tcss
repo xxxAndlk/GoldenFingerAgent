@@ -83,6 +83,23 @@ Screen {
     overflow-y: auto;
 }
 
+#chat-log.-hidden {
+    display: none;
+}
+
+#chat-copy-inline {
+    display: none;
+    width: 100%;
+    height: 1fr;
+    border: tall #313244;
+    background: #1e1e2e;
+    color: #cdd6f4;
+}
+
+#chat-copy-inline.-visible {
+    display: block;
+}
+
 #chat-log:focus {
     border: none;
 }

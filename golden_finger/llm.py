@@ -5,11 +5,13 @@
 
 import asyncio
 import json
+import time
 from typing import Any, AsyncGenerator
 
 import httpx
 
 from .config import config
+from .logging import log_api_request, log_api_response
 
 
 class LLMError(Exception):
@@ -93,18 +95,44 @@ class LLMClient:
             body["tools"] = tools
             body["tool_choice"] = tool_choice
 
+        model_name = model or config.openai_model
+        msg_count = len(messages)
+        tool_count = len(tools) if tools else 0
+
+        t0 = time.monotonic()
         for attempt in range(config.llm_max_retries + 1):
             try:
+                log_api_request(f"LLM 请求 → openai [{model_name}]",
+                                 provider="openai", model=model_name,
+                                 messages=msg_count, tools=tool_count, attempt=attempt + 1)
                 resp = await client.post(url, headers=headers, json=body)
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
                 if resp.status_code == 200:
-                    return resp.json()
+                    data = resp.json()
+                    usage = data.get("usage", {})
+                    log_api_response(f"LLM 响应 ← openai [{model_name}] 200",
+                                      provider="openai", model=model_name,
+                                      status_code=200, duration_ms=elapsed_ms,
+                                      input_tokens=usage.get("prompt_tokens", 0),
+                                      output_tokens=usage.get("completion_tokens", 0),
+                                      attempt=attempt + 1)
+                    return data
                 else:
                     detail = resp.text[:500]
+                    log_api_response(f"LLM 错误 ← openai [{model_name}] {resp.status_code}",
+                                      provider="openai", model=model_name,
+                                      status_code=resp.status_code, duration_ms=elapsed_ms,
+                                      error=detail, attempt=attempt + 1)
                     if attempt < config.llm_max_retries:
                         await asyncio.sleep(2 ** attempt)
                         continue
                     raise LLMError(f"OpenAI API {resp.status_code}: {detail}")
             except httpx.TimeoutException:
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                log_api_response(f"LLM 超时 ← openai [{model_name}]",
+                                  provider="openai", model=model_name,
+                                  status_code=0, duration_ms=elapsed_ms,
+                                  error="timeout", attempt=attempt + 1, level="ERROR")
                 if attempt < config.llm_max_retries:
                     await asyncio.sleep(2 ** attempt)
                     continue
@@ -204,18 +232,45 @@ class LLMClient:
         if tools:
             body["tools"] = self._convert_tools_for_anthropic(tools)
 
+        model_name = model or config.anthropic_model
+        msg_count = len(anthropic_msgs)
+        tool_count = len(tools) if tools else 0
+
+        t0 = time.monotonic()
         for attempt in range(config.llm_max_retries + 1):
             try:
+                log_api_request(f"LLM 请求 → anthropic [{model_name}]",
+                                 provider="anthropic", model=model_name,
+                                 messages=msg_count, tools=tool_count, attempt=attempt + 1)
                 resp = await client.post(url, headers=headers, json=body)
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
                 if resp.status_code == 200:
-                    return self._normalize_anthropic_response(resp.json())
+                    raw_json = resp.json()
+                    data = self._normalize_anthropic_response(raw_json)
+                    usage_raw = raw_json.get("usage", {})
+                    log_api_response(f"LLM 响应 ← anthropic [{model_name}] 200",
+                                      provider="anthropic", model=model_name,
+                                      status_code=200, duration_ms=elapsed_ms,
+                                      input_tokens=usage_raw.get("input_tokens", 0),
+                                      output_tokens=usage_raw.get("output_tokens", 0),
+                                      attempt=attempt + 1)
+                    return data
                 else:
                     detail = resp.text[:500]
+                    log_api_response(f"LLM 错误 ← anthropic [{model_name}] {resp.status_code}",
+                                      provider="anthropic", model=model_name,
+                                      status_code=resp.status_code, duration_ms=elapsed_ms,
+                                      error=detail, attempt=attempt + 1)
                     if attempt < config.llm_max_retries:
                         await asyncio.sleep(2 ** attempt)
                         continue
                     raise LLMError(f"Anthropic API {resp.status_code}: {detail}")
             except httpx.TimeoutException:
+                elapsed_ms = int((time.monotonic() - t0) * 1000)
+                log_api_response(f"LLM 超时 ← anthropic [{model_name}]",
+                                  provider="anthropic", model=model_name,
+                                  status_code=0, duration_ms=elapsed_ms,
+                                  error="timeout", attempt=attempt + 1, level="ERROR")
                 if attempt < config.llm_max_retries:
                     await asyncio.sleep(2 ** attempt)
                     continue
