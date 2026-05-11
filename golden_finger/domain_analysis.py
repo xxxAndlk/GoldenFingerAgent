@@ -11,16 +11,20 @@
 """
 
 import json
+import logging
 import os
 from typing import Any
 
 from .models import (
     TaskPlan, AtomTask, TaskComplexity,
-    HostProfile,
+    HostProfile, RealmLevel,
 )
 from .llm import LLMClient
 from .skills.registry import skill_registry
+from .skill_trigger import trigger_engine, TriggerContext, DomainTagger, ContextState
 from .domain_isolation import EgressAnonymizer
+
+logger = logging.getLogger("golden_finger.domain_analysis")
 
 
 # ============================================================
@@ -330,7 +334,7 @@ class PlanGenerator:
         query: str,
         host_profile: HostProfile | None = None,
     ) -> TaskPlan:
-        """完整的天机推演流程"""
+        """完整的天机推演流程（含 Skill 自动触发）"""
         # 1. 意图分类
         intent = await self.classifier.classify(query)
         complexity = TaskComplexity(intent.get("complexity", "simple_qa"))
@@ -338,14 +342,46 @@ class PlanGenerator:
         # 2. 任务拆解
         tasks, execution_order = await self.decomposer.decompose(query, complexity.value)
 
-        # 3. Skill 匹配
+        # 3. Skill 自动触发评估 (superpowers 概念)
+        realm = host_profile.realm if host_profile else RealmLevel.MORTAL
+        domain_tags = DomainTagger.tag(query)
+        task_type = DomainTagger.infer_task_type(query)
+        is_multi = len(tasks) > 1
+
+        trigger_ctx = TriggerContext(
+            query_text=query,
+            task_type=task_type,
+            context_state=ContextState.CLEAN_SLATE,
+            domain_tags=domain_tags,
+            realm=realm,
+            task_count=len(tasks),
+            is_parallel=any(len(level) > 1 for level in execution_order),
+        )
+        trigger_result = trigger_engine.evaluate(trigger_ctx)
+        mandatory_skills = [s[0] for s in trigger_result.mandatory_skills]
+        recommended_skills = [s[0] for s in trigger_result.recommended_skills]
+
+        logger.info(
+            f"Skill 触发: 强制={mandatory_skills}, 推荐={recommended_skills}"
+        )
+
+        # 4. Skill 匹配（强制触发的 Skill 优先匹配）
         await self.matcher.match_all(tasks)
 
-        # 4. 提示词组合
+        # 对于没有匹配到 skill 的任务，尝试用强制触发的 skill 补充
+        for task in tasks:
+            if task.matched_skill is None and mandatory_skills:
+                # 使用第一个强制触发的 skill
+                task.matched_skill = mandatory_skills[0]
+            if task.dispatch_mode == "sync" and is_multi:
+                # 多任务场景建议异步
+                task.dispatch_mode = "async"
+
+        # 5. 提示词组合
         for task in tasks:
             task.prompt = await self.composer.compose(task, host_profile, query)
 
-        # 5. 构建 TaskPlan
+        # 6. 构建 TaskPlan
         plan = TaskPlan(
             original_query=query,
             complexity=complexity,

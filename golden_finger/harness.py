@@ -20,6 +20,18 @@ from .skills.registry import skill_registry
 from .skills.knowledge import KnowledgeAbsorption
 from .skills.code_assistant import CodeAssistant
 from .skills.file_operations import FileOperations
+from .skills.tdd_enforcer import TDDEnforcer
+from .skills.systematic_debugging import SystematicDebugging
+from .skills.brainstorming import Brainstorming
+from .skills.writing_plans import WritingPlans
+from .skills.executing_plans import ExecutingPlans
+from .skills.dispatching_parallel_agents import DispatchingParallelAgents
+from .skills.requesting_code_review import RequestingCodeReview
+from .skills.receiving_code_review import ReceivingCodeReview
+from .skills.using_git_worktrees import UsingGitWorktrees
+from .skills.finishing_branch import FinishingBranch
+from .skills.writing_skills import WritingSkills
+from .skill_trigger import trigger_engine, TriggerContext, DomainTagger
 from .storage.sqlite_store import SQLiteStore
 from .storage.vector_store import vector_store
 
@@ -47,10 +59,25 @@ class GoldenFingerHarness:
         self._load_or_create_profile()
 
     def _init_skills(self):
-        """注册内置 Skill"""
+        """注册所有 Skill（筑基 + Superpowers）"""
+        # 筑基技能
         skill_registry.register(KnowledgeAbsorption())
         skill_registry.register(CodeAssistant())
         skill_registry.register(FileOperations())
+
+        # Superpowers 技能
+        skill_registry.register(TDDEnforcer())
+        skill_registry.register(SystematicDebugging())
+        skill_registry.register(Brainstorming())
+        skill_registry.register(WritingPlans())
+        skill_registry.register(ExecutingPlans())
+        skill_registry.register(DispatchingParallelAgents())
+        skill_registry.register(RequestingCodeReview())
+        skill_registry.register(ReceivingCodeReview())
+        skill_registry.register(UsingGitWorktrees())
+        skill_registry.register(FinishingBranch())
+        skill_registry.register(WritingSkills())
+
         skill_count = len(skill_registry.list_all())
         logger.info(f"已注册 {skill_count} 个 Skill")
         log_system(f"已注册 {skill_count} 个 Skill", skill_names=[s.name for s in skill_registry.list_all()])

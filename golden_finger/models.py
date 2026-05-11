@@ -165,6 +165,15 @@ class KnowledgeEntry(BaseModel):
     created_at: str = Field(default_factory=now_iso)
 
 
+class TriggerCondition(BaseModel):
+    """Skill 自动触发条件"""
+    task_types: list[str] = Field(default_factory=list)      # code/test/debug/plan/review/learn/file_ops
+    context_states: list[str] = Field(default_factory=list)   # error/multi_task/clean_slate/after_implementation/any
+    domain_tags: list[str] = Field(default_factory=list)      # web/db/api/security/ai/data/infra/cli
+    keyword_patterns: list[str] = Field(default_factory=list)  # 在 query 中匹配
+    min_realm: RealmLevel = RealmLevel.MORTAL
+
+
 class SkillManifest(BaseModel):
     """技能声明"""
     name: str
@@ -176,6 +185,11 @@ class SkillManifest(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     tools_required: list[str] = Field(default_factory=list)
     created_from: str = ""            # 来源执行 ID
+
+    # 自动触发 (superpowers 概念)
+    trigger_conditions: list[TriggerCondition] = Field(default_factory=list)
+    mandatory: bool = False           # 是否强制激活（不可跳过）
+    trigger_priority: int = 50        # 触发优先级 (0-100)
 
     # 进化相关
     knowledge: list[KnowledgeEntry] = Field(default_factory=list)
