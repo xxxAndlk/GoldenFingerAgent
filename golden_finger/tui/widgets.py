@@ -49,6 +49,16 @@ class TaskPanel(Static):
         if changed:
             self._render_tasks()
 
+    def add_task(self, task_id: str, desc: str, status: str = "pending") -> None:
+        self.tasks.append({"id": task_id, "desc": desc, "status": status})
+        self._render_tasks()
+
+    def clear_tasks(self) -> None:
+        self.tasks.clear()
+        log = self.query_one("#task-log", RichLog)
+        log.clear()
+        log.write("[dim #6c7086]暂无任务[/]")
+
     def _render_tasks(self) -> None:
         log = self.query_one("#task-log", RichLog)
         log.clear()

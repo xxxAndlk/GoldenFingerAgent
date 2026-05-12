@@ -33,6 +33,21 @@ from .chat import ChatHandler, DebouncedWriter
 from .pipeline import PipelineHandler
 
 
+class QueryInput(TextArea):
+    """TextArea 子类：Enter 发送查询，Shift+Enter 插入换行。"""
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "enter":
+            event.prevent_default()
+            event.stop()
+            if not self.app.is_processing:
+                self.app.action_submit_query()
+        elif event.key == "shift+enter":
+            event.prevent_default()
+            event.stop()
+            self.insert("\n")
+
+
 class GoldenFingerApp(App[None]):
     """金手指终端 TUI"""
 
@@ -43,7 +58,6 @@ class GoldenFingerApp(App[None]):
         Binding("ctrl+c", "ctrl_c_action", "复制/退出", show=False),
         Binding("ctrl+s", "save_session", "保存", show=False),
         Binding("ctrl+m", "export_log", "导出", show=False),
-        Binding("ctrl+enter", "submit_query", "发送", show=False),
         Binding("escape", "escape_action", "中止/聚焦", show=False),
         Binding("ctrl+up", "history_prev", "", show=False),
         Binding("ctrl+down", "history_next", "", show=False),
@@ -67,12 +81,20 @@ class GoldenFingerApp(App[None]):
         self._last_esc_ts: float = 0.0
         self._double_press_window_sec: float = DOUBLE_PRESS_WINDOW_SEC
         self._inline_copy_mode: bool = False
+        self._pulse_timer: Any = None
+        self._pulse_toggle: bool = False
 
     # ---- Lifecycle ----
 
     async def on_mount(self) -> None:
         self.harness = GoldenFingerHarness()
         self.llm = LLMClient()
+
+        # 加载宿主环境并持久化
+        from ..host_env import host_env
+        host_env.load()
+        host_env.save()
+
         log_system("TUI 模式启动", mode="tui", model=config.openai_model,
                     llm_provider=config.llm_provider)
 
@@ -80,23 +102,29 @@ class GoldenFingerApp(App[None]):
         s = self.harness.get_status()
         realm_info = f"{s['realm']} · {s['realm_stage']}"
         spirit = s['spirit_root']['dominant']
-
         monitor_url = f"http://127.0.0.1:{self.monitor_port}" if self.monitor_port else ""
+
         welcome_text = (
-            f"[#a6adc8]模型:[/] [#89b4fa]{config.openai_model}[/]\n"
-            f"[#a6adc8]境界:[/] [#89b4fa]{realm_info}[/]  |  [#a6adc8]灵根:[/] [#89b4fa]{spirit}[/]\n"
+            f"[#00aaaa]System Initiated.[/] [#00ffff]Welcome to Golden Finger.[/]\n\n"
+            f"[bold #00ffff]AGENT PROFILE[/]\n"
+            f"[#00aaaa]Model:[/] [#e6f2ff]{config.openai_model}[/]\n"
+            f"[#00aaaa]Realm:[/] [#e6f2ff]{realm_info}[/]\n"
+            f"[#00aaaa]Spirit:[/] [#e6f2ff]{spirit}[/]\n\n"
+            f"[bold #00ffff]SYSTEM STATUS[/]\n"
+            f"[#00aaaa]State:[/] [#e6f2ff]✦ 就绪[/]\n"
+            f"[#00aaaa]Mode:[/] [#e6f2ff]Chat[/]\n"
         )
         if monitor_url:
             welcome_text += (
-                f"[#a6adc8]监控:[/] [#89b4fa]{monitor_url}[/]  "
-                f"[dim #6c7086]浏览器打开可实时查看日志[/]\n"
+                f"[#00aaaa]监控:[/] [#00ffff]{monitor_url}[/]\n"
+                f"[dim #0059b3]浏览器打开可实时查看日志[/]\n\n"
             )
-        welcome_text += "\n[dim #6c7086]输入问题开始修炼 · /help 查看指令 · Ctrl+↑↓ 历史 · Ctrl+Enter 发送[/]"
+        welcome_text += "[dim #0059b3]输入问题开始执行任务 · /help 查看指令 · Ctrl+↑↓ 历史 · Enter 发送 · Shift+Enter 换行[/]"
 
         panel = Panel(
             welcome_text,
-            title="✨ [bold #cba6f7]金手指 Agent System 已就绪[/] ✨",
-            border_style="#cba6f7",
+            title="[bold #00ffff] SYSTEM READY [/]",
+            border_style="#00ffff",
             expand=False,
             padding=(1, 2),
         )
@@ -150,10 +178,10 @@ class GoldenFingerApp(App[None]):
                     )
                 with Container(id="input-bar"):
                     yield Static(
-                        "Ctrl+Enter 发送 · Shift+Enter 换行 · Ctrl+↑↓ 历史",
+                        "Enter 发送 · Shift+Enter 换行 · Ctrl+↑↓ 历史",
                         id="input-hint",
                     )
-                    yield TextArea(
+                    yield QueryInput(
                         id="query-input",
                         language=None,
                         show_line_numbers=False,
@@ -503,11 +531,36 @@ class GoldenFingerApp(App[None]):
             si = self.query_one("#status-info", Static)
             if active:
                 si.add_class("processing")
+                self._start_pulse()
             else:
                 si.remove_class("processing")
+                self._stop_pulse()
         except Exception:
             pass
         self._update_status()
+
+    def _start_pulse(self) -> None:
+        self._stop_pulse()
+        self._pulse_toggle = False
+        self._pulse_timer = self.set_interval(0.4, self._pulse_tick)
+
+    def _pulse_tick(self) -> None:
+        self._pulse_toggle = not self._pulse_toggle
+        try:
+            si = self.query_one("#status-info", Static)
+            si.styles.color = "#f9e2af" if self._pulse_toggle else "#a6adc8"
+        except Exception:
+            pass
+
+    def _stop_pulse(self) -> None:
+        if self._pulse_timer:
+            self._pulse_timer.stop()
+            self._pulse_timer = None
+        try:
+            si = self.query_one("#status-info", Static)
+            si.styles.color = "#a6adc8"
+        except Exception:
+            pass
 
     def _update_status(self) -> None:
         s: dict[str, Any] = self.harness.get_status() if self.harness else {}
@@ -516,6 +569,7 @@ class GoldenFingerApp(App[None]):
         tasks = s.get("total_tasks", 0)
         realm = s.get("realm", "凡人")
         stage = s.get("realm_stage", "初阶")
+
         status = self.query_one("#status-info", Static)
         parts = [
             f" {label}",

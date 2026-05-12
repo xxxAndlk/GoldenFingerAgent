@@ -23,6 +23,7 @@ from .skills.registry import skill_registry
 from .skill_trigger import trigger_engine, TriggerContext, DomainTagger, ContextState
 from .domain_isolation import EgressAnonymizer
 from .utils import parse_json
+from .host_env import host_env
 
 logger = logging.getLogger("golden_finger.domain_analysis")
 
@@ -118,6 +119,9 @@ class TaskDecomposer:
             return [task], [[task.task_id]]
 
         prompt = TASK_DECOMPOSE_PROMPT.format(query=query)
+        # 注入宿主环境上下文，让任务规划知道 Python/Shell/工作区
+        env_ctx = host_env.get_prompt_context()
+        prompt = f"{env_ctx}\n\n{prompt}"
 
         try:
             resp = await self.llm.chat(

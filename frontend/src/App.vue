@@ -129,6 +129,20 @@ async function handleSubmit() {
   }
 }
 
+async function copySelectedText() {
+  const selected = (window.getSelection?.()?.toString() || '').trim()
+  if (!selected) return
+  await navigator.clipboard.writeText(selected)
+  addLog('success', '已复制选中文本')
+}
+
+async function copyFinalOutput() {
+  const text = (finalMarkdown.value || '').replace(/<[^>]+>/g, '').trim()
+  if (!text) return
+  await navigator.clipboard.writeText(text)
+  addLog('success', '已复制修炼成果')
+}
+
 // Load status on mount
 async function loadStatus() {
   try {
@@ -152,7 +166,10 @@ loadStatus()
   <div class="app-container">
     <!-- Header -->
     <header class="app-header">
-      <span class="app-title">✦ 金手指 Agent System</span>
+      <div class="title-wrap">
+        <span class="app-title">✦ 金指 Agent System</span>
+        <span class="app-subtitle">Cyber Cultivation Console</span>
+      </div>
       <div class="header-right">
         <button class="header-nav-btn" @click="currentPage = 'chat'">
           💬 对话
@@ -173,8 +190,16 @@ loadStatus()
 
     <!-- Main content (Chat Page) -->
     <main v-else class="app-main">
+      <div class="chat-toolbar">
+        <button class="toolbar-btn" @click="copySelectedText">
+          📋 复制选中
+        </button>
+        <button class="toolbar-btn" @click="copyFinalOutput">
+          🧾 复制结果
+        </button>
+      </div>
       <!-- Log area -->
-      <div id="log-area" ref="logRef" class="log-area">
+      <div id="log-area" class="log-area">
         <div
           v-for="entry in logEntries"
           :key="entry.id"

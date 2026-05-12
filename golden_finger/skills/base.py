@@ -55,8 +55,10 @@ class BaseSkill(ABC):
         ...
 
     def get_system_prompt(self) -> str:
-        """返回此 Skill 的 system prompt 片段"""
-        return f"## {self.display_name}\n{self.description}\n"
+        """返回此 Skill 的 system prompt 片段（含宿主环境上下文）。"""
+        from ..host_env import host_env
+        env_ctx = host_env.get_prompt_context()
+        return f"{env_ctx}\n\n## {self.display_name}\n{self.description}\n"
 
     def get_knowledge_context(self, query: str) -> str:
         """检索与此 Skill 相关的知识上下文"""

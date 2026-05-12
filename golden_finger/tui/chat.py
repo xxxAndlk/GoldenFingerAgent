@@ -16,6 +16,7 @@ from ..llm import LLMClient
 from ..tools.builtin import BUILTIN_TOOLS
 from ..domain_execution import ToolExecutionGuard
 from ..logging import log_system, log_step
+from ..host_env import host_env
 
 from .constants import (
     MAX_CHAT_ROUNDS, REASONING_TRUNCATE_LEN, RESULT_PREVIEW_LEN,
@@ -26,6 +27,7 @@ from .constants import (
 
 if TYPE_CHECKING:
     from .app import GoldenFingerApp
+    from .widgets import TaskPanel
 
 
 class DebouncedWriter:
@@ -142,19 +144,55 @@ class ChatHandler:
     def __init__(self, app: GoldenFingerApp) -> None:
         self._app = app
         self._compressor = ContextCompressor(app)
+        self._round_summaries: list[str] = []
 
     @property
     def llm(self) -> LLMClient | None:
         return self._app.llm
 
+    def _show_task_panel(self) -> None:
+        try:
+            self._app.query_one("#task-panel").add_class("-visible")
+            rp = self._app.query_one("#right-pane")
+            rp.add_class("-visible")
+            self._app.query_one("#left-pane").add_class("-has-right")
+        except Exception:
+            pass
+
+    def _hide_panels(self) -> None:
+        for pid in ("#task-panel", "#agent-panel", "#right-pane"):
+            try:
+                self._app.query_one(pid).remove_class("-visible")
+            except Exception:
+                pass
+        try:
+            self._app.query_one("#left-pane").remove_class("-has-right")
+        except Exception:
+            pass
+
     async def run(self, query: str, log: RichLog, writer: DebouncedWriter) -> None:
         assert self.llm is not None
         await self._compressor.compress_if_needed(log)
+
+        self._round_summaries.clear()
+
+        # 显示侧边任务面板
+        tp: TaskPanel | None = None
+        try:
+            self._show_task_panel()
+            tp = self._app.query_one("#task-panel")
+            tp.clear_tasks()
+            tp.add_task("task-0", f"理解问题: {query[:40]}...", "running")
+        except Exception:
+            tp = None
 
         system_prompt = (
             "你是金手指(GoldenFinger)，一个运行在终端TUI中的AI编程助手。"
             "使用中文回复。可以调用工具：读文件、写文件、执行命令、搜索网页。"
             "代码用 ``` 语法高亮。回复简洁，重点突出。"
+            "\n\n"
+            f"{host_env.get_prompt_context()}"
+            "\n"
             f"{self._app.cli_context_prompt}"
         )
         messages: list[dict[str, object]] = [
@@ -245,7 +283,8 @@ class ChatHandler:
                 assistant_msg["tool_calls"] = tool_calls
             messages.append(assistant_msg)
 
-            for tc in tool_calls:
+            tool_count = len(tool_calls)
+            for idx, tc in enumerate(tool_calls):
                 func = tc.get("function", {})
                 tool_name = str(func.get("name", ""))
                 params_str = func.get("arguments", "{}")
@@ -262,6 +301,14 @@ class ChatHandler:
                 self._app._update_status_text(f"⚙ 执行 {tool_name}...")
                 await asyncio.sleep(0)
 
+                # 任务面板：添加工具任务
+                tool_task_id = f"tool-{round_num}-{idx}"
+                if tp:
+                    try:
+                        tp.add_task(tool_task_id, f"{tool_name}", "running")
+                    except Exception:
+                        pass
+
                 t_tool = time.time()
                 log_step(f"工具调用开始: {tool_name}", domain="execution", tool_name=tool_name)
                 tool_log = await ToolExecutionGuard.execute_tool(tool_name, params)
@@ -272,12 +319,27 @@ class ChatHandler:
                     await writer.write(
                         f"[#a6e3a1]    ✓ {tool_elapsed:.1f}s  |  {rp}[/]"
                     )
+                    if tp:
+                        try:
+                            tp.set_task_status(tool_task_id, "completed")
+                        except Exception:
+                            pass
                 elif tool_log.success:
                     await writer.write(f"[#a6e3a1]    ✓ {tool_elapsed:.1f}s[/]")
+                    if tp:
+                        try:
+                            tp.set_task_status(tool_task_id, "completed")
+                        except Exception:
+                            pass
                 else:
                     await writer.write(
                         f"[#f38ba8]    ✗ {tool_elapsed:.1f}s  |  {tool_log.error}[/]"
                     )
+                    if tp:
+                        try:
+                            tp.set_task_status(tool_task_id, "error")
+                        except Exception:
+                            pass
 
                 result_content = (
                     json.dumps(tool_log.result, ensure_ascii=False)
@@ -290,14 +352,44 @@ class ChatHandler:
                     "content": result_content,
                 })
 
+            # 轮次总结
+            round_preview = (text or "")[:80].replace("\n", " ")
+            summary = f"第{round_num + 1}轮: {tool_count}次工具调用, 耗时{elapsed:.1f}s"
+            if round_preview:
+                summary += f" — {round_preview}"
+            self._round_summaries.append(summary)
+            await writer.write(
+                f"[dim #585b70]  ⏱ {elapsed:.1f}s"
+                f"  ↑{usage.get('input', 0)} ↓{usage.get('output', 0)} tok"
+                f"  |  {summary}[/]\n"
+            )
+
+        # 第一轮完成时更新任务面板主任务
+        if tp:
+            try:
+                tp.set_task_status("task-0", "completed")
+            except Exception:
+                pass
+
         if total_input > 0:
             await writer.write(
                 f"[dim #585b70]── 总计 输入：{total_input}"
                 f" 输出：{total_output} tokens ──[/]"
             )
+
+        # 打印本轮执行总结
+        if self._round_summaries:
+            await writer.write("[bold #94e2d5]📋 执行总结:[/]")
+            for s in self._round_summaries:
+                await writer.write(f"[dim #a6adc8]  • {s}[/]")
+            await writer.write("")
+
         self._remember_turn(query, final_text)
         self._app._update_status_text("✦ 就绪")
         await writer.write("")
+
+        # 隐藏任务面板
+        self._hide_panels()
 
     def _remember_turn(self, user_query: str, assistant_text: str) -> None:
         if user_query.strip():

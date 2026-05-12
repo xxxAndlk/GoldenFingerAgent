@@ -126,7 +126,10 @@ class PipelineHandler:
     def _show_panel(self, panel_id: str) -> None:
         try:
             self._app.query_one(panel_id).add_class("-visible")
-            self._app.query_one("#right-pane").add_class("-visible")
+            right_pane = self._app.query_one("#right-pane")
+            right_pane.styles.opacity = 0
+            right_pane.add_class("-visible")
+            right_pane.styles.animate("opacity", value=1.0, duration=0.25)
             self._app.query_one("#left-pane").add_class("-has-right")
         except Exception:
             pass
