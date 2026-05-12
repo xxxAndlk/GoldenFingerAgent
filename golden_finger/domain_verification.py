@@ -8,8 +8,6 @@
 3. 步骤回放 → 关键步骤可复现验证
 """
 
-import json
-import re
 from typing import Any
 
 from .models import (
@@ -17,6 +15,7 @@ from .models import (
     RollbackPlan, ToolCallLog,
 )
 from .llm import LLMClient
+from .utils import parse_json
 
 
 # ============================================================
@@ -135,7 +134,7 @@ class ContentChecker:
                 max_tokens=500,
             )
             text = self.llm.extract_text(resp)
-            data = self._parse_json(text)
+            data = parse_json(text, default={"overall_judgment": "pass"})
 
             judgment = data.get("overall_judgment", "pass")
             relevance = data.get("relevance_score", 8)
@@ -182,21 +181,6 @@ class ContentChecker:
             ))
 
         return results
-
-    @staticmethod
-    def _parse_json(text: str) -> dict[str, Any]:
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-        match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(1))
-            except json.JSONDecodeError:
-                pass
-        return {"overall_judgment": "pass"}
-
 
 # ============================================================
 # 第三层：步骤回放
@@ -247,10 +231,20 @@ class RollbackEngine:
         for task_id in failed_tasks:
             result: dict[str, Any] = report.task_results.get(task_id, {})
             for log in result.get("tool_logs", []):
-                if isinstance(log, ToolCallLog) and log.tool_name == "file_write":
-                    file_path = log.params.get("file_path", "")
-                    actions.append({"action": "delete_file", "path": file_path})
-                    side_effects.append(file_path)
+                # 兼容 Pydantic model 和普通 dict（从数据库反序列化后为 dict）
+                if isinstance(log, ToolCallLog):
+                    tool_name = log.tool_name
+                    params = log.params
+                elif isinstance(log, dict):
+                    tool_name = log.get("tool_name", "")
+                    params = log.get("params", {})
+                else:
+                    continue
+                if tool_name == "file_write":
+                    file_path = params.get("file_path", "")
+                    if file_path:
+                        actions.append({"action": "delete_file", "path": file_path})
+                        side_effects.append(file_path)
 
         return RollbackPlan(
             affected_tasks=failed_tasks,
@@ -316,10 +310,13 @@ class VerificationEngine:
             vr.overall_pass = False
             vr.action = "retry"
         elif any("工具" in c.check_name for c in failed):
-            # 工具异常，生成回退计划
+            # 工具异常，生成回退计划（仅针对失败的任务）
             vr.overall_pass = False
             vr.action = "rollback"
-            failed_ids = list(report.task_results.keys())
+            failed_ids = [
+                tid for tid, r in report.task_results.items()
+                if not r.get("success", False)
+            ]
             vr.rollback_plan = self.rollback_engine.generate_rollback(report, failed_ids)
         else:
             vr.overall_pass = False

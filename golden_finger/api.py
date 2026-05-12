@@ -6,6 +6,7 @@
 import asyncio
 import json
 import os
+import queue
 import time
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .harness import GoldenFingerHarness
 from .config import config
-from .logging import log_manager, log_system, log_api_request, log_api_response
+from .logging import log_manager, log_system, log_api_request, log_api_response, is_shutdown_sentinel
 
 app = FastAPI(title="Golden Finger Agent", version="0.1.0")
 
@@ -125,14 +126,24 @@ async def stream_logs(
             for entry in entries:
                 yield f"data: {json.dumps(entry, ensure_ascii=False)}\n\n"
 
-            # 然后推送新日志
+            # 然后从线程安全队列中轮询新日志
+            loop = asyncio.get_event_loop()
+            heartbeat_count = 0
             while True:
                 try:
-                    entry = await asyncio.wait_for(q.get(), timeout=30)
+                    entry = await asyncio.wait_for(
+                        loop.run_in_executor(None, lambda: q.get(timeout=1.0)),
+                        timeout=30,
+                    )
+                    if is_shutdown_sentinel(entry):
+                        break
                     if categories is None or entry.category in categories:
                         yield f"data: {json.dumps(entry.to_dict(), ensure_ascii=False)}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": heartbeat\n\n"
+                    heartbeat_count = 0
+                except (asyncio.TimeoutError, queue.Empty):
+                    heartbeat_count += 1
+                    if heartbeat_count % 5 == 0:
+                        yield ": heartbeat\n\n"
         finally:
             log_manager.unsubscribe(q)
 

@@ -155,8 +155,5 @@ class ProfileEvolver:
             for tag in signals["interest_tags"]:
                 if tag not in profile.interest_tags:
                     profile.interest_tags.append(tag)
-                    # 只保留最近 20 个
                     if len(profile.interest_tags) > 20:
                         profile.interest_tags = profile.interest_tags[-20:]
-
-        profile.total_tasks_completed += 1

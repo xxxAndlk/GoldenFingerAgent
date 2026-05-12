@@ -3,6 +3,9 @@
 管理所有 Skill 的注册、发现和匹配。
 """
 
+import time
+from typing import Any
+
 from .base import BaseSkill
 from ..models import RealmLevel
 from ..storage.vector_store import vector_store
@@ -13,14 +16,18 @@ class SkillRegistry:
 
     def __init__(self):
         self._skills: dict[str, BaseSkill] = {}
+        self._search_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+        self._cache_ttl: float = 30.0  # 搜索缓存 30 秒
 
     def register(self, skill: BaseSkill) -> None:
         """注册一个 Skill"""
         self._skills[skill.name] = skill
+        self._search_cache.clear()  # 注册新 skill 时清缓存
 
     def unregister(self, skill_name: str) -> None:
         """移除一个 Skill"""
         self._skills.pop(skill_name, None)
+        self._search_cache.clear()
 
     def get(self, name: str) -> BaseSkill | None:
         """获取 Skill"""
@@ -37,11 +44,19 @@ class SkillRegistry:
             if s.can_activate(host_realm)
         ]
 
-    def search(self, query: str, top_k: int = 5) -> list[dict[str, object]]:
+    def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         """搜索最匹配的 Skill
 
         先用名称/描述关键词匹配，再用向量检索。
+        结果包含 30 秒缓存以避免重复计算。
         """
+        now = time.monotonic()
+        cache_key = f"{query}:{top_k}"
+        if cache_key in self._search_cache:
+            ts, cached = self._search_cache[cache_key]
+            if now - ts < self._cache_ttl:
+                return cached
+
         # 1. 关键词匹配
         query_lower = query.lower()
         keyword_matches: list[tuple[BaseSkill, int]] = []
@@ -64,8 +79,8 @@ class SkillRegistry:
         # 2. 向量检索补充
         vector_matches = vector_store.search_skills(query, top_k=top_k)
 
-        # 3. 合并结果
-        results: list[dict[str, object]] = []
+        # 3. 合并结果（不返回完整的 BaseSkill 对象，避免内存浪费）
+        results: list[dict[str, Any]] = []
         seen: set[str] = set()
 
         for skill, score in keyword_matches[:top_k]:
@@ -75,7 +90,6 @@ class SkillRegistry:
                 "display_name": skill.display_name,
                 "description": skill.description,
                 "match_reason": f"关键词匹配 (分数: {score})",
-                "skill": skill,
             })
 
         for vm in vector_matches:
@@ -89,10 +103,11 @@ class SkillRegistry:
                     "description": skill.description,
                     "match_reason": f"语义匹配 (相似度: {1 - vm['distance']:.2f})",
                     "content": vm["content"][:200],
-                    "skill": skill,
                 })
 
-        return results[:top_k]
+        results = results[:top_k]
+        self._search_cache[cache_key] = (now, results)
+        return results
 
     def get_tools_for_skills(self, skill_names: list[str]) -> list[str]:
         """获取一组 Skill 需要的所有工具"""

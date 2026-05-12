@@ -187,7 +187,7 @@ def run_tui():
     console.print(f"\n[dim]📊 监控大屏: http://127.0.0.1:{monitor_port}[/]")
     console.print("[dim]   在浏览器中打开上述地址，可实时观察系统日志[/]\n")
 
-    app = GoldenFingerApp()
+    app = GoldenFingerApp(monitor_port=monitor_port)
     app.run()
 
 

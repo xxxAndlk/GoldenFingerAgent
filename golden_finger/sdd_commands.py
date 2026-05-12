@@ -19,7 +19,6 @@ OpenSpec 命令 (轻量迭代):
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -28,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from .llm import LLMClient
+from .utils import parse_json
 
 logger = logging.getLogger("golden_finger.sdd")
 
@@ -57,21 +57,6 @@ def _load_template(name: str) -> str:
     if path.exists():
         return path.read_text(encoding="utf-8")
     return ""
-
-
-def _parse_json(text: str) -> dict[str, Any]:
-    """从 LLM 回复中提取 JSON"""
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except json.JSONDecodeError:
-            pass
-    return {}
 
 
 def _next_spec_num(base_dir: Path, prefix: str = "") -> int:
@@ -120,7 +105,7 @@ async def cmd_constitution(llm: LLMClient, context: str = "") -> str:
         messages=[{"role": "user", "content": prompt}],
         max_tokens=2000,
     )
-    data = _parse_json(llm.extract_text(resp))
+    data = parse_json(llm.extract_text(resp))
 
     # 生成宪章内容
     parts = [
@@ -185,7 +170,7 @@ async def cmd_specify(llm: LLMClient, query: str) -> dict[str, Any]:
         messages=[{"role": "user", "content": prompt}],
         max_tokens=3000,
     )
-    data = _parse_json(llm.extract_text(resp))
+    data = parse_json(llm.extract_text(resp))
 
     feature_name = data.get("feature_name", "feature")
     spec_num = _next_spec_num(SPECS_DIR)
@@ -282,7 +267,7 @@ async def cmd_clarify(llm: LLMClient, spec_content: str) -> dict[str, Any]:
         messages=[{"role": "user", "content": prompt}],
         max_tokens=2000,
     )
-    data = _parse_json(llm.extract_text(resp))
+    data = parse_json(llm.extract_text(resp))
     return data
 
 
@@ -327,7 +312,7 @@ async def cmd_plan(llm: LLMClient, spec_content: str, tech_context: str = "") ->
         messages=[{"role": "user", "content": prompt}],
         max_tokens=3000,
     )
-    data = _parse_json(llm.extract_text(resp))
+    data = parse_json(llm.extract_text(resp))
 
     # 尝试保存到对应的 spec 目录
     spec_dirs = sorted(SPECS_DIR.glob("*/spec.md"), key=os.path.getmtime, reverse=True)
@@ -432,7 +417,7 @@ async def cmd_tasks(llm: LLMClient, plan_content: str, spec_content: str = "") -
         messages=[{"role": "user", "content": prompt}],
         max_tokens=3000,
     )
-    data = _parse_json(llm.extract_text(resp))
+    data = parse_json(llm.extract_text(resp))
 
     spec_dirs = sorted(SPECS_DIR.glob("*/plan.md"), key=os.path.getmtime, reverse=True)
     target_dir = spec_dirs[0].parent if spec_dirs else SPECS_DIR
@@ -534,7 +519,7 @@ async def cmd_propose(llm: LLMClient, query: str) -> dict[str, Any]:
         messages=[{"role": "user", "content": prompt}],
         max_tokens=3000,
     )
-    data = _parse_json(llm.extract_text(resp))
+    data = parse_json(llm.extract_text(resp))
 
     change_num = _next_spec_num(CHANGES_ACTIVE, "CHG-")
     change_id = f"CHG-{change_num:03d}"
@@ -642,15 +627,20 @@ async def cmd_apply(
 async def cmd_archive(change_id: str) -> dict[str, Any]:
     """归档已完成变更"""
     _ensure_dirs()
+    import shutil
 
     src = CHANGES_ACTIVE / change_id
     if not src.exists():
         return {"status": "error", "error": f"变更 {change_id} 不存在"}
 
     dst = CHANGES_ARCHIVE / change_id
-    # 移动目录
-    import shutil
-    shutil.move(str(src), str(dst))
+    if dst.exists():
+        return {"status": "error", "error": f"归档目标 {change_id} 已存在，请先清理"}
+
+    try:
+        shutil.move(str(src), str(dst))
+    except shutil.Error as e:
+        return {"status": "error", "error": f"移动变更目录失败: {e}"}
 
     # 更新主规格（将变更的 specs 合并到 specs/ 目录）
     spec_files = list(dst.glob("*.md"))
@@ -719,7 +709,7 @@ async def cmd_analyze(llm: LLMClient, spec_dir: str | None = None) -> dict[str, 
         messages=[{"role": "user", "content": prompt}],
         max_tokens=2000,
     )
-    data = _parse_json(llm.extract_text(resp))
+    data = parse_json(llm.extract_text(resp))
     return {
         "status": "analyzed",
         "spec_dir": str(target),

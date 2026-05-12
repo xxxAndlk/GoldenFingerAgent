@@ -127,6 +127,7 @@ class SingleTaskExecutor:
                 break
 
             # 执行工具
+            tool_failed = False
             for tc in tool_calls:
                 func: dict[str, Any] = tc.get("function", {})
                 tool_name: str = func.get("name", "")
@@ -168,10 +169,14 @@ class SingleTaskExecutor:
                     "content": tool_result_content,
                 })
 
-                # 如果工具调用失败，中断本轮
+                # 如果工具调用失败，中断本轮和外层循环
                 if not log.success:
                     final_text = f"工具 [{tool_name}] 执行失败: {log.error}"
+                    tool_failed = True
                     break
+
+            if tool_failed:
+                break
         else:
             # 超过最大轮数
             final_text = self.llm.extract_text(

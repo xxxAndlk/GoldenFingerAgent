@@ -7,6 +7,7 @@
 import asyncio
 import json
 import logging
+import queue
 import threading
 from collections import deque
 from datetime import datetime, timezone
@@ -50,6 +51,14 @@ class LogEntry:
         }
 
 
+# 终止哨兵：放入订阅者队列以解除阻塞中的 q.get() 调用
+_SHUTDOWN_SENTINEL = LogEntry("system", "SHUTDOWN", "__sentinel__")
+
+
+def is_shutdown_sentinel(entry: LogEntry) -> bool:
+    return entry.message == "__sentinel__" and entry.level == "SHUTDOWN"
+
+
 # ---- LogManager 单例 ----
 
 class LogManager:
@@ -62,7 +71,7 @@ class LogManager:
     def __init__(self):
         self._buffer: deque[LogEntry] = deque(maxlen=self.MAX_BUFFER)
         self._lock = threading.Lock()
-        self._subscribers: list[asyncio.Queue[LogEntry]] = []
+        self._subscribers: list[queue.Queue[LogEntry]] = []
         self._subscribers_lock = threading.Lock()
         self._file_handler: RotatingFileHandler | None = None
         self._setup_done = False
@@ -155,14 +164,18 @@ class LogManager:
             )
             self._file_handler.emit(record)
 
-        # 通知 SSE 订阅者
+        # 通知 SSE 订阅者（使用线程安全的 queue.Queue）
         with self._subscribers_lock:
             dead: list[int] = []
             for i, q in enumerate(self._subscribers):
                 try:
                     q.put_nowait(entry)
-                except asyncio.QueueFull:
-                    dead.append(i)
+                except queue.Full:
+                    try:
+                        q.get_nowait()  # 丢弃最旧条目
+                        q.put_nowait(entry)
+                    except (queue.Empty, queue.Full):
+                        dead.append(i)
             for i in reversed(dead):
                 self._subscribers.pop(i)
 
@@ -231,14 +244,14 @@ class LogManager:
 
     # ---- SSE 订阅者管理 ----
 
-    def subscribe(self) -> asyncio.Queue[LogEntry]:
-        """注册一个 SSE 订阅者，返回其消息队列"""
-        q: asyncio.Queue[LogEntry] = asyncio.Queue(maxsize=256)
+    def subscribe(self) -> queue.Queue[LogEntry]:
+        """注册一个 SSE 订阅者，返回其消息队列（线程安全）"""
+        q: queue.Queue[LogEntry] = queue.Queue(maxsize=256)
         with self._subscribers_lock:
             self._subscribers.append(q)
         return q
 
-    def unsubscribe(self, q: asyncio.Queue[LogEntry]):
+    def unsubscribe(self, q: queue.Queue[LogEntry]):
         """移除 SSE 订阅者"""
         with self._subscribers_lock:
             try:
@@ -247,11 +260,17 @@ class LogManager:
                 pass
 
     def shutdown(self):
-        """关闭日志系统"""
+        """关闭日志系统，向所有订阅者推送终止信号以解除阻塞"""
         if self._file_handler:
             self._file_handler.close()
             self._file_handler = None
         with self._subscribers_lock:
+            # 向每个队列放入终止哨兵，解除阻塞在 q.get() 上的线程
+            for q in self._subscribers:
+                try:
+                    q.put_nowait(_SHUTDOWN_SENTINEL)
+                except queue.Full:
+                    pass
             self._subscribers.clear()
         self._setup_done = False
 

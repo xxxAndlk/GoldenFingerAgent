@@ -4,7 +4,7 @@
 """
 
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -78,10 +78,15 @@ class SQLiteStore:
         )
         self.conn.commit()
 
-    def load_host_profile(self) -> HostProfile | None:
-        row = self.conn.execute(
-            "SELECT data FROM host_profile ORDER BY updated_at DESC LIMIT 1"
-        ).fetchone()
+    def load_host_profile(self, host_id: str = "") -> HostProfile | None:
+        if host_id:
+            row = self.conn.execute(
+                "SELECT data FROM host_profile WHERE host_id = ?", (host_id,)
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT data FROM host_profile ORDER BY updated_at DESC LIMIT 1"
+            ).fetchone()
         if row:
             return HostProfile.model_validate_json(row["data"])
         return None
@@ -91,7 +96,7 @@ class SQLiteStore:
     def save_execution_report(self, report: ExecutionReport, original_query: str = ""):
         self.conn.execute(
             "INSERT OR REPLACE INTO execution_logs (execution_id, plan_id, original_query, report_json, created_at) VALUES (?, ?, ?, ?, ?)",
-            (report.execution_id, report.plan_id, original_query, report.model_dump_json(), __import__('datetime').datetime.now().isoformat())  # noqa
+            (report.execution_id, report.plan_id, original_query, report.model_dump_json(), datetime.now(timezone.utc).isoformat())  # noqa
         )
         self.conn.commit()
 
@@ -116,7 +121,7 @@ class SQLiteStore:
     def save_skill_meta(self, manifest: SkillManifest):
         self.conn.execute(
             "INSERT OR REPLACE INTO skill_meta (skill_name, manifest_json, updated_at) VALUES (?, ?, ?)",
-            (manifest.name, manifest.model_dump_json(), __import__('datetime').datetime.now().isoformat())  # noqa
+            (manifest.name, manifest.model_dump_json(), datetime.now(timezone.utc).isoformat())  # noqa
         )
         self.conn.commit()
 

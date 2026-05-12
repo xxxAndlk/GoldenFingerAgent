@@ -9,6 +9,7 @@ from ..models import (
     KnowledgeEntry,
     RealmLevel,
     SpiritRoot,
+    TriggerCondition,
 )
 
 
@@ -24,6 +25,11 @@ class BaseSkill(ABC):
     tools_required: list[str] = []
     SYSTEM_PROMPT: str = ""
 
+    # 自动触发 (superpowers 概念)
+    trigger_conditions: list[TriggerCondition] = []
+    mandatory: bool = False
+    trigger_priority: int = 50
+
     def __init__(self):
         self.manifest = SkillManifest(
             name=self.name,
@@ -32,9 +38,9 @@ class BaseSkill(ABC):
             category=self.category,
             realm_requirement=self.realm_requirement,
             tools_required=self.tools_required,
-            trigger_conditions=getattr(self.__class__, "trigger_conditions", []),
-            mandatory=getattr(self.__class__, "mandatory", False),
-            trigger_priority=getattr(self.__class__, "trigger_priority", 50),
+            trigger_conditions=self.trigger_conditions,
+            mandatory=self.mandatory,
+            trigger_priority=self.trigger_priority,
         )
         self.state = SkillState.UNLOCKED
         self.level = 0

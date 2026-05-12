@@ -149,12 +149,10 @@ class Sandbox:
             r"<script.*?>",           # XSS
             r"javascript:",           # JS 协议
             r"data:text/html",        # data URI
-            r"@@",                    # Jinja2 注入
-            r"\$\{.*?\}",            # 模板注入
-            r"\{\{.*?\}\}",          # Jinja2 模板
-            r"DROP\s+TABLE",          # SQL 注入（简化检测）
-            r"UNION\s+SELECT",        # SQL 注入
-            r"1\s*=\s*1",            # SQL 注入
+            r"\{\{.*?\}\}",          # Jinja2 模板语法
+            r"\$\{.*?\}",            # 模板注入（排除代码示例中的正常使用）
+            r"DROP\s+TABLE\b",        # SQL DROP（完整词边界）
+            r"UNION\s+SELECT\b",      # SQL UNION（完整词边界）
         ]
 
         for sig in injection_signatures:

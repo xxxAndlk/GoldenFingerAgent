@@ -9,7 +9,7 @@
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -21,11 +21,11 @@ from pydantic import BaseModel, Field
 # ============================================================
 
 def new_id() -> str:
-    return uuid.uuid4().hex[:12]
+    return uuid.uuid4().hex[:16]
 
 
 def now_iso() -> str:
-    return datetime.now().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 # ============================================================

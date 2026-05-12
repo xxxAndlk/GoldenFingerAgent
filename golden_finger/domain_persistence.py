@@ -10,8 +10,6 @@
 5. 知识图谱更新
 """
 
-import json
-import re
 from typing import Any
 
 from .models import (
@@ -23,6 +21,7 @@ from .llm import LLMClient
 from .skills.registry import skill_registry
 from .storage.vector_store import vector_store
 from .storage.sqlite_store import SQLiteStore
+from .utils import parse_json
 
 
 # ============================================================
@@ -86,7 +85,7 @@ class ExecutionSummarizer:
                 max_tokens=800,
             )
             text = self.llm.extract_text(resp)
-            data = self._parse_json(text)
+            data = parse_json(text)
 
             return ExecutionSummary(
                 execution_id=report.execution_id,
@@ -108,21 +107,6 @@ class ExecutionSummarizer:
                 what_was_done=f"处理了: {query[:100]}",
                 tools_used=[log.tool_name for log in report.tool_call_logs],
             )
-
-    @staticmethod
-    def _parse_json(text: str) -> dict[str, Any]:
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-        match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(1))
-            except json.JSONDecodeError:
-                pass
-        return {}
-
 
 # ============================================================
 # Skill 缺口分析
@@ -303,24 +287,26 @@ class ProfileUpdater:
     def _check_realm_breakthrough(self, profile: HostProfile):
         """检查是否满足突破条件"""
         thresholds = {
-            0: 5,    # 凡人 → 练气: 5个任务
-            1: 20,   # 练气 → 筑基: 20个任务
-            2: 50,   # 筑基 → 金丹: 50个任务
-            3: 150,  # 金丹 → 元婴: 150个任务
-            4: 400,  # 元婴 → 化神: 400个任务
+            0: 5,     # 凡人 → 练气: 5个任务
+            1: 20,    # 练气 → 筑基: 20个任务
+            2: 50,    # 筑基 → 金丹: 50个任务
+            3: 150,   # 金丹 → 元婴: 150个任务
+            4: 400,   # 元婴 → 化神: 400个任务
+            5: 1000,  # 化神 → 渡劫: 1000个任务
+            6: 2500,  # 渡劫 → 大乘: 2500个任务
+            7: 6000,  # 大乘 → 真仙: 6000个任务
         }
 
         current = profile.realm.value
         if current in thresholds and profile.total_tasks_completed >= thresholds[current]:
-            if current < 8:  # 最高境界
-                profile.realm = type(profile.realm)(current + 1)
-                profile.realm_progress = 0
-                profile.breakthrough_history.append({
-                    "from_realm": current,
-                    "to_realm": current + 1,
-                    "at_tasks": profile.total_tasks_completed,
-                    "timestamp": now_iso(),
-                })
+            profile.realm = type(profile.realm)(current + 1)
+            profile.realm_progress = 0
+            profile.breakthrough_history.append({
+                "from_realm": current,
+                "to_realm": current + 1,
+                "at_tasks": profile.total_tasks_completed,
+                "timestamp": now_iso(),
+            })
 
 
 # ============================================================

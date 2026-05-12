@@ -25,8 +25,11 @@ class BaseTool(ABC):
     description: str = ""
     parameters: dict[str, Any] = {}
 
+    REQUIRED: list[str] = []  # 子类覆盖：必须提供的参数名列表
+
     def to_openai_schema(self) -> dict[str, Any]:
         """转为 OpenAI function calling 格式"""
+        required = self.REQUIRED or list(self.parameters.keys())
         return {
             "type": "function",
             "function": {
@@ -35,19 +38,19 @@ class BaseTool(ABC):
                 "parameters": {
                     "type": "object",
                     "properties": self.parameters,
-                    "required": list(self.parameters.keys()),
+                    "required": required,
                 }
             }
         }
 
     @abstractmethod
-    async def execute(self, **kwargs: str) -> ToolResult:
+    async def execute(self, **kwargs) -> ToolResult:
         """执行工具，子类实现"""
         ...
 
-    def validate_params(self, **kwargs: str) -> str | None:
-        """校验参数，返回错误信息或 None"""
-        for key in self.parameters:
+    def validate_params(self, **kwargs) -> str | None:
+        """校验参数，返回错误信息或 None（仅检查 REQUIRED 中的参数）"""
+        for key in (self.REQUIRED or self.parameters):
             if key not in kwargs:
                 return f"缺少必要参数: {key}"
         return None

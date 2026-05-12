@@ -127,7 +127,9 @@ class GoldenFingerHarness:
                 result["persistence"] = persist_result
 
                 # 重新加载画像以获取更新后的数据
-                self.host_profile = self.store.load_host_profile()
+                self.host_profile = self.store.load_host_profile(
+                    self.host_profile.host_id
+                )
 
             return result
 

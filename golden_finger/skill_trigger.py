@@ -256,18 +256,18 @@ class SkillAutoTrigger:
         mandatory: list[tuple[str, str, int]] = []  # (name, reason, priority)
         recommended: list[tuple[str, str, int]] = []
 
-        # 推断缺失的上下文
-        if ctx.task_type is None:
-            ctx.task_type = DomainTagger.infer_task_type(ctx.query_text)
-        if not ctx.domain_tags or ctx.domain_tags == {"general"}:
-            ctx.domain_tags = DomainTagger.tag(ctx.query_text)
+        # 推断缺失的上下文（使用本地变量，不修改输入的 TriggerContext）
+        task_type = ctx.task_type or DomainTagger.infer_task_type(ctx.query_text)
+        domain_tags = ctx.domain_tags
+        if not domain_tags or domain_tags == {"general"}:
+            domain_tags = DomainTagger.tag(ctx.query_text)
 
         for trigger_def in self._triggers.values():
             for rule in trigger_def.rules:
                 if rule.matches(
-                    task_type=ctx.task_type,
+                    task_type=task_type,
                     context_state=ctx.context_state,
-                    domain_tags=ctx.domain_tags,
+                    domain_tags=domain_tags,
                     query_text=ctx.query_text,
                     realm=ctx.realm,
                 ):
@@ -497,108 +497,6 @@ def build_default_triggers() -> SkillAutoTrigger:
         mandatory=False,
         priority=40,
         description="创建新技能时推荐使用技能编写指南",
-    )
-
-    # ---- SDD 工作流触发 (spec-kit + OpenSpec) ----
-
-    engine.register(
-        "sdd-constitution",
-        rules=[
-            TriggerRule(
-                keyword_patterns=["项目原则", "constitution", "宪章", "治理", "规范"],
-                context_states=[ContextState.CLEAN_SLATE],
-            ),
-        ],
-        mandatory=False,
-        priority=30,
-        description="项目初始化时建议建立宪章",
-    )
-
-    engine.register(
-        "sdd-specify",
-        rules=[
-            TriggerRule(
-                task_types=[TaskType.PLAN, TaskType.CODE],
-                context_states=[ContextState.CLEAN_SLATE],
-                keyword_patterns=["新功能", "添加", "实现", "开发", "feature", "功能"],
-            ),
-        ],
-        mandatory=True,
-        priority=85,
-        description="新功能开发必须先生成规格文档",
-    )
-
-    engine.register(
-        "sdd-clarify",
-        rules=[
-            TriggerRule(
-                task_types=[TaskType.PLAN],
-                keyword_patterns=["不确定", "可能", "或者", "选项", "哪种", "怎么选"],
-            ),
-        ],
-        mandatory=False,
-        priority=75,
-        description="需求模糊时建议澄清",
-    )
-
-    engine.register(
-        "sdd-plan",
-        rules=[
-            TriggerRule(task_types=[TaskType.PLAN]),
-            TriggerRule(
-                keyword_patterns=["技术方案", "实现方案", "架构设计", "plan"],
-                context_states=[ContextState.CLEAN_SLATE],
-            ),
-        ],
-        mandatory=True,
-        priority=80,
-        description="技术规划任务必须生成 plan.md",
-    )
-
-    engine.register(
-        "sdd-tasks",
-        rules=[
-            TriggerRule(task_types=[TaskType.PLAN]),
-            TriggerRule(keyword_patterns=["分解", "任务", "步骤", "拆解"]),
-        ],
-        mandatory=True,
-        priority=75,
-        description="计划完成后必须分解为任务清单",
-    )
-
-    engine.register(
-        "sdd-implement",
-        rules=[
-            TriggerRule(task_types=[TaskType.CODE]),
-            TriggerRule(keyword_patterns=["实现", "执行", "implement", "apply"]),
-        ],
-        mandatory=False,
-        priority=50,
-        description="按 tasks.md 执行实现",
-    )
-
-    engine.register(
-        "sdd-propose",
-        rules=[
-            TriggerRule(
-                task_types=[TaskType.PLAN, TaskType.CODE],
-                context_states=[ContextState.CLEAN_SLATE],
-                keyword_patterns=["变更", "修改", "改", "重构", "优化", "升级"],
-            ),
-        ],
-        mandatory=False,
-        priority=80,
-        description="变更类任务推荐使用 propose 生成变更提案",
-    )
-
-    engine.register(
-        "sdd-archive",
-        rules=[
-            TriggerRule(context_states=[ContextState.AFTER_IMPLEMENTATION]),
-        ],
-        mandatory=True,
-        priority=60,
-        description="变更完成后必须归档",
     )
 
     return engine

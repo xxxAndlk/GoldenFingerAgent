@@ -10,7 +10,6 @@
 5. 返回 TaskPlan
 """
 
-import json
 import logging
 import os
 from typing import Any
@@ -23,6 +22,7 @@ from .llm import LLMClient
 from .skills.registry import skill_registry
 from .skill_trigger import trigger_engine, TriggerContext, DomainTagger, ContextState
 from .domain_isolation import EgressAnonymizer
+from .utils import parse_json
 
 logger = logging.getLogger("golden_finger.domain_analysis")
 
@@ -59,8 +59,7 @@ class IntentClassifier:
                 max_tokens=300,
             )
             text = self.llm.extract_text(resp)
-            # 尝试提取 JSON
-            result = self._parse_json(text)
+            result = parse_json(text, default={"complexity": "simple_qa", "summary": text[:50]})
             return result
         except Exception:
             return {
@@ -69,24 +68,6 @@ class IntentClassifier:
                 "estimated_steps": 1,
                 "summary": query[:50],
             }
-
-    @staticmethod
-    def _parse_json(text: str) -> dict[str, Any]:
-        """从 LLM 回复中提取 JSON"""
-        # 尝试直接解析
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-        # 尝试提取 ```json ... ``` 块
-        import re
-        match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(1))
-            except json.JSONDecodeError:
-                pass
-        return {"complexity": "simple_qa", "summary": text[:50]}
 
 
 # ============================================================
@@ -144,7 +125,7 @@ class TaskDecomposer:
                 max_tokens=2000,
             )
             text = self.llm.extract_text(resp)
-            data = self._parse_json(text)
+            data = parse_json(text, default={"tasks": [{"description": query}]})
         except Exception:
             task = AtomTask(description=query, prompt=query)
             return [task], [[task.task_id]]
@@ -219,21 +200,6 @@ class TaskDecomposer:
         if any(kw in desc for kw in ["密码", "密钥", "隐私", "账号"]):
             return 0
         return 1
-
-    @staticmethod
-    def _parse_json(text: str) -> dict[str, Any]:
-        import re
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-        match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(1))
-            except json.JSONDecodeError:
-                pass
-        return {"tasks": [{"description": "处理用户请求"}]}
 
 
 # ============================================================
@@ -371,10 +337,9 @@ class PlanGenerator:
         # 对于没有匹配到 skill 的任务，尝试用强制触发的 skill 补充
         for task in tasks:
             if task.matched_skill is None and mandatory_skills:
-                # 使用第一个强制触发的 skill
                 task.matched_skill = mandatory_skills[0]
-            if task.dispatch_mode == "sync" and is_multi:
-                # 多任务场景建议异步
+            if task.dispatch_mode == "sync" and is_multi and not task.depends_on:
+                # 只有无依赖的任务才自动切换为异步
                 task.dispatch_mode = "async"
 
         # 5. 提示词组合
