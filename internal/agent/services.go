@@ -5,6 +5,7 @@ import (
 
 	"goldenfinger/agent/internal/compliance"
 	"goldenfinger/agent/internal/extsvc"
+	"goldenfinger/agent/internal/intent"
 	"goldenfinger/agent/internal/memory"
 	"goldenfinger/agent/internal/nlu"
 	"goldenfinger/agent/internal/store"
@@ -16,6 +17,7 @@ import (
 type ToolServices struct {
 	Memory  *memory.Service
 	Tasks   *task.Service
+	Intents *intent.Service
 	Weather extsvc.WeatherService
 	Guard   *compliance.Guard
 	Repos   *store.Repos

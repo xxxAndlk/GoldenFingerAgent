@@ -18,6 +18,7 @@ import (
 	"goldenfinger/agent/internal/extsvc"
 	"goldenfinger/agent/internal/extsvc/stub"
 	"goldenfinger/agent/internal/httpapi"
+	"goldenfinger/agent/internal/intent"
 	"goldenfinger/agent/internal/llm/openai"
 	"goldenfinger/agent/internal/memory"
 	"goldenfinger/agent/internal/nlu"
@@ -104,9 +105,11 @@ func main() {
 	sched = scheduler.New(repos, policy, dispatcher, tasksSvc, cfg.Scheduler.TickInterval, cfg.Digest.Time, nil)
 
 	// ---- agent runtime ----
+	intentsSvc := intent.NewService(repos.Intents, repos.Audit, nil)
 	svcs := &agent.ToolServices{
 		Memory:  mem,
 		Tasks:   tasksSvc,
+		Intents: intentsSvc,
 		Weather: weather,
 		Guard:   guard,
 		Repos:   repos,

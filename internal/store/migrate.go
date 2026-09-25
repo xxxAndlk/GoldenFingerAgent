@@ -12,13 +12,25 @@ import (
 	"goldenfinger/agent/migrations"
 )
 
+// migrateLockKey serializes schema changes across processes (test suites run
+// Migrate concurrently; CREATE TABLE races on pg_type otherwise).
+const migrateLockKey = 872034721
+
 // Migrate applies pending *.sql files from migrations.FS in filename order.
 // Each file runs once; applied names are tracked in schema_migrations.
 func (d *DB) Migrate(ctx context.Context) ([]string, error) {
-	if _, err := d.Pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-		name TEXT PRIMARY KEY,
-		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-	)`); err != nil {
+	// Create the bookkeeping table under the advisory lock (IF NOT EXISTS
+	// alone still races on the table's composite type).
+	if err := d.WithTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLockKey); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+			name TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`)
+		return err
+	}); err != nil {
 		return nil, fmt.Errorf("create schema_migrations: %w", err)
 	}
 
@@ -36,19 +48,26 @@ func (d *DB) Migrate(ctx context.Context) ([]string, error) {
 
 	var applied []string
 	for _, name := range names {
-		var exists bool
-		if err := d.Pool.QueryRow(ctx,
-			`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = $1)`, name).Scan(&exists); err != nil {
-			return applied, err
-		}
-		if exists {
-			continue
-		}
 		raw, err := fs.ReadFile(migrations.FS, name)
 		if err != nil {
 			return applied, err
 		}
+		// Lock + existence re-check inside one tx: a concurrent migrator that
+		// lost the lock race sees the row and skips.
+		done := false
 		if err := d.WithTx(ctx, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLockKey); err != nil {
+				return err
+			}
+			var exists bool
+			if err := tx.QueryRow(ctx,
+				`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = $1)`, name).Scan(&exists); err != nil {
+				return err
+			}
+			if exists {
+				done = true
+				return nil
+			}
 			if _, err := tx.Exec(ctx, string(raw)); err != nil {
 				return fmt.Errorf("apply %s: %w", name, err)
 			}
@@ -57,7 +76,9 @@ func (d *DB) Migrate(ctx context.Context) ([]string, error) {
 		}); err != nil {
 			return applied, err
 		}
-		applied = append(applied, name)
+		if !done {
+			applied = append(applied, name)
+		}
 	}
 	return applied, nil
 }

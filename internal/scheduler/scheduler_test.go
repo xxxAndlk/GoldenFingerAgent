@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -209,5 +210,50 @@ func TestCancelClearsPendingReminders(t *testing.T) {
 		if r.State == store.ReminderPending {
 			t.Error("pending reminders must be cancelled with the task")
 		}
+	}
+}
+
+func TestDigestIncludesInferredMemoryAndStaysQuiet(t *testing.T) {
+	cst := time.FixedZone("CST", 8*3600)
+	fixed := time.Date(2026, 3, 5, 11, 0, 0, 0, cst)
+	repos, sched, dispatch, u := setup(t, func() time.Time { return fixed })
+	ctx := context.Background()
+
+	// Nothing to decide → no digest (仅在需决策时打扰).
+	if err := sched.sendDigest(ctx, *u, fixed); err != nil {
+		t.Fatal(err)
+	}
+	if dispatch.count() != 0 {
+		t.Fatalf("digest must stay quiet with nothing to decide, sent %d", dispatch.count())
+	}
+
+	// An inferred fact awaiting confirmation IS a decision → digest mentions it.
+	p := &store.Person{OwnerUserID: u.ID, CanonicalName: "张阿姨"}
+	if err := repos.Persons.Create(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := repos.Facts.Insert(ctx, &store.Fact{
+		PersonID: p.ID, FactType: "family", ValueText: "女儿在上海",
+		Confidence: 0.7, Status: store.FactInferred,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sched.sendDigest(ctx, *u, fixed); err != nil {
+		t.Fatal(err)
+	}
+	if dispatch.count() != 1 {
+		t.Fatalf("want 1 digest, got %d", dispatch.count())
+	}
+	body := dispatch.sent[0]
+	if !strings.Contains(body, "记忆待确认") || !strings.Contains(body, "张阿姨") || !strings.Contains(body, "女儿在上海") {
+		t.Errorf("digest must carry the inferred fact, got %q", body)
+	}
+
+	// Idempotent: same day digest not re-sent.
+	if err := sched.sendDigest(ctx, *u, fixed); err != nil {
+		t.Fatal(err)
+	}
+	if dispatch.count() != 1 {
+		t.Errorf("digest must be one-per-day, got %d", dispatch.count())
 	}
 }

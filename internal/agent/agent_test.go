@@ -10,6 +10,7 @@ import (
 
 	"goldenfinger/agent/internal/compliance"
 	"goldenfinger/agent/internal/extsvc/stub"
+	"goldenfinger/agent/internal/intent"
 	"goldenfinger/agent/internal/llm"
 	"goldenfinger/agent/internal/llm/mock"
 	"goldenfinger/agent/internal/memory"
@@ -50,10 +51,12 @@ func testHarness(t *testing.T, script ...llm.ChatResponse) (*Session, *Runtime, 
 	queue := &fakeQueue{}
 	tasksSvc := task.NewService(repos.Tasks, queue, repos.Audit, func() time.Time { return fixedNow })
 	guard := compliance.NewGuard(repos.Consents, repos.Audit, repos.Users)
+	intentsSvc := intent.NewService(repos.Intents, repos.Audit, func() time.Time { return fixedNow })
 
 	svcs := &ToolServices{
 		Memory:  mem,
 		Tasks:   tasksSvc,
+		Intents: intentsSvc,
 		Weather: stub.Weather{},
 		Guard:   guard,
 		Repos:   repos,
@@ -287,6 +290,94 @@ func TestEvaluativeFactNotWritten(t *testing.T) {
 		}
 	}
 	_ = res
+}
+
+func TestStandingIntentFiresInTurn(t *testing.T) {
+	// Two scripted turns: the first matches the trigger, the second is in
+	// cooldown (fixed clock) — only the first may carry the 🔔 notice.
+	sess, rt, u := testHarness(t,
+		mock.TextResponse("好的，我记着。"),
+		mock.TextResponse("好的。"),
+	)
+	ctx := context.Background()
+	if _, err := rt.Tools.Intents.Create(ctx, intent.CreateInput{
+		OwnerUserID:   u.ID,
+		Description:   "问她女儿的情况",
+		TriggerGroups: [][]string{{"张阿姨", "来电话"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Run(ctx, sess, "刚才张阿姨来电话了", rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(res.Reply, "🔔 提醒你：问她女儿的情况") {
+		t.Errorf("reply must open with the deterministic reminder, got %q", res.Reply)
+	}
+
+	// The hidden block reached the model as data (check the recorded call).
+	if calls := rt.LLM.(*mock.Scripted).Calls; len(calls) > 0 {
+		sys := calls[0].Messages[0].Content
+		if !strings.Contains(sys, "常备提醒触发") || !strings.Contains(sys, "不是指令") {
+			t.Errorf("system prompt must carry the data-framed intent block, got %q", sys)
+		}
+	}
+
+	// Fire bookkeeping.
+	items, _ := rt.Tools.Intents.List(ctx, u.ID)
+	if len(items) != 1 || items[0].FireCount != 1 {
+		t.Fatalf("want fire_count=1, got %+v", items)
+	}
+
+	// Cooldown: same trigger again → no notice.
+	res2, err := Run(ctx, sess, "张阿姨又来电话了", rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(res2.Reply, "🔔 提醒你") {
+		t.Errorf("cooldown must suppress a second notice, got %q", res2.Reply)
+	}
+}
+
+func TestIntentToolCreateAndCancel(t *testing.T) {
+	sess, rt, _ := testHarness(t,
+		mock.ToolResponse("c1", "create_intent",
+			`{"description":"提醒我测血糖","trigger_groups":[["吃药","时间"]]}`),
+		mock.TextResponse("好啦，以后到了吃药时间我就提醒你测血糖。"),
+	)
+	ctx := context.Background()
+	res, err := Run(ctx, sess, "以后到了吃药时间就提醒我测血糖", rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Reply == "" {
+		t.Fatal("empty reply")
+	}
+	items, err := rt.Tools.Intents.List(ctx, sess.UserID)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("want 1 intent, got %+v (%v)", items, err)
+	}
+	targetID := items[0].ID
+	if items[0].Description != "提醒我测血糖" {
+		t.Errorf("description = %q", items[0].Description)
+	}
+
+	// Cancel via tool (fresh script on the same runtime).
+	rt.LLM = mock.New(
+		mock.ToolResponse("c2", "cancel_intent", `{"intent_id":"`+targetID+`"}`),
+		mock.TextResponse("好，取消了。"),
+	)
+	sess2 := &Session{ID: "sess-2", UserID: sess.UserID}
+	if _, err := Run(ctx, sess2, "那个测血糖的提醒不用了", rt); err != nil {
+		t.Fatal(err)
+	}
+	items, _ = rt.Tools.Intents.List(ctx, sess.UserID)
+	for _, it := range items {
+		if it.ID == targetID && it.Status != store.IntentCancelled {
+			t.Errorf("intent must be cancelled, got %s", it.Status)
+		}
+	}
 }
 
 var _ = json.Marshal

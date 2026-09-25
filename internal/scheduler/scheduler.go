@@ -258,6 +258,12 @@ func (s *DBScheduler) sendDigest(ctx context.Context, u store.User, local time.T
 	if err != nil {
 		return err
 	}
+	// Inferred memories awaiting confirmation are decisions too (memory
+	// consolidation review — the "dreaming" ask-the-owner lane).
+	inferred, err := s.repos.Facts.ListInferredCurrent(ctx, u.ID)
+	if err != nil {
+		return err
+	}
 	// Only bother the user when a decision is needed (doc F3).
 	var lines []string
 	for _, t := range pending {
@@ -267,6 +273,9 @@ func (s *DBScheduler) sendDigest(ctx context.Context, u store.User, local time.T
 		if t.Deadline != nil && t.Deadline.Before(local.Add(24*time.Hour)) {
 			lines = append(lines, fmt.Sprintf("· 今天截止：%s", task.Title(&t)))
 		}
+	}
+	for _, f := range inferred {
+		lines = append(lines, fmt.Sprintf("· 记忆待确认：%s —— %s（说「对」确认或「不对」纠正）", f.PersonName, f.ValueText))
 	}
 	if len(lines) == 0 {
 		return nil // 仅在需决策时打扰

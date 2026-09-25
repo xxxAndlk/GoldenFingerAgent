@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"goldenfinger/agent/internal/intent"
 	"goldenfinger/agent/internal/llm"
 	"goldenfinger/agent/internal/memory"
 	"goldenfinger/agent/internal/nlu"
@@ -744,6 +745,133 @@ func taskTitle(t *store.Task) string {
 	return t.TimeExprRaw
 }
 
+// ---- create_intent / list_intents / cancel_intent ----
+// Standing intents: event-conditioned reminders ("当……时提醒我"). Time-based
+// reminders belong to create_task/set_alarm — not here.
+
+type createIntentArgs struct {
+	Description   string     `json:"description"`
+	TriggerGroups [][]string `json:"trigger_groups"`
+	MaxFires      int        `json:"max_fires"`
+	CooldownHours int        `json:"cooldown_hours"`
+	ExpiresInDays int        `json:"expires_in_days"`
+}
+
+type createIntentTool struct{}
+
+func (createIntentTool) Spec() llm.ToolSpec {
+	return toolSpec("create_intent", `创建"事件触发"的常备提醒：以后当某件事出现时提醒用户（如"张阿姨来电话时提醒我问她女儿"）。
+trigger_groups 是"或"的条件组，组内所有词都出现在一句话里才触发：例如 [["张阿姨","来电话"],["张妈","电话"]]。
+固定时间的提醒用 create_task 或 set_alarm，不要用这个。愿望/目标类（"这季度想…"）存进记忆即可。`,
+		map[string]any{
+			"description":     map[string]any{"type": "string", "description": "触发时要提醒用户什么，如\"问她女儿的情况\""},
+			"trigger_groups":  map[string]any{"type": "array", "items": map[string]any{"type": "array", "items": map[string]any{"type": "string"}}, "description": "条件组数组（或的关系），组内为且的关系"},
+			"max_fires":       map[string]any{"type": "integer", "description": "最多触发几次，默认 3"},
+			"cooldown_hours":  map[string]any{"type": "integer", "description": "触发后多久内不重复提醒，默认 24 小时"},
+			"expires_in_days": map[string]any{"type": "integer", "description": "多少天后自动过期，默认 90"},
+		}, "description", "trigger_groups")
+}
+
+func (createIntentTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error) {
+	var a createIntentArgs
+	if err := decodeArgs(args, &a); err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	svcs := tc.Runtime.Tools
+	u, err := userOf(tc)
+	if err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	it, err := svcs.Intents.Create(ctx, intent.CreateInput{
+		OwnerUserID:   u.ID,
+		Description:   a.Description,
+		TriggerGroups: a.TriggerGroups,
+		MaxFires:      a.MaxFires,
+		Cooldown:      time.Duration(a.CooldownHours) * time.Hour,
+		ExpiresIn:     time.Duration(a.ExpiresInDays) * 24 * time.Hour,
+	})
+	if err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	return ToolResult{
+		Status: StatusOK,
+		Data: map[string]any{
+			"intent_id":  it.ID,
+			"status":     it.Status,
+			"expires_at": it.ExpiresAt.Format("2006-01-02"),
+			"message":    "已记下：以后" + triggerPhrase(it.TriggerGroups) + "时，我会提醒你" + it.Description + "。",
+		},
+	}, nil
+}
+
+// triggerPhrase renders groups as 「A 且 B / C 且 D」 for the confirmation text.
+func triggerPhrase(groups [][]string) string {
+	parts := make([]string, 0, len(groups))
+	for _, g := range groups {
+		parts = append(parts, strings.Join(g, "且"))
+	}
+	return strings.Join(parts, "，或")
+}
+
+type listIntentsTool struct{}
+
+func (listIntentsTool) Spec() llm.ToolSpec {
+	return toolSpec("list_intents", "列出用户的常备提醒（\"当……时提醒我\"类）。用户问\"你都答应提醒我什么\"时使用。", map[string]any{})
+}
+
+func (listIntentsTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error) {
+	svcs := tc.Runtime.Tools
+	u, err := userOf(tc)
+	if err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	items, err := svcs.Intents.List(ctx, u.ID)
+	if err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	type item struct {
+		ID          string     `json:"id"`
+		Description string     `json:"description"`
+		Triggers    [][]string `json:"trigger_groups"`
+		Status      string     `json:"status"`
+		FireCount   int        `json:"fire_count"`
+		MaxFires    int        `json:"max_fires"`
+	}
+	out := make([]item, 0, len(items))
+	for _, it := range items {
+		out = append(out, item{ID: it.ID, Description: it.Description, Triggers: it.TriggerGroups,
+			Status: it.Status, FireCount: it.FireCount, MaxFires: it.MaxFires})
+	}
+	return ToolResult{Status: StatusOK, Data: map[string]any{"intents": out}}, nil
+}
+
+type cancelIntentArgs struct {
+	IntentID string `json:"intent_id"`
+}
+
+type cancelIntentTool struct{}
+
+func (cancelIntentTool) Spec() llm.ToolSpec {
+	return toolSpec("cancel_intent", "取消一条常备提醒（用户明确说\"不用提醒了\"\"取消那个约定\"时）。取消必须显式，不要自行推断。",
+		map[string]any{"intent_id": map[string]any{"type": "string"}}, "intent_id")
+}
+
+func (cancelIntentTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error) {
+	var a cancelIntentArgs
+	if err := decodeArgs(args, &a); err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	svcs := tc.Runtime.Tools
+	u, err := userOf(tc)
+	if err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	if err := svcs.Intents.Cancel(ctx, u.ID, a.IntentID); err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	return ToolResult{Status: StatusOK, Data: map[string]any{"message": "已取消这条常备提醒。"}}, nil
+}
+
 // ---- get_weather ----
 
 type weatherArgs struct {
@@ -796,6 +924,9 @@ func DefaultTools() []Tool {
 		forgetTool{},
 		updateTaskTool{},
 		listTasksTool{},
+		createIntentTool{},
+		listIntentsTool{},
+		cancelIntentTool{},
 		weatherTool{},
 	}
 }

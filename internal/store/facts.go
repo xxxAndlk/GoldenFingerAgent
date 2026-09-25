@@ -91,6 +91,41 @@ func scanFacts(rows pgx.Rows) ([]Fact, error) {
 	return out, rows.Err()
 }
 
+// InferredFact is a current inferred fact with its person name (digest prompts).
+type InferredFact struct {
+	Fact
+	PersonName string `json:"person_name"`
+}
+
+// ListInferredCurrent returns current inferred (not yet confirmed) facts —
+// the daily digest asks the user to confirm these (memory consolidation).
+func (r *FactRepo) ListInferredCurrent(ctx context.Context, ownerID string) ([]InferredFact, error) {
+	rows, err := r.q.Query(ctx, `
+		SELECT f.id, f.person_id, f.fact_type, f.value_text, f.confidence, f.status,
+			f.source_msg_id, f.valid_from, f.valid_to, f.created_at, f.updated_at, f.deleted_at,
+			p.canonical_name
+		FROM fact f JOIN person p ON p.id = f.person_id
+		WHERE p.owner_user_id = $1 AND p.deleted_at IS NULL
+		  AND f.deleted_at IS NULL AND f.valid_to IS NULL AND f.status = 'inferred'
+		ORDER BY f.created_at ASC
+		LIMIT 20`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []InferredFact
+	for rows.Next() {
+		var item InferredFact
+		if err := rows.Scan(&item.ID, &item.PersonID, &item.FactType, &item.ValueText, &item.Confidence, &item.Status,
+			&item.SourceMsgID, &item.ValidFrom, &item.ValidTo, &item.CreatedAt, &item.UpdatedAt, &item.DeletedAt,
+			&item.PersonName); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 // FindConflict returns current facts of the same (person, fact_type) with a different value.
 func (r *FactRepo) FindConflict(ctx context.Context, personID, factType, valueText string) ([]Fact, error) {
 	rows, err := r.q.Query(ctx, `

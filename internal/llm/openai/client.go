@@ -59,14 +59,14 @@ type respTool struct {
 }
 
 type responsesRequest struct {
-	Model           string       `json:"model"`
-	Instructions    string       `json:"instructions,omitempty"`
-	Input           []inputItem  `json:"input"`
-	Tools           []respTool   `json:"tools,omitempty"`
-	Temperature     float64      `json:"temperature,omitempty"`
-	MaxOutputTokens int          `json:"max_output_tokens,omitempty"`
-	Stream          bool         `json:"stream,omitempty"`
-	Text            *textSpec    `json:"text,omitempty"`
+	Model           string      `json:"model"`
+	Instructions    string      `json:"instructions,omitempty"`
+	Input           []inputItem `json:"input"`
+	Tools           []respTool  `json:"tools,omitempty"`
+	Temperature     float64     `json:"temperature,omitempty"`
+	MaxOutputTokens int         `json:"max_output_tokens,omitempty"`
+	Stream          bool        `json:"stream,omitempty"`
+	Text            *textSpec   `json:"text,omitempty"`
 }
 
 type textSpec struct {
@@ -76,10 +76,10 @@ type textSpec struct {
 }
 
 type outputItem struct {
-	Type      string `json:"type"` // "message" | "function_call" | ...
-	ID        string `json:"id"`
-	Role      string `json:"role"`
-	Content   []struct {
+	Type    string `json:"type"` // "message" | "function_call" | ...
+	ID      string `json:"id"`
+	Role    string `json:"role"`
+	Content []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`

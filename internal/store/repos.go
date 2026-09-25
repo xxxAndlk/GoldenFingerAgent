@@ -8,6 +8,7 @@ type Repos struct {
 	Tasks     *TaskRepo
 	Reminders *ReminderRepo
 	Episodes  *EpisodeRepo
+	Intents   *IntentRepo
 	Audit     *AuditRepo
 	Consents  *ConsentRepo
 	Sessions  *SessionRepo
@@ -22,6 +23,7 @@ func NewRepos(q Querier) *Repos {
 		Tasks:     NewTaskRepo(q),
 		Reminders: NewReminderRepo(q),
 		Episodes:  NewEpisodeRepo(q),
+		Intents:   NewIntentRepo(q),
 		Audit:     NewAuditRepo(q),
 		Consents:  NewConsentRepo(q),
 		Sessions:  NewSessionRepo(q),

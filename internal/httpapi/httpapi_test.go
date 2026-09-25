@@ -272,3 +272,71 @@ func TestMemoryEndpointsAndForget(t *testing.T) {
 		t.Error("forgotten person must not appear in the list")
 	}
 }
+
+func TestMemoryExportAndIntents(t *testing.T) {
+	srv, repos := newTestServer(t)
+	h := srv.Handler()
+	ctx := context.Background()
+
+	u := &store.User{UserType: store.UserGeneral, Name: "export-user", TZ: "Asia/Shanghai"}
+	if err := repos.Users.Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	p := &store.Person{OwnerUserID: u.ID, CanonicalName: "李叔叔"}
+	if err := repos.Persons.Create(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := repos.Facts.Insert(ctx, &store.Fact{
+		PersonID: p.ID, FactType: "hobby", ValueText: "爱下象棋",
+		Confidence: 0.9, Status: store.FactConfirmed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	it := &store.StandingIntent{
+		OwnerUserID: u.ID, Description: "问他棋局",
+		TriggerGroups: [][]string{{"李叔叔", "来"}}, Status: store.IntentArmed,
+		MaxFires: 3, CooldownSeconds: 86400,
+	}
+	if err := repos.Intents.Insert(ctx, it); err != nil {
+		t.Fatal(err)
+	}
+
+	// Markdown dossier: human-readable memory export.
+	req := httptest.NewRequest(http.MethodGet, "/api/memory/export.md", nil)
+	req.Header.Set("X-User-Id", u.ID)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("export: %d %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/markdown") {
+		t.Errorf("content-type = %q", ct)
+	}
+	for _, want := range []string{"李叔叔", "爱下象棋", "问他棋局", "认识的人", "常备提醒"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("export missing %q:\n%s", want, body)
+		}
+	}
+
+	// Intents list + explicit cancel.
+	req = httptest.NewRequest(http.MethodGet, "/api/intents", nil)
+	req.Header.Set("X-User-Id", u.ID)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "问他棋局") {
+		t.Fatalf("list intents: %d %s", rec.Code, rec.Body)
+	}
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/intents/"+it.ID, nil)
+	req.Header.Set("X-User-Id", u.ID)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("cancel intent: %d %s", rec.Code, rec.Body)
+	}
+	got, err := repos.Intents.Get(ctx, u.ID, it.ID)
+	if err != nil || got.Status != store.IntentCancelled {
+		t.Fatalf("want cancelled, got %+v (%v)", got, err)
+	}
+}
