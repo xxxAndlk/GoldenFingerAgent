@@ -1,0 +1,11 @@
+settings.json
+
+# build artifacts
+*.exe
+/server
+/migrate
+/bin/
+
+# local env
+.env
+*.local

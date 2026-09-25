@@ -1,0 +1,47 @@
+server:
+  addr: ":8080"
+  web_dir: "web"
+
+database:
+  url: "postgres://gfa:gfa@localhost:5433/gfa?sslmode=disable"
+
+# Chat model: OpenAI Responses protocol (POST {base_url}/responses).
+# api_key can be set here directly, via api_key_env (name of an env var),
+# via GFA_LLM_API_KEY, or at runtime from the web UI (设置 → saved to settings.json).
+llm:
+  base_url: "https://api.deepseek.com"
+  api_key: "sk-cd192990fc0d477fa56be68f46787867"
+  model: "deepseek-flash" # DeepSeek-V4.1-Flash; alternative: deepseek-v4-pro
+  temperature: 0.4
+  max_tokens: 2048
+
+# Self-hosted embedding gateway (OpenAI-compatible POST {base_url}/embeddings).
+embedder:
+  base_url: "http://120.26.102.114:11434/v1"
+  api_key: "" # required by the gateway; or set GFA_EMBED_API_KEY
+  model: "bge-m3"
+  dim: 1024
+
+thresholds:
+  task_auto: 0.85
+  task_clarify: 0.6
+  person_clarify: 0.8
+  fact_confirmed: 0.8
+
+dnd:
+  window: "22:00-07:00"
+  child_night_silence: true
+  urgent_breaks_dnd_for: ["elder", "general"]
+
+scheduler:
+  tick_interval: "30s"
+  ack_timeout: "30m"
+  max_level: 3
+  max_daily_push: 3
+
+digest:
+  time: "11:00"
+
+memory:
+  context_token_budget: 1500
+  recency_half_life: "720h"

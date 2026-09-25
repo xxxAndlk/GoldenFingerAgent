@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>金手指管家</title>
+<script src="/vendor/vue.global.prod.js"></script>
+<style>
+  :root {
+    --bg: #f5f1ea; --ink: #3a3530; --brand: #6b5d4f; --brand-2: #8a7a66;
+    --gold: #d9c9a8; --card: #fffdf8; --line: #e8dfd1; --muted: #9a8b77;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--ink); }
+  #app { height: 100vh; display: flex; flex-direction: column; }
+
+  header { background: var(--brand); color: #fff; padding: 12px 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; box-shadow: 0 2px 8px rgba(60,50,40,.15); position: relative; z-index: 5; }
+  header .title { font-size: 20px; font-weight: 700; }
+  header .sub { font-size: 12px; opacity: .85; }
+  header .spacer { flex: 1; }
+  header .hbtn { background: rgba(255,255,255,.18); border: none; color: #fff; padding: 8px 14px; border-radius: 10px; font-size: 14px; cursor: pointer; }
+  header .hbtn:hover { background: rgba(255,255,255,.3); }
+  header .hbtn.active { background: #fff; color: var(--brand); }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  #chatCol { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #messages { flex: 1; overflow-y: auto; padding: 16px; }
+  @media (min-width: 900px) { #messages { padding: 20px calc(50% - 380px); } }
+
+  .msg { max-width: 80%; margin-bottom: 14px; }
+  .msg .bubble { padding: 12px 16px; border-radius: 18px; font-size: 17px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; box-shadow: 0 1px 3px rgba(60,50,40,.08); }
+  .msg.user { margin-left: auto; }
+  .msg.user .bubble { background: var(--brand); color: #fff; border-bottom-right-radius: 6px; }
+  .msg.bot .bubble { background: #fff; border: 1px solid var(--line); border-bottom-left-radius: 6px; }
+  .msg.sys { max-width: 92%; }
+  .msg.sys .bubble { background: #fdf3d8; border: 1px solid #ecdcae; font-size: 15px; }
+  .msg .meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .msg.user .meta { text-align: right; }
+
+  details.trace { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  details.trace summary { cursor: pointer; user-select: none; }
+  details.trace .tlines { background: #fbf7ef; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-top: 4px; font-family: Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+
+  .card { background: var(--card); border: 2px solid var(--gold); border-radius: 14px; padding: 12px 14px; margin-top: 8px; box-shadow: 0 2px 6px rgba(60,50,40,.06); }
+  .card h4 { font-size: 16px; margin-bottom: 4px; }
+  .card .cbody { font-size: 14px; color: var(--brand-2); margin-bottom: 8px; }
+  .btn { border: none; border-radius: 10px; background: var(--brand); color: #fff; font-size: 15px; padding: 8px 16px; margin: 0 8px 4px 0; cursor: pointer; }
+  .btn:hover { background: var(--brand-2); }
+  .btn.ghost { background: #efe7da; color: var(--brand); }
+  .btn.danger { background: #c98f8f; }
+  .chips { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 8px; }
+  .chips .btn { border-radius: 999px; margin: 0; }
+
+  .typing { display: inline-flex; gap: 5px; }
+  .typing i { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); animation: blink 1.2s infinite; }
+  .typing i:nth-child(2) { animation-delay: .2s; }
+  .typing i:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%,80%,100% { opacity: .3 } 40% { opacity: 1 } }
+
+  #inputbar { display: flex; gap: 10px; padding: 12px 16px; background: #fff; border-top: 1px solid var(--line); }
+  @media (min-width: 900px) { #inputbar { padding: 12px calc(50% - 380px); } }
+  #inputbar input { flex: 1; padding: 14px 18px; font-size: 17px; border: 2px solid var(--gold); border-radius: 26px; outline: none; background: #fffdf8; }
+  #inputbar input:focus { border-color: var(--brand-2); }
+  #inputbar .send { padding: 0 26px; font-size: 17px; border: none; border-radius: 26px; background: var(--brand); color: #fff; cursor: pointer; }
+  #inputbar .send:disabled { background: var(--gold); cursor: not-allowed; }
+  #inputbar .mic { width: 52px; border-radius: 50%; border: none; background: var(--gold); color: var(--brand-2); font-size: 20px; cursor: not-allowed; }
+
+  .mask { position: fixed; inset: 0; background: rgba(40,32,24,.35); z-index: 25; }
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(380px, 100%); background: #fff; box-shadow: -4px 0 16px rgba(60,50,40,.18); z-index: 30; display: flex; flex-direction: column; }
+  .drawer .dhead { padding: 14px 16px; background: var(--brand); color: #fff; display: flex; align-items: center; justify-content: space-between; font-size: 17px; }
+  .drawer .dhead button { background: none; border: none; color: #fff; font-size: 20px; cursor: pointer; }
+  .drawer .dbody { flex: 1; overflow-y: auto; padding: 14px; }
+  .drawer h3 { font-size: 15px; color: var(--brand); margin: 12px 0 8px; }
+  .pitem { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 10px; font-size: 14px; }
+  .pitem .fact { color: #666; margin: 3px 0; }
+  .pitem .ops { margin-top: 6px; }
+  .pitem .ops .btn { font-size: 12px; padding: 5px 12px; }
+  .chip { display: inline-block; font-size: 11px; background: #efe7da; color: var(--brand-2); border-radius: 999px; padding: 1px 8px; margin-left: 6px; }
+  .empty { font-size: 13px; color: var(--muted); margin: 8px 0; }
+
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 13px; color: var(--brand-2); margin-bottom: 6px; }
+  .field input, .field select { width: 100%; padding: 11px 14px; font-size: 15px; border: 2px solid var(--line); border-radius: 12px; outline: none; background: #fffdf8; color: var(--ink); }
+  .field input:focus, .field select:focus { border-color: var(--brand-2); }
+  .field .hint { font-size: 12px; color: var(--muted); margin-top: 5px; }
+  .saveok { font-size: 13px; color: #5a8a5a; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="title">🏠 金手指管家</span>
+    <span class="sub">说人话就能用 · 记人 · 记事 · 到点提醒</span>
+    <span class="spacer"></span>
+    <span class="sub" v-if="me">{{ me.name }}</span>
+    <button class="hbtn" :class="{active: showPanel}" @click="togglePanel">🧠 记忆面板</button>
+    <button class="hbtn" :class="{active: showSettings}" @click="toggleSettings">⚙️ 设置</button>
+  </header>
+
+  <main>
+    <section id="chatCol">
+      <div id="messages" ref="msgBox">
+        <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
+          <div class="bubble">{{ m.text }}</div>
+          <div class="meta">{{ m.at }}</div>
+          <details class="trace" v-if="debug && m.trace && m.trace.length">
+            <summary>处理过程（{{ m.trace.length }} 步）</summary>
+            <div class="tlines">{{ m.trace.join('\n') }}</div>
+          </details>
+          <div v-for="(c, ci) in m.cards" :key="ci" class="card">
+            <h4>{{ c.title }}</h4>
+            <div class="cbody">{{ c.body }}</div>
+            <button v-for="a in (c.actions || [])" :key="a.verb" class="btn" @click="taskAction(c.ref_id, a.verb)">{{ a.label }}</button>
+          </div>
+          <div class="chips" v-if="m.options && m.options.length">
+            <button v-for="o in m.options" :key="o.label" class="btn ghost" @click="sendText(o.label)">{{ o.label }}</button>
+          </div>
+        </div>
+        <div v-if="thinking" class="msg bot"><div class="bubble typing"><i></i><i></i><i></i></div></div>
+      </div>
+      <div id="inputbar">
+        <button class="mic" title="语音功能即将上线" disabled>🎤</button>
+        <input v-model="draft" placeholder="跟我说点什么…（例如：帮我记一下车位在B2）" @keydown.enter="send" autocomplete="off">
+        <button class="send" @click="send" :disabled="thinking || !draft.trim()">发送</button>
+      </div>
+    </section>
+  </main>
+
+  <div class="mask" v-if="showPanel" @click="showPanel=false"></div>
+
+  <aside class="drawer" v-show="showPanel">
+    <div class="dhead"><span>🧠 记忆面板</span><button @click="showPanel=false">✕</button></div>
+    <div class="dbody">
+      <h3>认识的人</h3>
+      <div v-if="!persons.length" class="empty">还没有人物记录</div>
+      <div class="pitem" v-for="p in persons" :key="p.id">
+        <strong>{{ p.canonical_name }}</strong>
+        <span v-if="p.aliases && p.aliases.length" class="chip">{{ p.aliases.join('、') }}</span>
+        <div class="fact" v-for="f in (p.facts || [])" :key="f.id">· {{ f.value_text }}</div>
+        <div class="ops">
+          <button class="btn danger" @click="forgetPerson(p)">一键遗忘</button>
+          <button class="btn ghost" @click="askAbout(p.canonical_name)">问问</button>
+        </div>
+      </div>
+      <h3>任务与提醒</h3>
+      <div v-if="!tasks.length" class="empty">还没有任务</div>
+      <div class="pitem" v-for="t in tasks" :key="t.id">
+        <strong>{{ t.title }}</strong><span class="chip">{{ statusLabel(t.status) }}</span>
+        <div class="fact">{{ t.abs_time }}</div>
+        <div class="ops">
+          <button v-if="t.status==='pending_confirm'" class="btn" @click="taskAction(t.id,'confirm')">确认</button>
+          <button v-else class="btn" @click="taskAction(t.id,'done')">完成</button>
+          <button class="btn danger" @click="taskAction(t.id,'cancel')">取消</button>
+        </div>
+      </div>
+      <div class="empty">删除后信息将不可恢复（遗忘级联）。</div>
+    </div>
+  </aside>
+
+  <div class="mask" v-if="showSettings" @click="showSettings=false"></div>
+
+  <aside class="drawer" v-show="showSettings">
+    <div class="dhead"><span>⚙️ 模型设置</span><button @click="showSettings=false">✕</button></div>
+    <div class="dbody">
+      <div class="field">
+        <label>预设</label>
+        <select v-model="settingsForm.preset" @change="applyPreset">
+          <option v-for="p in presets" :key="p.name" :value="p.name">{{ p.name }}</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>接口地址（base_url）</label>
+        <input v-model.trim="settingsForm.base_url" placeholder="https://api.deepseek.com" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>API Key</label>
+        <input v-model.trim="settingsForm.api_key" type="password" :placeholder="settingsForm.has_key ? '已保存（' + settingsForm.saved_key + '），留空则不修改' : 'sk-...'" autocomplete="new-password">
+      </div>
+      <div class="field">
+        <label>模型（model）</label>
+        <input v-model.trim="settingsForm.model" placeholder="deepseek-flash" autocomplete="off">
+      </div>
+      <button class="btn" @click="saveSettings" :disabled="settingsSaving">{{ settingsSaving ? '保存中…' : '保存' }}</button>
+      <div class="saveok" v-if="settingsSaved">已保存，立即生效 ✅</div>
+      <div class="empty">保存在服务端 settings.json，对所有设备生效；接口使用 OpenAI Responses 协议。</div>
+    </div>
+  </aside>
+</div>
+
+<script>
+const { createApp } = Vue;
+
+function nowHHMM() {
+  const d = new Date();
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+
+createApp({
+  data() {
+    return {
+      messages: [
+        { id: 0, role: 'bot', text: '你好呀，我是你的管家。想记什么、想让我提醒什么，直接说就行。', at: nowHHMM(), trace: [], cards: [], options: [] }
+      ],
+      draft: '',
+      thinking: false,
+      sessionId: null,
+      showPanel: false,
+      showSettings: false,
+      settingsSaving: false,
+      settingsSaved: false,
+      presets: [
+        { name: '自定义', base_url: '', model: '' },
+        { name: 'DeepSeek V4.1 Flash', base_url: 'https://api.deepseek.com', model: 'deepseek-flash' },
+        { name: 'DeepSeek V4 Pro', base_url: 'https://api.deepseek.com', model: 'deepseek-v4-pro' }
+      ],
+      settingsForm: { preset: '自定义', base_url: '', api_key: '', model: '', has_key: false, saved_key: '' },
+      persons: [],
+      tasks: [],
+      me: null,
+      seq: 1,
+      debug: new URLSearchParams(location.search).has('debug')
+    };
+  },
+  methods: {
+    scrollBottom() {
+      this.$nextTick(() => {
+        const m = this.$refs.msgBox;
+        if (m) m.scrollTop = m.scrollHeight;
+      });
+    },
+    pushMsg(role, text, extra) {
+      this.messages.push(Object.assign({ id: this.seq++, role, text, at: nowHHMM(), trace: [], cards: [], options: [] }, extra || {}));
+      this.scrollBottom();
+    },
+    async send() {
+      const t = this.draft.trim();
+      if (!t) return;
+      this.draft = '';
+      await this.sendText(t);
+    },
+    async sendText(text) {
+      this.pushMsg('user', text);
+      this.thinking = true;
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: this.sessionId, text })
+        });
+        const data = await res.json();
+        if (data.error) { this.pushMsg('bot', '出了点问题：' + data.error); return; }
+        this.sessionId = data.session_id || this.sessionId;
+        const opts = (data.pending && data.pending.options) || [];
+        this.pushMsg('bot', data.reply, { trace: data.trace || [], cards: data.cards || [], options: opts });
+      } catch (e) {
+        this.pushMsg('bot', '连接不上服务器，稍后再试好吗？');
+      } finally {
+        this.thinking = false;
+        this.loadPanel();
+        this.pollOutbox();
+      }
+    },
+    async taskAction(taskId, verb) {
+      await fetch(`/api/tasks/${taskId}/${verb}`, { method: 'POST' });
+      const msg = { done: '好的，完成了 ✅', confirm: '好，已确认。', snooze: '好，晚点再提醒你。', cancel: '好，取消了。' }[verb] || '好的。';
+      this.pushMsg('bot', msg);
+      this.loadPanel();
+    },
+    async pollOutbox() {
+      try {
+        const items = await fetch('/api/outbox').then(r => r.json());
+        for (const it of (items || [])) this.pushMsg('sys', '🔔 ' + it.body);
+      } catch (e) {}
+    },
+    async loadPanel() {
+      try {
+        const [persons, tasks] = await Promise.all([
+          fetch('/api/persons').then(r => r.json()),
+          fetch('/api/tasks').then(r => r.json())
+        ]);
+        this.persons = persons || [];
+        this.tasks = tasks || [];
+      } catch (e) {}
+    },
+    togglePanel() {
+      this.showPanel = !this.showPanel;
+      if (this.showPanel) this.loadPanel();
+    },
+    toggleSettings() {
+      this.showSettings = !this.showSettings;
+      if (this.showSettings) this.loadSettings();
+    },
+    applyPreset() {
+      const p = this.presets.find(x => x.name === this.settingsForm.preset);
+      if (p && p.base_url) {
+        this.settingsForm.base_url = p.base_url;
+        this.settingsForm.model = p.model;
+      }
+    },
+    matchPreset() {
+      const p = this.presets.find(x => x.base_url && x.base_url === this.settingsForm.base_url && x.model === this.settingsForm.model);
+      this.settingsForm.preset = p ? p.name : '自定义';
+    },
+    async loadSettings() {
+      try {
+        const d = await fetch('/api/settings/llm').then(r => r.json());
+        this.settingsForm.base_url = d.base_url || '';
+        this.settingsForm.model = d.model || '';
+        this.settingsForm.api_key = '';
+        this.settingsForm.has_key = !!d.has_key;
+        this.settingsForm.saved_key = d.api_key || '';
+        this.settingsSaved = false;
+        this.matchPreset();
+      } catch (e) {}
+    },
+    async saveSettings() {
+      if (!this.settingsForm.base_url || !this.settingsForm.model) return;
+      this.settingsSaving = true;
+      try {
+        const res = await fetch('/api/settings/llm', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            base_url: this.settingsForm.base_url,
+            api_key: this.settingsForm.api_key,
+            model: this.settingsForm.model
+          })
+        });
+        const d = await res.json();
+        if (d.error) { alert('保存失败：' + d.error); return; }
+        this.settingsForm.api_key = '';
+        this.settingsForm.has_key = !!d.has_key;
+        this.settingsForm.saved_key = d.api_key || '';
+        this.settingsSaved = true;
+      } catch (e) {
+        alert('连接不上服务器，稍后再试。');
+      } finally {
+        this.settingsSaving = false;
+      }
+    },
+    forgetPerson(p) {
+      if (!confirm('确定要遗忘「' + p.canonical_name + '」吗？删除后无法恢复。')) return;
+      fetch(`/api/persons/${p.id}`, { method: 'DELETE' }).then(() => this.loadPanel());
+    },
+    askAbout(name) {
+      this.showPanel = false;
+      this.sendText(name + '是谁来着？');
+    },
+    statusLabel(s) {
+      return { pending_confirm: '待确认', scheduled: '已排定', notified: '已提醒', done: '已完成', snoozed: '已推迟', cancelled: '已取消', expired: '已过期', draft: '草稿' }[s] || s;
+    }
+  },
+  mounted() {
+    this.loadPanel();
+    fetch('/api/me').then(r => r.json()).then(u => { this.me = u; }).catch(() => {});
+    setInterval(this.pollOutbox, 6000);
+  }
+}).mount('#app');
+</script>
+</body>
+</html>
