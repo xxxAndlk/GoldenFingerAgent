@@ -144,7 +144,7 @@ func createTaskFlow(ctx context.Context, tc *ToolContext, p nlu.TaskPayload, sou
 		}
 		switch {
 		case res.Ambiguous:
-			// Person clarify (per policy < person_clarify → ask).
+			// 人物澄清（按策略 < person_clarify → 反问）。
 			cands := make([]nlu.PersonCandidate, 0, len(res.Candidates))
 			opts := make([]nlu.Option, 0, len(res.Candidates)+1)
 			for _, c := range res.Candidates {
@@ -471,7 +471,7 @@ func saveFactFlow(ctx context.Context, tc *ToolContext, u *store.User, p nlu.Fac
 				"fact_id": fact.ID, "status": fact.Status,
 			},
 		}, nil
-	default: // written / superseded
+	default: // 已写入 / 已更替
 		reply := fmt.Sprintf("记住了：%s的%s。", p.PersonName, p.ValueText)
 		if outcome == memory.OutcomeSuperseded {
 			reply = fmt.Sprintf("好的，已经把%s的信息更新为：%s。", p.PersonName, p.ValueText)

@@ -42,7 +42,7 @@ func (d *DB) WithTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
+	defer tx.Rollback(ctx) //nolint:errcheck // 提交之后的回滚是空操作
 	if err := fn(tx); err != nil {
 		return err
 	}

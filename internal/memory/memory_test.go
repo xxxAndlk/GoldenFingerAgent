@@ -42,7 +42,7 @@ func TestSaveFactConflictResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// First confirmed fact.
+	// 第一条已确认事实。
 	out, f1, err := svc.SaveFact(ctx, SaveFactInput{
 		OwnerUserID: u.ID, Actor: "agent", PersonName: "李叔",
 		FactType: "family", ValueText: "儿子在深圳", Confidence: 0.9,
@@ -51,7 +51,7 @@ func TestSaveFactConflictResolution(t *testing.T) {
 		t.Fatalf("first write: %v %v", out, err)
 	}
 
-	// Newer confirmed supersedes (old valid_to set, row kept).
+	// 更新且已确认者更替（旧 valid_to 置位，行保留）。
 	out, f2, err := svc.SaveFact(ctx, SaveFactInput{
 		OwnerUserID: u.ID, Actor: "agent", PersonName: "李叔",
 		FactType: "family", ValueText: "儿子在上海", Confidence: 0.9,
@@ -63,7 +63,7 @@ func TestSaveFactConflictResolution(t *testing.T) {
 		t.Fatal("expected a new fact row")
 	}
 
-	// Old fact no longer current.
+	// 旧事实不再是当前事实。
 	olds, err := repos.Facts.ListByPerson(ctx, f1.PersonID)
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +74,7 @@ func TestSaveFactConflictResolution(t *testing.T) {
 		}
 	}
 
-	// An inferred fact conflicting with confirmed → OutcomeConflict (never supersedes).
+	// 与已确认事实冲突的推断值 → OutcomeConflict（永不上位）。
 	out, _, err = svc.SaveFact(ctx, SaveFactInput{
 		OwnerUserID: u.ID, Actor: "agent", PersonName: "李叔",
 		FactType: "family", ValueText: "儿子在广州", Confidence: 0.5,
@@ -123,7 +123,7 @@ func TestChildFactTypeGate(t *testing.T) {
 	if out != OutcomeRejected {
 		t.Fatalf("child health fact must be rejected, got %v", out)
 	}
-	// Factual type passes.
+	// 事实类型通过。
 	out, _, err = svc.SaveFact(ctx, SaveFactInput{
 		OwnerUserID: u.ID, Actor: "agent", PersonName: "同学小明",
 		FactType: "school", ValueText: "在三年二班", Confidence: 0.9, IsChildUser: true,
@@ -153,7 +153,7 @@ func TestForgetCascade(t *testing.T) {
 	if err := svc.ForgetPerson(ctx, u.ID, f.PersonID); err != nil {
 		t.Fatal(err)
 	}
-	// Not retrievable afterwards.
+	// 之后不可检索。
 	snips, err := svc.Search(ctx, u.ID, "赵叔 电话", 10)
 	if err != nil {
 		t.Fatal(err)

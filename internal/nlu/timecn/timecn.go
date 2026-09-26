@@ -302,7 +302,7 @@ func parseCalendar(raw string, now time.Time, loc *time.Location) (time.Time, bo
 }
 
 // nextWeekday 返回 wd 的下一次出现。
-// prefix："下下" = 下下周，"下" = 下周，否则是最近的一次。
+// 前缀："下下" = 下下周，"下" = 下周，否则是最近的一次。
 func nextWeekday(now time.Time, wd time.Weekday, prefix string) time.Time {
 	days := (int(wd) - int(now.Weekday()) + 7) % 7
 	if days == 0 {

@@ -44,7 +44,7 @@ func Run(ctx context.Context, s *Session, userText string, rt *Runtime) (*TurnRe
 		if done {
 			return res, nil
 		}
-		// No match and pending still alive → fall through to normal routing.
+		// 无匹配且待办仍存活 → 落入常规路由。
 	}
 
 	// 常备意图：确定性的事件条件提醒（"当……时提醒我"）。

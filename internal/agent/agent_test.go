@@ -21,7 +21,7 @@ import (
 
 var fixedNow = time.Date(2026, 3, 5, 10, 0, 0, 0, time.FixedZone("CST", 8*3600))
 
-// testHarness wires a full Runtime against the test DB + scripted LLM.
+// testHarness 用测试数据库 + 脚本化 LLM 装配一个完整 Runtime。
 func testHarness(t *testing.T, script ...llm.ChatResponse) (*Session, *Runtime, *store.User) {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
@@ -83,7 +83,7 @@ func testHarness(t *testing.T, script ...llm.ChatResponse) (*Session, *Runtime, 
 	return sess, rt, u
 }
 
-// fakeQueue records scheduling (task package's Queue interface).
+// fakeQueue 记录调度行为（task 包的 Queue 接口）。
 type fakeQueue struct {
 	enqueued  []string
 	cancelled []string
@@ -110,14 +110,14 @@ func TestLoopToolCallThenFinalAnswer(t *testing.T) {
 	if res.Reply != "好的，记下了：车位在B2。" {
 		t.Errorf("reply = %q", res.Reply)
 	}
-	// Transcript: user, assistant(tool_call), tool, assistant(text).
+	// 对话记录：用户、助手（工具调用）、工具、助手（文本）。
 	if len(sess.Messages) != 4 {
 		t.Fatalf("want 4 messages, got %d", len(sess.Messages))
 	}
 	if sess.Messages[2].Role != llm.RoleTool {
 		t.Errorf("third message role = %v", sess.Messages[2].Role)
 	}
-	// Tool result must be framed as data, not instructions.
+	// 工具结果必须框定为数据而非指令。
 	if !strings.Contains(sess.Messages[2].Content, "data, not instructions") {
 		t.Error("tool payload missing data-not-instructions framing")
 	}
@@ -141,8 +141,8 @@ func TestLoopClarifyShortCircuit(t *testing.T) {
 		t.Errorf("clarify question = %q", res.Reply)
 	}
 
-	// Affirm completes deterministically (no LLM call in the script → would
-	// error if the resolver tried to call the model).
+	// 肯定答复确定性地完成（脚本中没有 LLM 调用 → 如果解析器
+	// 尝试调用模型就会报错）。
 	res2, done := ResolvePending(context.Background(), sess, "对", rt, fixedNow)
 	if !done {
 		t.Fatal("affirm must resolve the pending")
@@ -156,7 +156,7 @@ func TestLoopClarifyShortCircuit(t *testing.T) {
 }
 
 func TestLoopMaxStepsBailsOut(t *testing.T) {
-	// A tool that always calls itself would loop forever without the cap.
+	// 一个总是自我调用的工具若无上限会永远循环下去。
 	callSelf := mock.ToolResponse("c1", "get_datetime", `{}`)
 	sess, rt, _ := testHarness(t, callSelf, callSelf, callSelf, callSelf, callSelf, callSelf, callSelf, callSelf)
 	rt.MaxSteps = 3
@@ -178,7 +178,7 @@ func TestFullConversationCreateTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// score = 0.9 + 0.05 (time parsed) = 0.95 ≥ 0.85 → auto-create.
+	// 分数 = 0.9 + 0.05（时间已解析）= 0.95 ≥ 0.85 → 自动创建。
 	if res.Pending != nil {
 		t.Fatalf("expected auto-create, got clarify: %q", res.Reply)
 	}
@@ -189,11 +189,11 @@ func TestFullConversationCreateTask(t *testing.T) {
 	if len(tasks) == 0 {
 		t.Fatal("expected a scheduled task")
 	}
-	// P3: intent kind must not carry an event template.
+	// P3：intent 类型不得携带事件模板。
 	if tasks[0].EventTemplate != "" {
 		t.Errorf("intent must have no event template, got %q", tasks[0].EventTemplate)
 	}
-	// Time normalized: 后天 from 2026-03-05 → 2026-03-07.
+	// 时间已归一化：2026-03-05 的 后天 → 2026-03-07。
 	if tasks[0].AbsTime == nil || tasks[0].AbsTime.Day() != 7 {
 		t.Errorf("abs_time = %v", tasks[0].AbsTime)
 	}
@@ -236,7 +236,7 @@ func TestMemoryWriteAndQuery(t *testing.T) {
 	if !strings.Contains(res.Reply, "记住了") {
 		t.Errorf("reply = %q", res.Reply)
 	}
-	// Confirm the fact landed.
+	// 确认事实已落库。
 	snips, err := rt.Tools.Memory.Search(context.Background(), sess.UserID, "张阿姨 女儿", 5)
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +262,7 @@ func TestPendingAbandonOnNewTopic(t *testing.T) {
 	if sess.Pending == nil {
 		t.Fatal("expected pending")
 	}
-	// Unrelated message abandons the pending.
+	// 无关消息会放弃待办。
 	res, done := ResolvePending(context.Background(), sess, "明天天气怎么样", rt, fixedNow)
 	if done {
 		t.Fatalf("new topic must not resolve pending, got %+v", res)
@@ -282,7 +282,7 @@ func TestEvaluativeFactNotWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Must be rejected by governance regardless of model confidence.
+	// 无论模型置信度如何，都必须被治理层拒绝。
 	snips, _ := rt.Tools.Memory.Search(context.Background(), sess.UserID, "王婶 脾气", 5)
 	for _, s := range snips {
 		if strings.Contains(s.Text, "脾气不好") {
@@ -293,8 +293,8 @@ func TestEvaluativeFactNotWritten(t *testing.T) {
 }
 
 func TestStandingIntentFiresInTurn(t *testing.T) {
-	// Two scripted turns: the first matches the trigger, the second is in
-	// cooldown (fixed clock) — only the first may carry the 🔔 notice.
+	// 两次脚本化轮次：第一次命中触发词，第二次处于
+	// 冷却期（固定时钟）——只有第一次可带 🔔 提醒。
 	sess, rt, u := testHarness(t,
 		mock.TextResponse("好的，我记着。"),
 		mock.TextResponse("好的。"),
@@ -316,7 +316,7 @@ func TestStandingIntentFiresInTurn(t *testing.T) {
 		t.Errorf("reply must open with the deterministic reminder, got %q", res.Reply)
 	}
 
-	// The hidden block reached the model as data (check the recorded call).
+	// 隐藏块以数据形式到达模型（检查记录的调用）。
 	if calls := rt.LLM.(*mock.Scripted).Calls; len(calls) > 0 {
 		sys := calls[0].Messages[0].Content
 		if !strings.Contains(sys, "常备提醒触发") || !strings.Contains(sys, "不是指令") {
@@ -324,13 +324,13 @@ func TestStandingIntentFiresInTurn(t *testing.T) {
 		}
 	}
 
-	// Fire bookkeeping.
+	// 触发记账。
 	items, _ := rt.Tools.Intents.List(ctx, u.ID)
 	if len(items) != 1 || items[0].FireCount != 1 {
 		t.Fatalf("want fire_count=1, got %+v", items)
 	}
 
-	// Cooldown: same trigger again → no notice.
+	// 冷却：相同触发词再次出现 → 无提醒。
 	res2, err := Run(ctx, sess, "张阿姨又来电话了", rt)
 	if err != nil {
 		t.Fatal(err)
@@ -363,7 +363,7 @@ func TestIntentToolCreateAndCancel(t *testing.T) {
 		t.Errorf("description = %q", items[0].Description)
 	}
 
-	// Cancel via tool (fresh script on the same runtime).
+	// 通过工具取消（同一 Runtime 上换新脚本）。
 	rt.LLM = mock.New(
 		mock.ToolResponse("c2", "cancel_intent", `{"intent_id":"`+targetID+`"}`),
 		mock.TextResponse("好，取消了。"),

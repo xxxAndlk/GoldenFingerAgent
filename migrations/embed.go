@@ -1,5 +1,4 @@
-// Package migrations embeds the SQL migration files so the runner can apply
-// them without depending on the working directory.
+// Package migrations 内嵌 SQL 迁移文件，使迁移程序无需依赖当前工作目录即可执行迁移。
 package migrations
 
 import "embed"

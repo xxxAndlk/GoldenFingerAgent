@@ -14,7 +14,7 @@ var butlerPrompt string
 // PromptBuilder 组装系统提示：人设 + 记忆块 + 轮次提示。
 // 用户画像每轮从会话解析。
 type PromptBuilder struct {
-	Memory MemoryContext // usually *memory.Service adapter
+	Memory MemoryContext // 通常是 *memory.Service 适配器
 	UserFn func(ctx context.Context, userID string) UserContext
 }
 

@@ -7,7 +7,7 @@ import (
 
 var cst = time.FixedZone("CST", 8*3600)
 
-// anchor: 2026-03-05（周四）10:00 CST。
+// 锚点：2026-03-05（周四）10:00 CST。
 var anchor = time.Date(2026, 3, 5, 10, 0, 0, 0, cst)
 
 func mustParse(t *testing.T, raw string) TimeResult {

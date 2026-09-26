@@ -59,7 +59,7 @@ func (s *Service) recencyHalfLifeValue() time.Duration { return s.recencyHalfLif
 // Resolution 是对人物名与记忆解析的结果。
 type Resolution struct {
 	Person     *store.Person
-	Candidates []store.Person // Ambiguous 时的候选项
+	Candidates []store.Person // 歧义时的候选项
 	Ambiguous  bool
 	NotFound   bool
 }
