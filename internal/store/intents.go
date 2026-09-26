@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Standing-intent lifecycle states (event-conditioned prospective memory).
+// 常驻意图的生命周期状态（事件触发的前瞻记忆）。
 const (
 	IntentPending   = "pending"
 	IntentArmed     = "armed"
@@ -19,9 +19,9 @@ const (
 	IntentExpired   = "expired"
 )
 
-// StandingIntent is an event-conditioned reminder ("当……时提醒我"). It fires on
-// a matching message, not on a clock. TriggerGroups is OR-of-ANDs: a message
-// matches when every term of at least one group appears in it.
+// StandingIntent 是事件触发的提醒（“当……时提醒我”）。它在匹配的消息
+// 出现时触发，而非按时钟触发。TriggerGroups 是 OR-of-ANDs：一条消息只要
+// 至少一个分组中的每个词都出现，就算命中。
 type StandingIntent struct {
 	ID              string     `json:"id"`
 	OwnerUserID     string     `json:"owner_user_id"`
@@ -107,7 +107,7 @@ func (r *IntentRepo) Get(ctx context.Context, ownerID, id string) (*StandingInte
 		WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL`, id, ownerID))
 }
 
-// Cancel is always explicit (an intent is never cancelled by inference).
+// Cancel 始终是显式操作（意图永远不会被推断取消）。
 func (r *IntentRepo) Cancel(ctx context.Context, ownerID, id string) (*StandingIntent, error) {
 	return scanIntent(r.q.QueryRow(ctx, `
 		UPDATE standing_intent SET status = '`+IntentCancelled+`', updated_at = now()
@@ -115,9 +115,8 @@ func (r *IntentRepo) Cancel(ctx context.Context, ownerID, id string) (*StandingI
 		RETURNING `+intentCols, id, ownerID))
 }
 
-// MatchCandidates returns armed intents eligible to fire right now (cooldown
-// elapsed; not expired). Fired intents whose cooldown has passed become
-// eligible again without a separate timer.
+// MatchCandidates 返回当前可触发的 armed 意图（冷却已过、未过期）。
+// 冷却期已过的 fired 意图无需额外定时器即可再次进入候选。
 func (r *IntentRepo) MatchCandidates(ctx context.Context, ownerID string, now time.Time) ([]StandingIntent, error) {
 	rows, err := r.q.Query(ctx, `
 		SELECT `+intentCols+` FROM standing_intent
@@ -135,9 +134,9 @@ func (r *IntentRepo) MatchCandidates(ctx context.Context, ownerID string, now ti
 	return scanIntents(rows)
 }
 
-// Fire marks a hit atomically: fire budget exhausted → done, else fired.
-// CAS on the same eligibility predicate as MatchCandidates so concurrent
-// turns cannot double-fire the same intent.
+// Fire 原子地标记一次命中：触发预算耗尽 → done，否则 fired。
+// 在 MatchCandidates 相同的资格谓词上做 CAS，使并发的多轮对话
+// 不会对同一意图重复触发。
 func (r *IntentRepo) Fire(ctx context.Context, id string, now time.Time) (*StandingIntent, error) {
 	return scanIntent(r.q.QueryRow(ctx, `
 		UPDATE standing_intent SET
@@ -152,8 +151,8 @@ func (r *IntentRepo) Fire(ctx context.Context, id string, now time.Time) (*Stand
 		RETURNING `+intentCols, id, now))
 }
 
-// MarkExpired is maintenance: expiry piggybacks on the chat/check path
-// (OpenClaw does the same — no extra timer subsystem).
+// MarkExpired 是维护操作：过期检测搭在聊天/检查路径上
+// （OpenClaw 同样如此——不引入额外的定时器子系统）。
 func (r *IntentRepo) MarkExpired(ctx context.Context, now time.Time) error {
 	_, err := r.q.Exec(ctx, `
 		UPDATE standing_intent SET status = '`+IntentExpired+`', updated_at = now()

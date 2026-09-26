@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// ErrNotFound is returned when a row does not exist (or is soft-deleted).
+// ErrNotFound 在行不存在（或被软删除）时返回。
 var ErrNotFound = errors.New("store: not found")
 
 type UserRepo struct{ q Querier }
@@ -49,7 +49,7 @@ func (r *UserRepo) UpdateNotifPrefs(ctx context.Context, id string, prefs []byte
 	return nil
 }
 
-// GetUserType is a cheap lookup used by compliance checks.
+// GetUserType 是合规检查使用的廉价查询。
 func (r *UserRepo) GetUserType(ctx context.Context, id string) (string, error) {
 	var t string
 	err := r.q.QueryRow(ctx,
@@ -60,7 +60,7 @@ func (r *UserRepo) GetUserType(ctx context.Context, id string) (string, error) {
 	return t, nil
 }
 
-// ListAll returns all non-deleted users (scheduler digest sweep).
+// ListAll 返回所有未删除用户（调度器每日摘要扫描）。
 func (r *UserRepo) ListAll(ctx context.Context) ([]User, error) {
 	rows, err := r.q.Query(ctx, `
 		SELECT id, user_type, name, tz, guardian_id, notif_prefs_jsonb, created_at, deleted_at
@@ -86,7 +86,7 @@ func mapNotFound(err error) error {
 	if err == nil {
 		return nil
 	}
-	// pgx returns pgx.ErrNoRows for empty QueryRow.
+	// pgx 对空 QueryRow 返回 pgx.ErrNoRows。
 	if errors.Is(err, errNoRows) {
 		return ErrNotFound
 	}

@@ -38,7 +38,7 @@ func TestDNDDefersLowLevels(t *testing.T) {
 	p := DefaultPolicy()
 	user := &store.User{UserType: store.UserGeneral, TZ: "Asia/Shanghai"}
 
-	// Level 1 at 23:00 defers to 07:00 next day.
+		// 23:00 的 1 级延迟到次日 07:00。
 	allow, deferTo := p.AllowFire(user, 1, at(23, 0))
 	if allow {
 		t.Error("level 1 inside DND must defer")
@@ -48,7 +48,7 @@ func TestDNDDefersLowLevels(t *testing.T) {
 		t.Errorf("deferTo = %v, want %v", deferTo, want)
 	}
 
-	// Outside DND fires as-is.
+		// 免打扰时段之外按原样触发。
 	allow, _ = p.AllowFire(user, 1, at(10, 0))
 	if !allow {
 		t.Error("daytime must fire")
@@ -72,7 +72,7 @@ func TestUrgentBreaksDNDForAdults(t *testing.T) {
 func TestChildNightSilenceAbsolute(t *testing.T) {
 	p := DefaultPolicy()
 	child := &store.User{UserType: store.UserChild, TZ: "Asia/Shanghai"}
-	// Even level 3 must not break the window for children.
+		// 即使 3 级也不能为儿童打破时段。
 	allow, deferTo := p.AllowFire(child, 3, at(23, 0))
 	if allow {
 		t.Error("child night silence is absolute — nothing breaks DND")

@@ -1,5 +1,5 @@
-// Package memory: person/fact governance (write-path conflict resolution,
-// forget cascade, traceability) and retrieval ranking.
+// Package memory：人物/事实治理（写入路径冲突消解、
+// 遗忘级联、可追溯性）与检索排序。
 package memory
 
 import (
@@ -16,21 +16,21 @@ import (
 	"goldenfinger/agent/internal/store"
 )
 
-// ErrNeedClarify signals the caller must ask the user before writing.
+// ErrNeedClarify 表示调用方在写入前必须先询问用户。
 var ErrNeedClarify = errors.New("memory: needs clarification")
 
-// ConflictPolicy controls fact supersession (doc F1: 较新且已确认 wins).
+// ConflictPolicy 控制事实的更替（文档 F1：较新且已确认 wins）。
 type Outcome string
 
 const (
 	OutcomeWritten    Outcome = "written"
-	OutcomeSuperseded Outcome = "superseded" // replaced an older fact
-	OutcomeInferred   Outcome = "inferred"   // stored as inferred, user should confirm
-	OutcomeRejected   Outcome = "rejected"   // evaluative / child-blocked
-	OutcomeConflict   Outcome = "conflict"   // equal-status conflict → clarify
+	OutcomeSuperseded Outcome = "superseded" // 替换了一条更旧的事实
+	OutcomeInferred   Outcome = "inferred"   // 以推断状态存储，用户应确认
+	OutcomeRejected   Outcome = "rejected"   // 评价性 / 儿童受限
+	OutcomeConflict   Outcome = "conflict"   // 同级冲突 → 澄清
 )
 
-// Service is the memory business logic layer.
+// Service 是记忆业务逻辑层。
 type Service struct {
 	persons         *store.PersonRepo
 	facts           *store.FactRepo
@@ -56,15 +56,15 @@ func NewService(persons *store.PersonRepo, facts *store.FactRepo, eps *store.Epi
 
 func (s *Service) recencyHalfLifeValue() time.Duration { return s.recencyHalfLife }
 
-// Resolution is the result of resolving a person name against memory.
+// Resolution 是对人物名与记忆解析的结果。
 type Resolution struct {
 	Person     *store.Person
-	Candidates []store.Person // when Ambiguous
+	Candidates []store.Person // Ambiguous 时的候选项
 	Ambiguous  bool
 	NotFound   bool
 }
 
-// ResolvePerson maps a name to exactly one person, or reports ambiguity.
+// ResolvePerson 把名字映射到唯一一个人物，或报告歧义。
 func (s *Service) ResolvePerson(ctx context.Context, ownerID, name string) (*Resolution, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -84,7 +84,7 @@ func (s *Service) ResolvePerson(ctx context.Context, ownerID, name string) (*Res
 	}
 }
 
-// EnsurePerson creates a person page (plus alias) when the name is new.
+// EnsurePerson 在名字是新人时创建人物页（并加别名）。
 func (s *Service) EnsurePerson(ctx context.Context, ownerID, name, relation string) (*store.Person, error) {
 	res, err := s.ResolvePerson(ctx, ownerID, name)
 	if err != nil {
@@ -108,7 +108,7 @@ func (s *Service) EnsurePerson(ctx context.Context, ownerID, name, relation stri
 	return p, nil
 }
 
-// SaveFactInput is a normalized fact write request.
+// SaveFactInput 是规范化的事实写入请求。
 type SaveFactInput struct {
 	OwnerUserID string
 	Actor       string // "user" | "agent"
@@ -121,18 +121,18 @@ type SaveFactInput struct {
 	IsChildUser bool
 }
 
-// SaveFact applies the full governance pipeline:
-// person resolution → child fact-type gate → evaluative gate → conflict
-// resolution (confirmed-newer supersedes) → embed → store.
+// SaveFact 应用完整治理管线：
+// 人物解析 → 儿童事实类型门 → 评价性门 → 冲突
+// 消解（已确认且更新者更替）→ 嵌入 → 存储。
 func (s *Service) SaveFact(ctx context.Context, in SaveFactInput) (Outcome, *store.Fact, error) {
-	// Evaluative labels are NEVER auto-written (P5).
+	// 评价性标签绝不自动写入（P5）。
 	if nlu.IsEvaluative(in.FactType, in.ValueText) {
 		owner := in.OwnerUserID
 		_ = s.audit.Append(ctx, &owner, in.Actor, "fact_reject_evaluative", in.PersonName, nil)
 		log.Printf("[memory] fact rejected (evaluative): person=%q type=%s value=%q", in.PersonName, in.FactType, in.ValueText)
 		return OutcomeRejected, nil, nil
 	}
-	// Children: fact types only.
+	// 儿童：仅限事实类型。
 	if in.IsChildUser && !nlu.ChildFactAllowed(in.FactType) {
 		owner := in.OwnerUserID
 		_ = s.audit.Append(ctx, &owner, in.Actor, "fact_reject_child_blocked", in.FactType, nil)
@@ -154,7 +154,7 @@ func (s *Service) SaveFact(ctx context.Context, in SaveFactInput) (Outcome, *sto
 		status = store.FactInferred
 	}
 
-	// Conflict resolution on (person_id, fact_type).
+	// (person_id, fact_type) 上的冲突消解。
 	conflicts, err := s.facts.FindConflict(ctx, personID, in.FactType, in.ValueText)
 	if err != nil {
 		return "", nil, err
@@ -163,22 +163,22 @@ func (s *Service) SaveFact(ctx context.Context, in SaveFactInput) (Outcome, *sto
 	for _, c := range conflicts {
 		switch {
 		case status == store.FactConfirmed:
-			// Newer confirmed supersedes: close the old window (kept for traceability).
+			// 较新且已确认者更替：关闭旧窗口（保留用于追溯）。
 			if err := s.facts.SetValidity(ctx, c.ID, &now); err != nil {
 				return "", nil, err
 			}
 		case c.Status == store.FactConfirmed:
-			// Inferred never supersedes confirmed → treat as conflict for clarify.
+			// 推断值永不更替已确认值 → 视为冲突走澄清。
 			log.Printf("[memory] fact conflict: person=%s type=%s new=%q vs existing=%q(confirmed) → clarify", in.PersonID, in.FactType, in.ValueText, c.ValueText)
 			return OutcomeConflict, nil, nil
 		default:
-			// Two inferred values disagree → clarify.
+			// 两个推断值不一致 → 澄清。
 			log.Printf("[memory] fact conflict: person=%s type=%s new=%q vs existing=%q(inferred) → clarify", in.PersonID, in.FactType, in.ValueText, c.ValueText)
 			return OutcomeConflict, nil, nil
 		}
 	}
 
-	// Embed for retrieval (failure is non-fatal — fact still stored).
+	// 为检索做嵌入（失败不致命——事实仍会存储）。
 	var vec []float32
 	if s.embed != nil {
 		vecs, err := s.embed.Embed(ctx, []string{in.FactType + " " + in.ValueText})
@@ -216,8 +216,8 @@ func (s *Service) SaveFact(ctx context.Context, in SaveFactInput) (Outcome, *sto
 	return outcome, f, nil
 }
 
-// ForgetPerson runs the forget cascade: person soft-deleted, aliases and facts
-// hard-deleted (vectors gone → 删除后不可检索), episode references scrubbed.
+// ForgetPerson 执行遗忘级联：人物软删除，别名与事实
+// 硬删除（向量消失 → 删除后不可检索），片段引用清除。
 func (s *Service) ForgetPerson(ctx context.Context, ownerID, personID string) error {
 	p, err := s.persons.Get(ctx, ownerID, personID)
 	if err != nil {
@@ -229,17 +229,17 @@ func (s *Service) ForgetPerson(ctx context.Context, ownerID, personID string) er
 	_ = s.eps.ClearPersonRefs(ctx, ownerID, p.CanonicalName)
 	log.Printf("[memory] forget person: %q (%s) — cascade: aliases+facts hard-deleted, episode refs scrubbed", p.CanonicalName, personID)
 	owner := ownerID
-	// Audit keeps only the deletion action itself, not the content (PIPL).
+	// 审计只保留删除动作本身，不保留内容（PIPL）。
 	return s.audit.Append(ctx, &owner, "user", "person_forget", personID, nil)
 }
 
-// ForgetFact hard-deletes one fact.
+// ForgetFact 硬删除一条事实。
 func (s *Service) ForgetFact(ctx context.Context, ownerID, factID string) error {
 	f, err := s.facts.Get(ctx, factID)
 	if err != nil {
 		return err
 	}
-	// Ownership check via person.
+	// 通过人物做归属校验。
 	p, err := s.persons.Get(ctx, ownerID, f.PersonID)
 	if err != nil {
 		return err
@@ -255,14 +255,14 @@ func (s *Service) ForgetFact(ctx context.Context, ownerID, factID string) error 
 	return s.audit.Append(ctx, &owner, "user", "fact_forget", factID, nil)
 }
 
-// PersonView is a wiki-style person page (facts grouped).
+// PersonView 是 wiki 风格的人物页（事实分组展示）。
 type PersonView struct {
 	Person  store.Person `json:"person"`
 	Aliases []string     `json:"aliases"`
 	Facts   []store.Fact `json:"facts"`
 }
 
-// GetPersonView assembles one person page.
+// GetPersonView 组装一个人物页。
 func (s *Service) GetPersonView(ctx context.Context, ownerID, personID string) (*PersonView, error) {
 	p, err := s.persons.Get(ctx, ownerID, personID)
 	if err != nil {
@@ -283,12 +283,12 @@ func (s *Service) GetPersonView(ctx context.Context, ownerID, personID string) (
 	return view, nil
 }
 
-// ListPersons returns all person pages for the user.
+// ListPersons 返回该用户的全部人物页。
 func (s *Service) ListPersons(ctx context.Context, ownerID string) ([]store.Person, error) {
 	return s.persons.ListByOwner(ctx, ownerID)
 }
 
-// UpdateNotes edits person notes (memory 可改).
+// UpdateNotes 编辑人物备注（memory 可改）。
 func (s *Service) UpdateNotes(ctx context.Context, ownerID, personID, notes string) error {
 	if err := s.persons.UpdateNotes(ctx, ownerID, personID, notes); err != nil {
 		return err
@@ -297,7 +297,7 @@ func (s *Service) UpdateNotes(ctx context.Context, ownerID, personID, notes stri
 	return s.audit.Append(ctx, &owner, "user", "person_edit", personID, nil)
 }
 
-// SaveNote persists a voice note as an episode (retrievable) with optional task link.
+// SaveNote 把语音笔记持久化为一个片段（可检索），可带任务链接。
 func (s *Service) SaveNote(ctx context.Context, ownerID, text, rawRef string, sourceMsgID *string) (*store.Episode, error) {
 	var vec []float32
 	if s.embed != nil {
@@ -321,7 +321,7 @@ func (s *Service) SaveNote(ctx context.Context, ownerID, text, rawRef string, so
 	return e, nil
 }
 
-// FactLine renders a fact as one prompt line.
+// FactLine 把一条事实渲染为一行提示文本。
 func FactLine(f *store.Fact) string {
 	return fmt.Sprintf("%s: %s", f.FactType, f.ValueText)
 }

@@ -1,5 +1,5 @@
--- 0001_init.sql — schema per requirements doc section 7, plus chat tables.
--- Status columns use TEXT + CHECK (simpler forward migrations than PG ENUM).
+-- 0001_init.sql — 按需求文档第 7 节设计的 schema，外加聊天表。
+-- 状态列使用 TEXT + CHECK（比 PG ENUM 更便于前向迁移）。
 
 CREATE EXTENSION IF NOT EXISTS vector;
 
@@ -107,7 +107,7 @@ CREATE TABLE consent (
     revoked_at              TIMESTAMPTZ
 );
 
--- Chat persistence (required for the web demo and multi-turn clarify state).
+-- 聊天持久化（Web 演示与多轮澄清状态所需）。
 CREATE TABLE chat_session (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     owner_user_id UUID NOT NULL REFERENCES app_user(id),

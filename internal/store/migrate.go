@@ -12,15 +12,14 @@ import (
 	"goldenfinger/agent/migrations"
 )
 
-// migrateLockKey serializes schema changes across processes (test suites run
-// Migrate concurrently; CREATE TABLE races on pg_type otherwise).
+// migrateLockKey 在进程之间串行化 schema 变更（测试套件并发执行
+// Migrate；否则 CREATE TABLE 会在 pg_type 上竞争）。
 const migrateLockKey = 872034721
 
-// Migrate applies pending *.sql files from migrations.FS in filename order.
-// Each file runs once; applied names are tracked in schema_migrations.
+// Migrate 按文件名顺序应用 migrations.FS 中待执行的 *.sql 文件。
+// 每个文件只执行一次；已应用的文件名记录在 schema_migrations 表中。
 func (d *DB) Migrate(ctx context.Context) ([]string, error) {
-	// Create the bookkeeping table under the advisory lock (IF NOT EXISTS
-	// alone still races on the table's composite type).
+		// 在咨询锁下创建记账表（仅 IF NOT EXISTS 仍会在表的复合类型上竞争）。
 	if err := d.WithTx(ctx, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLockKey); err != nil {
 			return err
@@ -52,8 +51,8 @@ func (d *DB) Migrate(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return applied, err
 		}
-		// Lock + existence re-check inside one tx: a concurrent migrator that
-		// lost the lock race sees the row and skips.
+			// 在同一事务内加锁并复查存在性：在锁竞争中落败的并发迁移者
+			// 会看到该行并跳过。
 		done := false
 		if err := d.WithTx(ctx, func(tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLockKey); err != nil {

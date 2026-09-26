@@ -55,7 +55,7 @@ func (r *PersonRepo) ListByOwner(ctx context.Context, ownerID string) ([]Person,
 	return out, rows.Err()
 }
 
-// FindByAlias returns persons whose canonical name or any alias matches (case-insensitive).
+// FindByAlias 返回规范名或任意别名匹配的人物（大小写不敏感）。
 func (r *PersonRepo) FindByAlias(ctx context.Context, ownerID, name string) ([]Person, error) {
 	rows, err := r.q.Query(ctx, `
 		SELECT DISTINCT p.id, p.owner_user_id, p.canonical_name, p.notes, p.created_at, p.deleted_at
@@ -104,8 +104,8 @@ func (r *PersonRepo) ListAliases(ctx context.Context, personID string) ([]Alias,
 	return out, rows.Err()
 }
 
-// SoftDeleteCascade forgets a person: soft-deletes the person row, hard-deletes
-// aliases and facts (including vectors — "删除后不可检索").
+// SoftDeleteCascade 遗忘一个人物：软删除人物行，硬删除别名与事实
+// （含向量——“删除后不可检索”）。
 func (r *PersonRepo) SoftDeleteCascade(ctx context.Context, ownerID, personID string) error {
 	return withTx(ctx, r.q, func(q Querier) error {
 		tag, err := q.Exec(ctx, `
@@ -125,7 +125,7 @@ func (r *PersonRepo) SoftDeleteCascade(ctx context.Context, ownerID, personID st
 	})
 }
 
-// UpdateNotes edits the person page notes.
+// UpdateNotes 编辑人物页的备注。
 func (r *PersonRepo) UpdateNotes(ctx context.Context, ownerID, personID, notes string) error {
 	tag, err := r.q.Exec(ctx, `
 		UPDATE person SET notes = $3
@@ -139,8 +139,8 @@ func (r *PersonRepo) UpdateNotes(ctx context.Context, ownerID, personID, notes s
 	return nil
 }
 
-// withTx runs fn in a transaction when q is not already a tx-capable runner.
-// The pool is used when q is *pgxpool.Pool; if q is already a tx it reuses it.
+// withTx 在 q 尚不具备事务能力时于事务内运行 fn。
+// q 为 *pgxpool.Pool 时使用连接池；若 q 已是事务则直接复用。
 func withTx(ctx context.Context, q Querier, fn func(Querier) error) error {
 	type txBeginner interface {
 		Begin(ctx context.Context) (pgx.Tx, error)

@@ -1,5 +1,5 @@
-// Command server wires the companion AI butler: config → store → llm →
-// domain services → agent runtime → HTTP API, and starts the scheduler.
+// Command server 组装陪伴型 AI 管家：config → store → llm →
+// 领域服务 → agent 运行时 → HTTP API，并启动调度器。
 package main
 
 import (
@@ -16,6 +16,7 @@ import (
 	"goldenfinger/agent/internal/compliance"
 	"goldenfinger/agent/internal/config"
 	"goldenfinger/agent/internal/extsvc"
+	"goldenfinger/agent/internal/extsvc/firecrawl"
 	"goldenfinger/agent/internal/extsvc/stub"
 	"goldenfinger/agent/internal/httpapi"
 	"goldenfinger/agent/internal/intent"
@@ -37,7 +38,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// ---- persistence ----
+	// ---- 持久化 ----
 	db, err := store.Connect(ctx, cfg.Database.URL)
 	if err != nil {
 		fatal(err)
@@ -50,12 +51,21 @@ func main() {
 	}
 	repos := store.NewRepos(db.Pool)
 
-	// ---- external services (interfaces + stubs; LLM is real) ----
+	// ---- 外部服务（接口 + 桩实现；LLM 为真实服务） ----
 	llmClient := openai.New(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model)
 	embedder := openai.New(cfg.Embedder.BaseURL, cfg.Embedder.APIKey, cfg.Embedder.Model)
 	embedder.EmbedModel = cfg.Embedder.Model
 
 	var weather extsvc.WeatherService = stub.Weather{}
+
+	// Web 搜索：配置了 api_key 时使用真实 Firecrawl 客户端，否则用开发桩。
+	var search extsvc.SearchService = stub.Search{}
+	if cfg.Search.APIKey != "" {
+		search = firecrawl.New(cfg.Search.BaseURL, cfg.Search.APIKey, cfg.Search.Count)
+		log.Printf("web search: firecrawl client (base=%s)", cfg.Search.BaseURL)
+	} else {
+		log.Printf("web search: no api_key, using stub")
+	}
 
 	outbox := &httpapi.Outbox{}
 	var dispatcher scheduler.Dispatcher = scheduler.DeliverFunc(
@@ -71,7 +81,7 @@ func main() {
 			return nil
 		})
 
-	// ---- domain services ----
+	// ---- 领域服务 ----
 	th := nlu.Thresholds{
 		TaskAuto:      cfg.Thresholds.TaskAuto,
 		TaskClarify:   cfg.Thresholds.TaskClarify,
@@ -96,7 +106,7 @@ func main() {
 
 	guard := compliance.NewGuard(repos.Consents, repos.Audit, repos.Users)
 
-	// task.Service ↔ scheduler: break the constructor cycle with function refs.
+	// task.Service ↔ scheduler：用函数引用打破构造器循环依赖。
 	var sched *scheduler.DBScheduler
 	tasksSvc := task.NewService(repos.Tasks, task.QueueFunc{
 		Enq: func(ctx context.Context, t *store.Task) error { return sched.EnqueueForTask(ctx, t) },
@@ -104,13 +114,14 @@ func main() {
 	}, repos.Audit, nil)
 	sched = scheduler.New(repos, policy, dispatcher, tasksSvc, cfg.Scheduler.TickInterval, cfg.Digest.Time, nil)
 
-	// ---- agent runtime ----
+	// ---- agent 运行时 ----
 	intentsSvc := intent.NewService(repos.Intents, repos.Audit, nil)
 	svcs := &agent.ToolServices{
 		Memory:  mem,
 		Tasks:   tasksSvc,
 		Intents: intentsSvc,
 		Weather: weather,
+		Search:  search,
 		Guard:   guard,
 		Repos:   repos,
 		Now:     time.Now,
@@ -151,7 +162,7 @@ func main() {
 		FallbackLLM: settings.LLM{BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model},
 	}
 
-	// ---- scheduler loop ----
+	// ---- 调度器主循环 ----
 	go func() {
 		log.Printf("scheduler started (tick=%s)", cfg.Scheduler.TickInterval)
 		if err := sched.Start(ctx); err != nil && ctx.Err() == nil {

@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// User types.
+// 用户类型。
 const (
 	UserElder   = "elder"
 	UserGeneral = "general"
@@ -38,7 +38,7 @@ type Alias struct {
 	Alias    string `json:"alias"`
 }
 
-// Fact statuses.
+// 事实状态。
 const (
 	FactConfirmed = "confirmed"
 	FactInferred  = "inferred"
@@ -60,7 +60,7 @@ type Fact struct {
 	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
 }
 
-// Task kinds.
+// 任务种类。
 const (
 	KindIntent = "intent"
 	KindFact   = "fact"
@@ -68,7 +68,7 @@ const (
 	KindNote   = "note"
 )
 
-// Task statuses (state machine nodes).
+// 任务状态（状态机节点）。
 const (
 	TaskDraft          = "draft"
 	TaskPendingConfirm = "pending_confirm"
@@ -98,7 +98,7 @@ type Task struct {
 	DeletedAt      *time.Time      `json:"deleted_at,omitempty"`
 }
 
-// Reminder states.
+// 提醒状态。
 const (
 	ReminderPending = "pending"
 	ReminderSent    = "sent"
@@ -168,7 +168,7 @@ type ChatMessage struct {
 	CreatedAt  time.Time       `json:"created_at"`
 }
 
-// Scored* wrap similarity query results.
+// Scored* 包装相似度查询结果。
 type ScoredFact struct {
 	Fact
 	Score float64 `json:"score"`

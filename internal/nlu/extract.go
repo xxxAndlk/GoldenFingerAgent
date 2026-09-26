@@ -10,7 +10,7 @@ import (
 	"goldenfinger/agent/internal/nlu/timecn"
 )
 
-// Extraction is the structured output of the fallback extractor.
+// Extraction 是兜底抽取器的结构化输出。
 type Extraction struct {
 	Persons   []ExtractedPerson `json:"persons"`
 	Tasks     []ExtractedTask   `json:"tasks"`
@@ -28,7 +28,7 @@ type ExtractedPerson struct {
 type ExtractedFact struct {
 	FactType   string `json:"fact_type"`
 	ValueText  string `json:"value_text"`
-	Evaluative bool   `json:"evaluative"` // model's guess; re-checked deterministically
+	Evaluative bool   `json:"evaluative"` // 模型的猜测；会被确定性逻辑复核
 }
 
 type ExtractedTask struct {
@@ -56,7 +56,7 @@ JSON 结构:
 - evaluative=true 表示这是对人的评价（性格/健康/财务等），事实型为 false。
 - self_reported_confidence 取 0~1。`
 
-// Extract runs the LLM structured-output fallback for ambiguous utterances.
+// Extract 对歧义话语运行 LLM 结构化输出兜底。
 func Extract(ctx context.Context, client llm.Client, model, userText string) (*Extraction, error) {
 	resp, err := client.Chat(ctx, llm.ChatRequest{
 		Model: model,
@@ -78,8 +78,8 @@ func Extract(ctx context.Context, client llm.Client, model, userText string) (*E
 	return &out, nil
 }
 
-// LLMTimeFallback asks the LLM to normalize a time phrase the rules missed.
-// The answer is HARD-VALIDATED before use (see llm_time.go).
+// LLMTimeFallback 让 LLM 规范化规则未命中的时间短语。
+// 使用前会对答案做强制校验（见 llm_time.go）。
 func LLMTimeFallback(ctx context.Context, client llm.Client, model, rawExpr string, now time.Time, loc *time.Location) (timecn.TimeResult, bool) {
 	return llmTimeFallback(ctx, client, model, rawExpr, now, loc)
 }

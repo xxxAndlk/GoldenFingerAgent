@@ -8,11 +8,11 @@ import (
 	"goldenfinger/agent/internal/store"
 )
 
-// BuildContext assembles the memory block injected into the system prompt,
-// packed in priority order under a token budget (doc: 按 token 预算注入，不堆全量).
+// BuildContext 组装注入系统提示的记忆块，
+// 在 token 预算内按优先级打包（文档：按 token 预算注入，不堆全量）。
 //
-// Priority: user profile > pending note > active tasks > persons > facts.
-// Overflow truncates the lowest-priority section first.
+// 优先级：用户画像 > 待办备注 > 进行中任务 > 人物 > 事实。
+// 溢出时优先截断最低优先级的区块。
 func (s *Service) BuildContext(ctx context.Context, ownerID, userType, tz string, budgetTokens int) (string, error) {
 	if budgetTokens <= 0 {
 		budgetTokens = 1500
@@ -24,7 +24,7 @@ func (s *Service) BuildContext(ctx context.Context, ownerID, userType, tz string
 		body:  fmt.Sprintf("类型: %s, 时区: %s", userType, tz),
 	})
 
-	// Person roster.
+	// 认识的人名单。
 	persons, err := s.persons.ListByOwner(ctx, ownerID)
 	if err != nil {
 		return "", err
@@ -38,7 +38,7 @@ func (s *Service) BuildContext(ctx context.Context, ownerID, userType, tz string
 		sections = append(sections, section{title: "认识的人", body: strings.TrimRight(b.String(), "\n")})
 	}
 
-	// Current facts, most recent first (cheap pre-filter; ranking happens on search).
+	// 当前事实，最新的在前（廉价预过滤；排序在检索时进行）。
 	facts, err := s.facts.ListCurrentByOwner(ctx, ownerID, 15)
 	if err != nil {
 		return "", err
@@ -59,7 +59,7 @@ func (s *Service) BuildContext(ctx context.Context, ownerID, userType, tz string
 		sections = append(sections, section{title: "记住的事实", body: strings.TrimRight(b.String(), "\n")})
 	}
 
-	// Recent notes/episodes.
+	// 最近的笔记/片段。
 	eps, err := s.eps.ListRecent(ctx, ownerID, 5)
 	if err != nil {
 		return "", err
@@ -72,13 +72,13 @@ func (s *Service) BuildContext(ctx context.Context, ownerID, userType, tz string
 		sections = append(sections, section{title: "最近记下的", body: strings.TrimRight(b.String(), "\n")})
 	}
 
-	// Pack under budget: head sections first, drop/trim the tail.
+	// 在预算内打包：先放头部区块，丢弃/裁剪尾部。
 	var out strings.Builder
 	used := 0
 	for _, sec := range sections {
 		cost := estimateTokens(sec.title+sec.body) + 8
 		if used+cost > budgetTokens {
-			// Try a trimmed version before dropping entirely.
+			// 整体丢弃前先尝试裁剪版本。
 			trimmed := trimToTokens(sec.body, budgetTokens-used-8)
 			if strings.TrimSpace(trimmed) == "" {
 				break
@@ -97,8 +97,8 @@ type section struct {
 	body  string
 }
 
-// estimateTokens approximates token count without a tokenizer dependency.
-// CJK-heavy text ≈ 1 token per rune; this heuristic errs on the safe side.
+// estimateTokens 在不依赖 tokenizer 的情况下近似估算 token 数。
+// 中文密集文本 ≈ 每 rune 1 token；该启发式偏向安全侧。
 func estimateTokens(s string) int {
 	return int(float64(len([]rune(s))) * 0.7)
 }

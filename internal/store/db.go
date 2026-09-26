@@ -1,4 +1,4 @@
-// Package store is the Postgres persistence layer (pi's session-backends analog).
+// Package store 是 Postgres 持久化层（相当于 pi 的 session-backends）。
 package store
 
 import (
@@ -10,14 +10,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Querier is the pgx subset used by repositories. Both *pgxpool.Pool and pgx.Tx satisfy it.
+// Querier 是各仓储使用的 pgx 子集。*pgxpool.Pool 与 pgx.Tx 都满足它。
 type Querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// DB wraps a pgx connection pool with a small transaction helper.
+// DB 封装 pgx 连接池，并带一个轻量事务辅助方法。
 type DB struct {
 	Pool *pgxpool.Pool
 }
@@ -36,7 +36,7 @@ func Connect(ctx context.Context, url string) (*DB, error) {
 
 func (d *DB) Close() { d.Pool.Close() }
 
-// WithTx runs fn inside a transaction, committing on success.
+// WithTx 在事务内运行 fn，成功时提交。
 func (d *DB) WithTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
 	tx, err := d.Pool.Begin(ctx)
 	if err != nil {

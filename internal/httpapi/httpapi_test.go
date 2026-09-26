@@ -29,7 +29,7 @@ type fakeQueue struct{}
 func (fakeQueue) EnqueueForTask(ctx context.Context, t *store.Task) error { return nil }
 func (fakeQueue) CancelForTask(ctx context.Context, id string) error      { return nil }
 
-// newTestServer wires the full stack with a scripted LLM.
+// newTestServer 用脚本化 LLM 装配完整技术栈。
 func newTestServer(t *testing.T, script ...llm.ChatResponse) (*Server, *store.Repos) {
 	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
@@ -116,7 +116,7 @@ func TestChatEndpointCreatesSessionAndTask(t *testing.T) {
 		t.Fatalf("bad response: %+v", resp)
 	}
 
-	// Task persisted with normalized time (后天 → 2026-03-07).
+	// 任务以规范化时间持久化（后天 → 2026-03-07）。
 	users, err := repos.Users.ListAll(context.Background())
 	if err != nil || len(users) == 0 {
 		t.Fatal("user missing")
@@ -132,7 +132,7 @@ func TestChatEndpointCreatesSessionAndTask(t *testing.T) {
 		t.Errorf("abs_time = %v", tasks[0].AbsTime)
 	}
 
-	// Session transcript persisted (user + assistant).
+	// 会话记录已持久化（用户 + 助手）。
 	msgs, err := repos.Sessions.RecentMessages(context.Background(), resp.SessionID, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -162,8 +162,8 @@ func TestClarifyRoundTripOverHTTP(t *testing.T) {
 		t.Fatalf("expected pending clarify, got %s", rec.Body)
 	}
 
-	// Second turn: "对" resolves deterministically (script is exhausted →
-	// if the resolver called the LLM it would fail).
+	// 第二轮：“对”确定性地解决（脚本已用尽——若解析器调用
+	// LLM 就会失败）。
 	rec2 := postJSON(t, h, "/api/chat", `{"session_id":"`+resp.SessionID+`","text":"对"}`)
 	if rec2.Code != 200 {
 		t.Fatalf("confirm failed: %s", rec2.Body)
@@ -301,7 +301,7 @@ func TestMemoryExportAndIntents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Markdown dossier: human-readable memory export.
+	// Markdown 档案：人类可读的记忆导出。
 	req := httptest.NewRequest(http.MethodGet, "/api/memory/export.md", nil)
 	req.Header.Set("X-User-Id", u.ID)
 	rec := httptest.NewRecorder()
@@ -319,7 +319,7 @@ func TestMemoryExportAndIntents(t *testing.T) {
 		}
 	}
 
-	// Intents list + explicit cancel.
+	// 常备提醒列表 + 显式取消。
 	req = httptest.NewRequest(http.MethodGet, "/api/intents", nil)
 	req.Header.Set("X-User-Id", u.ID)
 	rec = httptest.NewRecorder()

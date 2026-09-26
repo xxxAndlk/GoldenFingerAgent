@@ -12,14 +12,14 @@ import (
 
 func unmarshalSchema(raw json.RawMessage, v any) error { return json.Unmarshal(raw, v) }
 
-// Queue abstracts reminder scheduling so the domain layer never talks to the
-// scheduler implementation directly (Temporal Cloud can slot in later).
+// Queue 抽象了提醒调度，使领域层绝不直接与调度器实现对话
+// （后续可以接入 Temporal Cloud）。
 type Queue interface {
 	EnqueueForTask(ctx context.Context, t *store.Task) error
 	CancelForTask(ctx context.Context, taskID string) error
 }
 
-// QueueFunc adapts plain functions to the Queue interface (wiring convenience).
+// QueueFunc 把普通函数适配为 Queue 接口（装配便利）。
 type QueueFunc struct {
 	Enq func(ctx context.Context, t *store.Task) error
 	Can func(ctx context.Context, taskID string) error
@@ -28,7 +28,7 @@ type QueueFunc struct {
 func (q QueueFunc) EnqueueForTask(ctx context.Context, t *store.Task) error { return q.Enq(ctx, t) }
 func (q QueueFunc) CancelForTask(ctx context.Context, taskID string) error  { return q.Can(ctx, taskID) }
 
-// Service is the task domain service (create/confirm/done/snooze/cancel/expire).
+// Service 是任务领域服务（create/confirm/done/snooze/cancel/expire）。
 type Service struct {
 	repo  *store.TaskRepo
 	queue Queue
@@ -43,23 +43,23 @@ func NewService(repo *store.TaskRepo, queue Queue, audit *store.AuditRepo, now f
 	return &Service{repo: repo, queue: queue, audit: audit, now: now}
 }
 
-// CreateInput is a normalized task creation request.
+// CreateInput 是规范化的任务创建请求。
 type CreateInput struct {
-	OwnerUserID    string
-	Kind           string // intent|fact|alarm|note
-	Title          string
+		OwnerUserID    string
+		Kind           string // intent|fact|alarm|note
+		Title          string
 	TimeExprRaw    string
 	AbsTime        *time.Time
 	Deadline       *time.Time
 	Confidence     float64
 	SourceMsgID    *string
 	LinkedPersonID *string
-	EventTemplate  string
-	AutoAccept     bool // >= task_auto threshold → scheduled directly (undoable)
-}
+		EventTemplate  string
+		AutoAccept     bool // >= task_auto 阈值 → 直接排定（可撤销）
+	}
 
-// Create inserts a task in draft/pending_confirm/scheduled per gating, then
-// enqueues reminders for accepted tasks.
+// Create 按门禁插入一条 draft/pending_confirm/scheduled 任务，然后
+// 为已接受的任务入队提醒。
 func (s *Service) Create(ctx context.Context, in CreateInput) (*store.Task, error) {
 	t := &store.Task{
 		OwnerUserID:    in.OwnerUserID,
@@ -97,7 +97,7 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*store.Task, erro
 	return t, nil
 }
 
-// Confirm moves pending_confirm → scheduled and enqueues reminders.
+// Confirm 把 pending_confirm → scheduled 并入队提醒。
 func (s *Service) Confirm(ctx context.Context, ownerID, id string) (*store.Task, error) {
 	t, err := s.repo.Get(ctx, ownerID, id)
 	if err != nil {
@@ -116,7 +116,7 @@ func (s *Service) Confirm(ctx context.Context, ownerID, id string) (*store.Task,
 	return t, nil
 }
 
-// Done closes a task and cancels pending reminders.
+// Done 关闭任务并取消待发的提醒。
 func (s *Service) Done(ctx context.Context, ownerID, id string) error {
 	t, err := s.repo.Get(ctx, ownerID, id)
 	if err != nil {
@@ -130,7 +130,7 @@ func (s *Service) Done(ctx context.Context, ownerID, id string) error {
 	return s.queue.CancelForTask(ctx, id)
 }
 
-// Cancel cancels a task and its pending reminders.
+// Cancel 取消任务及其待发的提醒。
 func (s *Service) Cancel(ctx context.Context, ownerID, id string) error {
 	t, err := s.repo.Get(ctx, ownerID, id)
 	if err != nil {
@@ -144,7 +144,7 @@ func (s *Service) Cancel(ctx context.Context, ownerID, id string) error {
 	return s.queue.CancelForTask(ctx, id)
 }
 
-// Snooze reschedules a task (scheduled/notified → snoozed → scheduled with new time).
+// Snooze 重新排定任务（scheduled/notified → snoozed → 带新时间的 scheduled）。
 func (s *Service) Snooze(ctx context.Context, ownerID, id string, newAbsTime time.Time) (*store.Task, error) {
 	t, err := s.repo.Get(ctx, ownerID, id)
 	if err != nil {
@@ -173,8 +173,8 @@ func (s *Service) Snooze(ctx context.Context, ownerID, id string, newAbsTime tim
 	return t, nil
 }
 
-// MarkNotified flips scheduled → notified when a reminder is delivered.
-// Escalation re-notifies keep the notified state (notified → notified).
+// MarkNotified 在提醒投递时把 scheduled → notified。
+// 升级重提醒保持 notified 状态（notified → notified）。
 func (s *Service) MarkNotified(ctx context.Context, taskID string) error {
 	err := Transition(ctx, s.repo, taskID, store.TaskScheduled, store.TaskNotified, nil)
 	if err == nil {
@@ -183,12 +183,12 @@ func (s *Service) MarkNotified(ctx context.Context, taskID string) error {
 	return Transition(ctx, s.repo, taskID, store.TaskNotified, store.TaskNotified, nil)
 }
 
-// List returns tasks with optional filters.
+// List 返回带可选过滤条件的任务。
 func (s *Service) List(ctx context.Context, ownerID string, statuses []string, kind string) ([]store.Task, error) {
 	return s.repo.ListByOwner(ctx, ownerID, statuses, kind)
 }
 
-// Get fetches one task.
+// Get 取回一条任务。
 func (s *Service) Get(ctx context.Context, ownerID, id string) (*store.Task, error) {
 	return s.repo.Get(ctx, ownerID, id)
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// ErrConflict is returned by Transition when the CAS precondition fails.
+// ErrConflict 在 Transition 的 CAS 前置条件不满足时返回。
 var ErrConflict = errors.New("store: status conflict")
 
 type TaskRepo struct{ q Querier }
@@ -58,15 +58,15 @@ func (r *TaskRepo) Get(ctx context.Context, ownerID, id string) (*Task, error) {
 	return t, nil
 }
 
-// GetByID fetches a task without owner filtering (scheduler-internal use).
+// GetByID 不做 owner 过滤地取回任务（调度器内部使用）。
 func (r *TaskRepo) GetByID(ctx context.Context, id string) (*Task, error) {
 	return scanTask(r.q.QueryRow(ctx, `
 		SELECT `+taskCols+` FROM task WHERE id = $1 AND deleted_at IS NULL`, id))
 }
 
-// Transition performs a CAS status change; optional mutation applied in the same UPDATE.
+// Transition 执行一次 CAS 状态变更；可选变更在同一 UPDATE 中生效。
 func (r *TaskRepo) Transition(ctx context.Context, id string, from, to string, mutate func(*Task)) error {
-	// Fetch-then-update inside a transaction keeps the CAS semantics observable.
+	// 事务内先取后改，使 CAS 语义可观测。
 	return withTx(ctx, r.q, func(q Querier) error {
 		t, err := scanTask(q.QueryRow(ctx, `SELECT `+taskCols+` FROM task WHERE id = $1 FOR UPDATE`, id))
 		if err != nil {
@@ -86,7 +86,7 @@ func (r *TaskRepo) Transition(ctx context.Context, id string, from, to string, m
 	})
 }
 
-// ListByOwner returns tasks, optionally filtered by status and kind.
+// ListByOwner 返回任务，可选用状态与种类过滤。
 func (r *TaskRepo) ListByOwner(ctx context.Context, ownerID string, statuses []string, kind string) ([]Task, error) {
 	query := `SELECT ` + taskCols + ` FROM task WHERE owner_user_id = $1 AND deleted_at IS NULL`
 	args := []any{ownerID}
@@ -119,14 +119,14 @@ func (r *TaskRepo) ListByOwner(ctx context.Context, ownerID string, statuses []s
 	return out, rows.Err()
 }
 
-// SetSchema patches the task payload (used by note→episode linking etc.).
+// SetSchema 修补任务负载（用于 note→episode 关联等）。
 func (r *TaskRepo) SetSchema(ctx context.Context, id string, schema json.RawMessage) error {
 	_, err := r.q.Exec(ctx,
 		`UPDATE task SET schema_jsonb = $2, updated_at = now() WHERE id = $1`, id, notNullJSON(schema))
 	return err
 }
 
-// ExpireOverdue marks scheduled/snoozed/notified tasks past their deadline as expired.
+// ExpireOverdue 把超过截止时间的 scheduled/snoozed/notified 任务标记为过期。
 func (r *TaskRepo) ExpireOverdue(ctx context.Context, now time.Time) ([]Task, error) {
 	rows, err := r.q.Query(ctx, `
 		UPDATE task SET status = 'expired', updated_at = now()

@@ -1,6 +1,6 @@
 package llm
 
-// ModelInfo describes one known model in the catalog.
+// ModelInfo 描述目录中的一个已知模型。
 type ModelInfo struct {
 	ID         string
 	Provider   string // "deepseek" | "moonshot" | "dashscope" | "doubao" | ...
@@ -8,8 +8,8 @@ type ModelInfo struct {
 	EmbedDim   int // 0 for chat models
 }
 
-// catalog holds reference data for models commonly used with the
-// OpenAI-compatible gateway (DeepSeek / Moonshot / 通义 / 豆包).
+// catalog 保存常用模型的参考数据，配合
+// OpenAI 兼容网关（DeepSeek / Moonshot / 通义 / 豆包）使用。
 var catalog = map[string]ModelInfo{
 	"deepseek-chat":          {ID: "deepseek-chat", Provider: "deepseek", ContextWin: 65536},
 	"moonshot-v1-8k":         {ID: "moonshot-v1-8k", Provider: "moonshot", ContextWin: 8192},
@@ -19,5 +19,5 @@ var catalog = map[string]ModelInfo{
 	"BAAI/bge-m3":            {ID: "BAAI/bge-m3", Provider: "siliconflow", EmbedDim: 1024},
 }
 
-// Lookup returns catalog info for a model id (zero value when unknown).
+// Lookup 返回指定模型 id 的目录信息（未知时返回零值）。
 func Lookup(model string) ModelInfo { return catalog[model] }

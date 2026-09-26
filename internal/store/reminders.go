@@ -12,8 +12,8 @@ type ReminderRepo struct{ q Querier }
 
 func NewReminderRepo(q Querier) *ReminderRepo { return &ReminderRepo{q: q} }
 
-// InsertIdempotent inserts a reminder unless its dedupe_key already exists.
-// Returns created=false on conflict (idempotent re-fire / double scan).
+// InsertIdempotent 插入一条提醒，除非其 dedupe_key 已存在。
+// 冲突时返回 created=false（幂等重触发 / 双重扫描）。
 func (r *ReminderRepo) InsertIdempotent(ctx context.Context, rem *Reminder) (bool, error) {
 	var created bool
 	err := r.q.QueryRow(ctx, `
@@ -32,7 +32,7 @@ func (r *ReminderRepo) InsertIdempotent(ctx context.Context, rem *Reminder) (boo
 	return created, nil
 }
 
-// Due returns pending reminders due at or before cutoff (FOR UPDATE SKIP LOCKED).
+// Due 返回在 cutoff 之前到期的 pending 提醒（FOR UPDATE SKIP LOCKED）。
 func (r *ReminderRepo) Due(ctx context.Context, cutoff time.Time, limit int) ([]Reminder, error) {
 	rows, err := r.q.Query(ctx, `
 		SELECT id, task_id, fire_at, channel, level, state, dedupe_key, created_at
@@ -65,23 +65,23 @@ func (r *ReminderRepo) Mark(ctx context.Context, id, state string) error {
 	return err
 }
 
-// Defer rewrites fire_at of a pending reminder (DND deferral). The dedupe_key
-// is intentionally unchanged: a deferral is not a new reminder.
+// Defer 重写 pending 提醒的 fire_at（DND 延后）。dedupe_key
+// 有意保持不变：一次延后并不是一条新提醒。
 func (r *ReminderRepo) Defer(ctx context.Context, id string, newFireAt time.Time) error {
 	_, err := r.q.Exec(ctx,
 		`UPDATE reminder SET fire_at = $2 WHERE id = $1 AND state = 'pending'`, id, newFireAt)
 	return err
 }
 
-// CancelPendingByTask cancels undelivered reminders for a task (closure after done/snooze/cancel).
+// CancelPendingByTask 取消某任务未投递的提醒（完成/稍后/取消后的收尾）。
 func (r *ReminderRepo) CancelPendingByTask(ctx context.Context, taskID string) error {
 	_, err := r.q.Exec(ctx, `
 		DELETE FROM reminder WHERE task_id = $1 AND state = 'pending'`, taskID)
 	return err
 }
 
-// CountSentSince counts delivered reminders in a channel set since a point in time
-// (used for the daily push budget).
+// CountSentSince 统计自某个时间点以来在指定渠道集合内已投递的提醒数
+// （用于每日推送预算）。
 func (r *ReminderRepo) CountSentSince(ctx context.Context, ownerID string, since time.Time, channels []string, maxLevel int) (int, error) {
 	var n int
 	err := r.q.QueryRow(ctx, `
@@ -95,7 +95,7 @@ func (r *ReminderRepo) CountSentSince(ctx context.Context, ownerID string, since
 	return n, err
 }
 
-// ListByTask returns all reminders for a task (for state inspection / tests).
+// ListByTask 返回某任务的全部提醒（供状态检查 / 测试）。
 func (r *ReminderRepo) ListByTask(ctx context.Context, taskID string) ([]Reminder, error) {
 	rows, err := r.q.Query(ctx, `
 		SELECT id, task_id, fire_at, channel, level, state, dedupe_key, created_at
@@ -107,7 +107,7 @@ func (r *ReminderRepo) ListByTask(ctx context.Context, taskID string) ([]Reminde
 	return scanReminders(rows)
 }
 
-// SentToday counts reminders sent to a user since a point in time (digest/push budget).
+// SentSince 统计自某个时间点以来发送给某用户的提醒数（摘要/推送预算）。
 func (r *ReminderRepo) SentSince(ctx context.Context, ownerID string, since time.Time) (int, error) {
 	var n int
 	err := r.q.QueryRow(ctx, `

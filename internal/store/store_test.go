@@ -12,7 +12,7 @@ import (
 	"goldenfinger/agent/internal/store"
 )
 
-// padVec pads a short test vector to the schema dimension (VECTOR(1024)).
+// padVec 把短测试向量填充到 schema 维度（VECTOR(1024)）。
 func padVec(head ...float32) []float32 {
 	v := make([]float32, 1024)
 	copy(v, head)
@@ -115,12 +115,12 @@ func TestTaskTransitionCAS(t *testing.T) {
 	if err := repos.Tasks.Transition(ctx, task.ID, store.TaskDraft, store.TaskScheduled, nil); err != nil {
 		t.Fatalf("legal transition failed: %v", err)
 	}
-	// Wrong from-status must conflict.
+	// 错误的起始状态必须冲突。
 	err := repos.Tasks.Transition(ctx, task.ID, store.TaskDraft, store.TaskDone, nil)
 	if !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("want ErrConflict, got %v", err)
 	}
-	// Correct CAS proceeds.
+	// 正确的 CAS 得以继续。
 	if err := repos.Tasks.Transition(ctx, task.ID, store.TaskScheduled, store.TaskDone, nil); err != nil {
 		t.Fatalf("second transition: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestFactSimilarAndForgetCascade(t *testing.T) {
 		t.Fatal("expected similarity hit")
 	}
 
-	// Forget cascade: person soft-deleted, aliases+facts hard-deleted.
+	// 遗忘级联：人物软删除，别名与事实硬删除。
 	if err := repos.Persons.SoftDeleteCascade(ctx, u.ID, p.ID); err != nil {
 		t.Fatalf("forget: %v", err)
 	}

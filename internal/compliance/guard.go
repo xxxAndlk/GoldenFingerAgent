@@ -1,5 +1,5 @@
-// Package compliance: guardian consent, child content filtering, fact-type
-// policy and audit writes (doc §9 — 未成年人是底线).
+// Package compliance：监护人同意、儿童内容过滤、事实类型
+// 策略与审计写入（文档 §9 — 未成年人是底线）。
 package compliance
 
 import (
@@ -12,16 +12,16 @@ import (
 	"goldenfinger/agent/internal/store"
 )
 
-// ErrConsentRequired blocks an operation until guardian consent is recorded.
+// ErrConsentRequired 在监护人同意被记录前阻止该操作。
 var ErrConsentRequired = errors.New("compliance: guardian consent required")
 
-// ErrContentBlocked blocks unsafe output for child accounts.
+// ErrContentBlocked 阻止对儿童账号的不安全输出。
 var ErrContentBlocked = errors.New("compliance: content blocked")
 
-// childBlockedKeywords is the content-filter stub (real filter is an external service).
+// childBlockedKeywords 是内容过滤的桩实现（真实过滤器是外部服务）。
 var childBlockedKeywords = []string{"暴力", "血腥", "色情", "赌博", "毒品", "自杀", "自残", "抽烟", "喝酒"}
 
-// Guard enforces the compliance gates. All write paths also record audit entries.
+// Guard 强制合规门禁。所有写路径同时记录审计条目。
 type Guard struct {
 	consents *store.ConsentRepo
 	audit    *store.AuditRepo
@@ -32,8 +32,8 @@ func NewGuard(consents *store.ConsentRepo, audit *store.AuditRepo, users *store.
 	return &Guard{consents: consents, audit: audit, users: users}
 }
 
-// RequireConsent enforces guardian consent for child accounts on sensitive scopes.
-// Elder/general users pass through. Children need an active consent row.
+// RequireConsent 对儿童账号的敏感范围强制执行监护人同意。
+// 老人/普通用户直接放行。儿童需要一条有效的同意记录。
 func (g *Guard) RequireConsent(ctx context.Context, user *store.User, scope string) error {
 	if user.UserType != store.UserChild {
 		return nil
@@ -53,8 +53,8 @@ func (g *Guard) RequireConsent(ctx context.Context, user *store.User, scope stri
 	return nil
 }
 
-// FilterContent blocks unsafe text for child users (keyword stub + hook point
-// for a real external moderation service).
+// FilterContent 阻止对儿童用户的不安全文本（关键词桩 + 真实外部
+// 内容审核服务的接入点）。
 func (g *Guard) FilterContent(ctx context.Context, user *store.User, text string) error {
 	if user.UserType != store.UserChild {
 		return nil
@@ -69,10 +69,10 @@ func (g *Guard) FilterContent(ctx context.Context, user *store.User, text string
 	return nil
 }
 
-// FactTypeAllowed enforces 儿童仅事实型 + the universal evaluative ban.
+// FactTypeAllowed 强制执行儿童仅事实型 + 通用评价性内容禁令。
 func (g *Guard) FactTypeAllowed(user *store.User, factType, valueText string) error {
 	if nlu.IsEvaluative(factType, valueText) {
-		return ErrContentBlocked // evaluative labels: never auto-write
+		return ErrContentBlocked // 评价性标签：绝不自动写入
 	}
 	if user.UserType == store.UserChild && !nlu.ChildFactAllowed(factType) {
 		return ErrContentBlocked
@@ -80,7 +80,7 @@ func (g *Guard) FactTypeAllowed(user *store.User, factType, valueText string) er
 	return nil
 }
 
-// Audit writes an audit entry on behalf of an actor.
+// Audit 以某个行为者的名义写入审计条目。
 func (g *Guard) Audit(ctx context.Context, ownerID *string, actor, action, target string, detail map[string]any) error {
 	var raw json.RawMessage
 	if detail != nil {

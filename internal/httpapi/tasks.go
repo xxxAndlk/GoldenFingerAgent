@@ -57,7 +57,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
-// handleTaskAction wires the 【完成/推迟/取消】 reminder buttons to the state machine.
+// handleTaskAction 把【完成/推迟/取消】提醒按钮接到状态机。
 func (s *Server) handleTaskAction(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(w, r)
 	if u == nil {
@@ -79,7 +79,7 @@ func (s *Server) handleTaskAction(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "snooze":
-		// Default snooze: 30 minutes (UI sends no body for now).
+		// 默认推迟 30 分钟（UI 暂不发送正文）。
 		newTime := s.Runtime.Tools.Now().Add(30 * time.Minute)
 		if _, err := s.Runtime.Tools.Tasks.Snooze(ctx, u.ID, id, newTime); err != nil {
 			writeError(w, 400, err.Error())
@@ -102,7 +102,7 @@ func (s *Server) handleReminders(w http.ResponseWriter, r *http.Request) {
 	if u == nil {
 		return
 	}
-	// Surface upcoming task slots as the "reminder list" for the UI.
+	// 把即将到来的任务槽作为“提醒列表”呈现给 UI。
 	tasks, err := s.Repos.Tasks.ListByOwner(r.Context(), u.ID,
 		[]string{store.TaskScheduled, store.TaskNotified, store.TaskSnoozed}, "")
 	if err != nil {

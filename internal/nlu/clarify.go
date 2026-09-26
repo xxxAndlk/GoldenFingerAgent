@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// PendingActionType enumerates clarify round-trip kinds.
+// PendingActionType 枚举澄清往返的类型。
 const (
 	PendingTaskCreate     = "task_create"
 	PendingPersonDisambig = "person_disambig"
@@ -14,27 +14,27 @@ const (
 	PendingTimeMissing    = "time_missing"
 )
 
-// Option is one selectable clarify answer shown to the user.
+// Option 是展示给用户的可选澄清答案。
 type Option struct {
-	Label string `json:"label"` // Chinese user-facing text
-	Ref   string `json:"ref"`   // e.g. "person:<uuid>" | "yes" | "no" | "none"
+	Label string `json:"label"` // 面向用户的中文文本
+	Ref   string `json:"ref"`   // 例如："person:<uuid>" | "yes" | "no" | "none"
 }
 
-// PendingAction is the frozen hypothesis awaiting the user's next message.
-// It lives in chat_session.state_jsonb so it survives restarts.
+// PendingAction 是等待用户下一条消息的冻结假设。
+// 它存放在 chat_session.state_jsonb 中，因此重启后依然存在。
 type PendingAction struct {
 	Type      string          `json:"type"`
-	Payload   json.RawMessage `json:"payload"` // frozen hypothesis (raw_text, kind, candidates…)
+	Payload   json.RawMessage `json:"payload"` // 冻结假设（raw_text、kind、candidates…）
 	Options   []Option        `json:"options,omitempty"`
 	Question  string          `json:"question"`
 	CreatedAt time.Time       `json:"created_at"`
 	ExpiresAt time.Time       `json:"expires_at"`
 }
 
-// DefaultPendingTTL is how long a clarify question stays answerable.
+// DefaultPendingTTL 是澄清问题保持可回答的时长。
 const DefaultPendingTTL = 10 * time.Minute
 
-// NewPending builds a pending action with the default TTL.
+// NewPending 使用默认 TTL 构建一个待定动作。
 func NewPending(typ string, payload json.RawMessage, question string, opts []Option, now time.Time) *PendingAction {
 	return &PendingAction{
 		Type:      typ,
@@ -46,30 +46,30 @@ func NewPending(typ string, payload json.RawMessage, question string, opts []Opt
 	}
 }
 
-// Expired reports whether the pending action is too old to resolve.
+// Expired 报告该待定动作是否已过期、无法再解析。
 func (p *PendingAction) Expired(now time.Time) bool {
 	return p == nil || now.After(p.ExpiresAt)
 }
 
-// MatchOutcome is the result of matching the user's reply against a pending action.
+// MatchOutcome 是将用户回复与待定动作匹配的结果。
 type MatchOutcome int
 
 const (
-	MatchNone   MatchOutcome = iota // message is not an answer → abandon/ignore
-	MatchOption                     // picked one of Options (or 都不是)
-	MatchAffirm                     // "对/是的/嗯" style confirmation
-	MatchDeny                       // "不对/不是/取消" style rejection
+	MatchNone   MatchOutcome = iota // 消息不是回答 → 放弃/忽略
+	MatchOption                     // 选中了某个选项（或「都不是」）
+	MatchAffirm                     // 「对/是的/嗯」式确认
+	MatchDeny                       // 「不对/不是/取消」式拒绝
 )
 
-// affirm/deny word sets for yes/no clarifications.
+// 用于是/否澄清的肯定/否定词集。
 var (
 	affirmWords = []string{"对", "对的", "是的", "是", "嗯", "好", "好的", "可以", "确认", "没错", "就这样", "ok", "OK", "行"}
 	denyWords   = []string{"不对", "不是", "不用", "不要", "算了", "取消", "不是的", "没对", "错", "不"}
 	noneWords   = []string{"都不是", "没有", "都不对", "其他", "都不是的"}
 )
 
-// Match classifies the user's reply for a pending action.
-// Option matching wins over bare affirm/deny (a listed option is more specific).
+// Match 对待定动作的用户回复进行分类。
+// 选项匹配优先于单纯的肯定/否定（列出的选项更具体）。
 func Match(p *PendingAction, userText string) (MatchOutcome, *Option) {
 	if p == nil {
 		return MatchNone, nil
@@ -79,7 +79,7 @@ func Match(p *PendingAction, userText string) (MatchOutcome, *Option) {
 		return MatchNone, nil
 	}
 
-	// Option selection: exact label, contains-label, or numeric index ("1", "二").
+	// 选项选择：精确标签、包含标签或数字序号（"1"、"二"）。
 	for i := range p.Options {
 		opt := &p.Options[i]
 		if text == opt.Label || strings.Contains(text, opt.Label) {
@@ -95,7 +95,7 @@ func Match(p *PendingAction, userText string) (MatchOutcome, *Option) {
 		}
 	}
 
-	// Affirm / deny fallback for yes-no questions.
+	// 是非题的肯定/否定兜底。
 	for _, w := range denyWords {
 		if text == w {
 			return MatchDeny, nil
@@ -109,7 +109,7 @@ func Match(p *PendingAction, userText string) (MatchOutcome, *Option) {
 	return MatchNone, nil
 }
 
-// parseIndex recognizes "1", "2", "一", "二"… as option indices.
+// parseIndex 识别 "1"、"2"、"一"、"二"… 作为选项序号。
 func parseIndex(text string) (int, bool) {
 	switch text {
 	case "1", "一":
@@ -126,9 +126,9 @@ func parseIndex(text string) (int, bool) {
 	return 0, false
 }
 
-// ---- frozen payloads ----
+// ---- 冻结载荷 ----
 
-// TaskPayload is the frozen create_task hypothesis.
+// TaskPayload 是冻结的 create_task 假设。
 type TaskPayload struct {
 	RawText       string  `json:"raw_text"`
 	Kind          string  `json:"kind"` // intent|fact|alarm|note
@@ -140,13 +140,13 @@ type TaskPayload struct {
 	Confidence    float64 `json:"confidence"`
 }
 
-// PersonCandidate is one disambiguation choice.
+// PersonCandidate 是消歧选项之一。
 type PersonCandidate struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
-// PersonDisambigPayload freezes the action that needs a person choice.
+// PersonDisambigPayload 冻结需要用户选择人物的动作。
 type PersonDisambigPayload struct {
 	NextAction string            `json:"next_action"` // "task_create" | "save_fact"
 	Task       *TaskPayload      `json:"task,omitempty"`
@@ -154,7 +154,7 @@ type PersonDisambigPayload struct {
 	Candidates []PersonCandidate `json:"candidates"`
 }
 
-// FactPayload is the frozen save_fact hypothesis.
+// FactPayload 是冻结的 save_fact 假设。
 type FactPayload struct {
 	PersonName string  `json:"person_name"`
 	PersonID   string  `json:"person_id,omitempty"`
@@ -164,7 +164,7 @@ type FactPayload struct {
 	Confidence float64 `json:"confidence"`
 }
 
-// TimeMissingPayload freezes a task awaiting a time expression.
+// TimeMissingPayload 冻结等待时间表达式的任务。
 type TimeMissingPayload struct {
 	Task TaskPayload `json:"task"`
 }

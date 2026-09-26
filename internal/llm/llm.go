@@ -1,6 +1,6 @@
-// Package llm is the unified LLM API (pi's packages/ai analog):
-// provider-agnostic request/response types, one OpenAI-compatible client,
-// and a scripted mock for deterministic tests.
+// Package llm 是统一的 LLM API（对应 pi 的 packages/ai）：
+// 与供应商无关的请求/响应类型、一个 OpenAI 兼容客户端，
+// 以及用于确定性测试的脚本化 mock。
 package llm
 
 import (
@@ -17,8 +17,8 @@ const (
 	RoleTool      Role = "tool"
 )
 
-// ToolCall is a model-requested function invocation. Arguments are UNTRUSTED
-// data and must be validated where they enter the system (tool executors).
+// ToolCall 是模型请求的函数调用。参数是 UNTRUSTED
+// 数据，必须在进入系统处（工具执行器）进行校验。
 type ToolCall struct {
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`
@@ -29,11 +29,11 @@ type Message struct {
 	Role       Role       `json:"role"`
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"` // tool result correlation
-	Name       string     `json:"name,omitempty"`         // tool name on role=tool
+	ToolCallID string     `json:"tool_call_id,omitempty"` // 工具结果关联
+	Name       string     `json:"name,omitempty"`         // role=tool 时的工具名
 }
 
-// ToolSpec declares a callable tool (JSON Schema parameters).
+// ToolSpec 声明一个可调用工具（JSON Schema 参数）。
 type ToolSpec struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
@@ -51,7 +51,7 @@ type ChatRequest struct {
 	Tools       []ToolSpec
 	Temperature float64
 	MaxTokens   int
-	JSONMode    bool // request JSON object output (extraction fallback)
+	JSONMode    bool // 请求 JSON 对象输出（抽取回退）
 }
 
 type ChatResponse struct {
@@ -60,15 +60,15 @@ type ChatResponse struct {
 	Usage        Usage
 }
 
-// Client is the chat-completion abstraction. Implementations must not panic;
-// failures are returned as errors (the agent loop turns them into user copy).
+// Client 是聊天补全抽象。实现不得 panic；
+// 失败以 error 返回（agent 循环会将其转成给用户的话术）。
 type Client interface {
 	Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error)
-	// Stream emits text deltas to onDelta as they arrive and returns the final message.
+	// Stream 将文本增量实时推送给 onDelta，并返回最终消息。
 	Stream(ctx context.Context, req ChatRequest, onDelta func(text string)) (*ChatResponse, error)
 }
 
-// Embedder turns text into vectors for memory retrieval.
+// Embedder 将文本转为向量用于记忆检索。
 type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }

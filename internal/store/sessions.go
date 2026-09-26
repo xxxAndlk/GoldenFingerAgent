@@ -60,7 +60,7 @@ func (r *SessionRepo) AppendMessage(ctx context.Context, m *ChatMessage) error {
 	).Scan(&m.ID, &m.CreatedAt)
 }
 
-// RecentMessages returns the newest n messages in chronological order.
+// RecentMessages 按时间顺序返回最新的 n 条消息。
 func (r *SessionRepo) RecentMessages(ctx context.Context, sessionID string, n int) ([]ChatMessage, error) {
 	rows, err := r.q.Query(ctx, `
 		SELECT id, session_id, role, content, tool_calls_jsonb, tool_call_id, name, created_at
@@ -80,7 +80,7 @@ func (r *SessionRepo) RecentMessages(ctx context.Context, sessionID string, n in
 		m.ToolCalls = toolCalls
 		out = append(out, m)
 	}
-	// Reverse to chronological order.
+	// 反转为时间正序。
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}

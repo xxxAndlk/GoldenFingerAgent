@@ -9,7 +9,7 @@ import (
 	"goldenfinger/agent/internal/store"
 )
 
-// fakeQueue records scheduling calls.
+// fakeQueue 记录调度调用。
 type fakeQueue struct {
 	enqueued  []string
 	cancelled []string
@@ -29,7 +29,7 @@ func TestTransitionTable(t *testing.T) {
 		store.TaskDraft, store.TaskPendingConfirm, store.TaskScheduled, store.TaskNotified,
 		store.TaskDone, store.TaskSnoozed, store.TaskCancelled, store.TaskExpired,
 	}
-	// Legal edges from the doc's state machine.
+	// 文档状态机中的合法边。
 	legal := map[string][]string{
 		store.TaskDraft:          {store.TaskPendingConfirm, store.TaskScheduled, store.TaskDone, store.TaskCancelled},
 		store.TaskPendingConfirm: {store.TaskScheduled, store.TaskDone, store.TaskCancelled, store.TaskExpired},
@@ -50,7 +50,7 @@ func TestTransitionTable(t *testing.T) {
 			}
 		}
 	}
-	// Terminal states.
+	// 终态。
 	for _, terminal := range []string{store.TaskDone, store.TaskCancelled, store.TaskExpired} {
 		for _, to := range all {
 			if CanTransition(terminal, to) {
@@ -62,7 +62,7 @@ func TestTransitionTable(t *testing.T) {
 
 func TestIllegalTransitionError(t *testing.T) {
 	ctx := context.Background()
-	// Transition with illegal edge short-circuits before touching the repo.
+	// 非法边在触碰仓储前即短路。
 	err := Transition(ctx, nil, "some-id", store.TaskDone, store.TaskScheduled, nil)
 	if !errors.Is(err, ErrIllegalTransition) {
 		t.Fatalf("want ErrIllegalTransition, got %v", err)
@@ -87,7 +87,7 @@ func TestIntentVsFactTemplates(t *testing.T) {
 		t.Errorf("alarm copy = %q", got)
 	}
 
-	// Intents must NEVER get lead-time event reminders (P3: 没订票不提醒赶飞机).
+	// 意图绝不能获得提前量事件提醒（P3：没订票不提醒赶飞机）。
 	if leads := FactLeadReminders(""); len(leads) != 0 {
 		t.Errorf("default template leads = %v", leads)
 	}

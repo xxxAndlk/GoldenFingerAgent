@@ -7,13 +7,13 @@ import (
 	"goldenfinger/agent/internal/store"
 )
 
-// Reminder copy templates. P3 (意图≠事实):
-//   - intent: only reminds "don't forget to do X" — NEVER triggers event templates.
-//   - fact:   events (already booked) trigger lead-time event templates.
-//   - alarm:  rings at abs_time with the label.
-//   - note:   never fires.
+// 提醒文案模板。P3（意图≠事实）：
+//   - intent：只提醒“别忘做 X”——绝不触发事件模板。
+//   - fact：  事件（已预订）触发提前量事件模板。
+//   - alarm：  在 abs_time 以标签响铃。
+//   - note：   永不触发。
 
-// BuildReminderText renders one reminder's user-facing Chinese copy.
+// BuildReminderText 渲染一条提醒对用户的中文文案。
 func BuildReminderText(t *store.Task, level int, title string) string {
 	switch t.Kind {
 	case store.KindAlarm:
@@ -30,7 +30,7 @@ func BuildReminderText(t *store.Task, level int, title string) string {
 	}
 }
 
-// eventTemplateText renders lead-time copy for confirmed facts (P3).
+// eventTemplateText 为已确认的事实（P3）渲染提前量文案。
 func eventTemplateText(template, title string) string {
 	switch template {
 	case "trip":
@@ -44,8 +44,8 @@ func eventTemplateText(template, title string) string {
 	}
 }
 
-// FactLeadReminders returns lead-time offsets for fact kinds with an event template.
-// Only facts (已发生/已订票) get lead-time reminders — never intents.
+// FactLeadReminders 返回带事件模板的事实种类的提前量偏移。
+// 只有事实（已发生/已订票）获得提前量提醒——意图绝不。
 func FactLeadReminders(template string) []time.Duration {
 	switch template {
 	case "trip":
@@ -53,24 +53,24 @@ func FactLeadReminders(template string) []time.Duration {
 	case "appointment":
 		return []time.Duration{-2 * time.Hour, -30 * time.Minute}
 	case "medication":
-		return nil // fires at abs_time only
+		return nil // 只在 abs_time 触发
 	default:
 		return nil
 	}
 }
 
-// DedupeKey builds the idempotency key for a reminder slot.
-// Format: task:{id}:L{level}:{fire_at_unix} (digests use digest:{user}:{date}).
+// DedupeKey 为提醒槽构建幂等键。
+// 格式：task:{id}:L{level}:{fire_at_unix}（摘要使用 digest:{user}:{date}）。
 func DedupeKey(taskID string, level int, fireAt time.Time) string {
 	return fmt.Sprintf("task:%s:L%d:%d", taskID, level, fireAt.UTC().Unix())
 }
 
-// DigestDedupeKey builds the once-a-day digest key.
+// DigestDedupeKey 构建每天一次的摘要键。
 func DigestDedupeKey(userID string, day time.Time) string {
 	return fmt.Sprintf("digest:%s:%04d-%02d-%02d", userID, day.Year(), day.Month(), day.Day())
 }
 
-// Title extracts the human title from a task payload.
+// Title 从任务负载中提取人类可读的标题。
 func Title(t *store.Task) string {
 	if t.Schema != nil {
 		var s struct {

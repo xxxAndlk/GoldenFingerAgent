@@ -18,27 +18,27 @@ var th = Thresholds{
 }
 
 func TestScoreBoundaries(t *testing.T) {
-	// Pure self-report passes through.
+		// 纯自报分数直接通过。
 	if s := Score(ScoreInput{LLMSelfReported: 0.9}); s != 0.9 {
 		t.Errorf("pass-through score = %v", s)
 	}
-	// Time parse bonus.
+		// 时间解析加分。
 	if s := Score(ScoreInput{LLMSelfReported: 0.82, TimeParsed: true}); s < 0.85 {
 		t.Errorf("time bonus missing: %v", s)
 	}
-	// Missing required time penalty.
+		// 缺少必需时间的扣分。
 	if s := Score(ScoreInput{LLMSelfReported: 0.8, TimeRequired: true}); s != 0.65 {
 		t.Errorf("time-missing score = %v", s)
 	}
-	// Person ambiguity penalty.
+		// 人物歧义扣分。
 	if s := Score(ScoreInput{LLMSelfReported: 0.9, PersonAmbiguous: true}); s != 0.7 {
 		t.Errorf("ambiguous score = %v", s)
 	}
-	// Evaluative forces zero.
+		// 评价性强制归零。
 	if s := Score(ScoreInput{LLMSelfReported: 0.99, Evaluative: true}); s != 0 {
 		t.Errorf("evaluative must be 0, got %v", s)
 	}
-	// Clamped to [0,1].
+		// 夹取到 [0,1]。
 	if s := Score(ScoreInput{LLMSelfReported: 1, TimeParsed: true, PersonResolved: true}); s != 1 {
 		t.Errorf("clamp high = %v", s)
 	}
@@ -50,9 +50,9 @@ func TestGateTask(t *testing.T) {
 		want  TaskAction
 	}{
 		{0.90, ActionAutoCreate},
-		{0.85, ActionAutoCreate}, // boundary inclusive
+		{0.85, ActionAutoCreate}, // 边界含等号
 		{0.84, ActionClarify},
-		{0.60, ActionClarify}, // boundary inclusive
+		{0.60, ActionClarify}, // 边界含等号
 		{0.59, ActionDiscard},
 		{0.0, ActionDiscard},
 	}
@@ -140,32 +140,32 @@ func TestLLMTimeFallbackValidation(t *testing.T) {
 	now := time.Date(2026, 3, 5, 10, 0, 0, 0, time.FixedZone("CST", 8*3600))
 	loc := now.Location()
 
-	// Valid answer accepted.
+		// 有效答案被接受。
 	client := mock.New(mock.TextResponse(`{"abs_time":"2026-03-06T07:00:00+08:00","recurrence":"","confidence":0.9}`))
 	res, ok := LLMTimeFallback(context.Background(), client, "m", "明儿个早上", now, loc)
 	if !ok || res.Method != "llm" || res.Abs.Hour() != 7 {
 		t.Fatalf("valid fallback rejected: %+v ok=%v", res, ok)
 	}
 
-	// Past time rejected.
+		// 过去的时间被拒绝。
 	client = mock.New(mock.TextResponse(`{"abs_time":"2026-03-01T07:00:00+08:00","recurrence":"","confidence":0.9}`))
 	if _, ok := LLMTimeFallback(context.Background(), client, "m", "上周", now, loc); ok {
 		t.Error("past time must be rejected")
 	}
 
-	// Bad RFC3339 rejected.
+		// 非 RFC3339 被拒绝。
 	client = mock.New(mock.TextResponse(`{"abs_time":"下周三","recurrence":"","confidence":0.9}`))
 	if _, ok := LLMTimeFallback(context.Background(), client, "m", "下周三", now, loc); ok {
 		t.Error("non-RFC3339 must be rejected")
 	}
 
-	// Bad recurrence rejected.
+		// 非法 recurrence 被拒绝。
 	client = mock.New(mock.TextResponse(`{"abs_time":"2026-03-06T07:00:00+08:00","recurrence":"whenever","confidence":0.9}`))
 	if _, ok := LLMTimeFallback(context.Background(), client, "m", "随便", now, loc); ok {
 		t.Error("bad recurrence must be rejected")
 	}
 
-	// Good recurrence accepted.
+		// 合法 recurrence 被接受。
 	client = mock.New(mock.TextResponse(`{"abs_time":"2026-03-06T07:00:00+08:00","recurrence":"daily@07:00","confidence":0.9}`))
 	res, ok = LLMTimeFallback(context.Background(), client, "m", "每天早上吧", now, loc)
 	if !ok || res.Recurrence != "daily@07:00" {

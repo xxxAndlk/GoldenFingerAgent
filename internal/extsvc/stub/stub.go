@@ -1,4 +1,4 @@
-// Package stub provides dev/mock implementations of the extsvc interfaces.
+// Package stub 提供 extsvc 接口的开发/模拟实现。
 package stub
 
 import (
@@ -10,7 +10,7 @@ import (
 	"goldenfinger/agent/internal/extsvc"
 )
 
-// Weather returns canned fixture data keyed by city (F7 dev stub).
+// Weather 返回按城市索引的固定夹具数据（F7 开发桩）。
 type Weather struct{}
 
 var weatherFixtures = map[string]extsvc.Weather{
@@ -46,7 +46,25 @@ func (Weather) Forecast(ctx context.Context, city string, days int) ([]extsvc.Da
 	return out, nil
 }
 
-// ASR returns a configured canned transcript (dev stub).
+// Search 对任何查询返回固定示例结果（开发桩）。
+type Search struct{}
+
+var searchFixtures = []extsvc.SearchResult{
+	{Name: "Firecrawl Search 官方文档", URL: "https://docs.firecrawl.dev", Snippet: "Firecrawl Search API，专为 AI Agent 设计的网页搜索与抓取服务。", Summary: "Firecrawl 提供 v2/search 搜索 API，返回干净的标题、链接与摘要。", SiteName: "Firecrawl", DatePublished: "2026-01-01"},
+	{Name: "金手指管家示例结果", URL: "https://example.com", Snippet: "这是一条 dev stub 返回的固定搜索结果。", Summary: "未配置 firecrawl api_key 时返回的示例数据，配置后走真实搜索。", SiteName: "示例站点", DatePublished: "2026-01-02"},
+}
+
+func (Search) Search(ctx context.Context, query string, count int) ([]extsvc.SearchResult, error) {
+	if count <= 0 {
+		count = 8
+	}
+	if count > len(searchFixtures) {
+		count = len(searchFixtures)
+	}
+	return searchFixtures[:count], nil
+}
+
+// ASR 返回配置好的固定转写文本（开发桩）。
 type ASR struct {
 	Canned string
 }
@@ -58,14 +76,14 @@ func (a ASR) Transcribe(ctx context.Context, audio []byte, format string) (strin
 	return "（语音识别 stub：这是一段模拟的转写文本）", nil
 }
 
-// TTS returns an empty WAV placeholder plus the input text (dev stub).
+// TTS 返回一个空的 WAV 占位符加上输入文本（开发桩）。
 type TTS struct{}
 
 func (TTS) Synth(ctx context.Context, text, voice string) ([]byte, string, error) {
 	return []byte("RIFF....WAVEstub"), "wav", nil
 }
 
-// Push logs to stdout (dev stub).
+// Push 记录到 stdout（开发桩）。
 type Push struct{}
 
 func (Push) Push(ctx context.Context, deviceToken string, msg extsvc.PushMessage) error {
@@ -73,7 +91,7 @@ func (Push) Push(ctx context.Context, deviceToken string, msg extsvc.PushMessage
 	return nil
 }
 
-// SMS logs to stdout (dev stub).
+// SMS 记录到 stdout（开发桩）。
 type SMS struct{}
 
 func (SMS) Send(ctx context.Context, phone, text string) error {
@@ -81,14 +99,14 @@ func (SMS) Send(ctx context.Context, phone, text string) error {
 	return nil
 }
 
-// Dispatcher fans a reminder out over its channel (app/push/sms).
-// The "app" channel is delivered via the chat/outbox callback in production;
-// here it logs so tests can observe it.
+// Dispatcher 把提醒按渠道（app/push/sms）分发。
+// 生产环境中 "app" 渠道通过聊天/outbox 回调投递；
+// 这里记录日志以便测试观察。
 type Dispatcher struct {
 	Push extsvc.PushService
 	SMS  extsvc.SMSService
 	TTS  extsvc.TTSService
-	// Outbox receives "app"-channel messages (wired to the web outbox later).
+	// Outbox 接收 "app" 渠道的消息（日后接到 web outbox）。
 	Outbox func(body string)
 }
 

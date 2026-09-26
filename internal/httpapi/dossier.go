@@ -10,9 +10,9 @@ import (
 	"goldenfinger/agent/internal/task"
 )
 
-// handleMemoryExport renders the user's whole memory as human-readable
-// Markdown (USER.md/MEMORY.md spirit — no vector-soup black box: the user can
-// read, audit and hand-edit what the butler knows).
+// handleMemoryExport 把用户全部记忆渲染为人类可读的 Markdown
+// （遵循 USER.md/MEMORY.md 精神——不做黑盒式的向量汤：用户可以
+// 阅读、审计并手工编辑管家所知道的内容）。
 func (s *Server) handleMemoryExport(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(w, r)
 	if u == nil {
@@ -28,7 +28,7 @@ func (s *Server) handleMemoryExport(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&b, "# 记忆档案 · %s\n\n", name)
 	fmt.Fprintf(&b, "导出时间：%s ｜ 用户类型：%s\n\n", s.Now().Format("2006-01-02 15:04"), u.UserType)
 
-	// ---- persons & facts ----
+	// ---- 人物与事实 ----
 	b.WriteString("## 认识的人\n\n")
 	persons, _ := s.Repos.Persons.ListByOwner(ctx, u.ID)
 	if len(persons) == 0 {
@@ -58,7 +58,7 @@ func (s *Server) handleMemoryExport(w http.ResponseWriter, r *http.Request) {
 		b.WriteString("\n")
 	}
 
-	// ---- tasks ----
+	// ---- 任务 ----
 	b.WriteString("## 任务与提醒\n\n")
 	tasks, _ := s.Repos.Tasks.ListByOwner(ctx, u.ID, nil, "")
 	if len(tasks) == 0 {
@@ -73,7 +73,7 @@ func (s *Server) handleMemoryExport(w http.ResponseWriter, r *http.Request) {
 	}
 	b.WriteString("\n")
 
-	// ---- standing intents ----
+	// ---- 常备提醒（事件触发） ----
 	b.WriteString("## 常备提醒（事件触发）\n\n")
 	intents, _ := s.Repos.Intents.ListByOwner(ctx, u.ID)
 	if len(intents) == 0 {
@@ -133,7 +133,7 @@ func loadLoc(tz string) *time.Location {
 	return time.Local
 }
 
-// ---- standing intents REST (panel management) ----
+// ---- 常备提醒 REST（面板管理） ----
 
 func (s *Server) handleListIntents(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(w, r)

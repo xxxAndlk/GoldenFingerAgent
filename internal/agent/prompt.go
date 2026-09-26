@@ -11,19 +11,19 @@ import (
 //go:embed prompts/butler.md
 var butlerPrompt string
 
-// PromptBuilder assembles the system prompt: persona + memory block + turn hints.
-// User profile is resolved from the session each turn.
+// PromptBuilder 组装系统提示：人设 + 记忆块 + 轮次提示。
+// 用户画像每轮从会话解析。
 type PromptBuilder struct {
 	Memory MemoryContext // usually *memory.Service adapter
 	UserFn func(ctx context.Context, userID string) UserContext
 }
 
-// MemoryContext builds the token-budgeted memory block.
+// MemoryContext 构建受 token 预算约束的记忆块。
 type MemoryContext interface {
 	BuildContext(ctx context.Context, ownerID, userType, tz string, budgetTokens int) (string, error)
 }
 
-// UserContext supplies the current user's profile for the prompt header.
+// UserContext 为提示头提供当前用户画像。
 type UserContext struct {
 	UserID   string
 	UserName string
@@ -31,7 +31,7 @@ type UserContext struct {
 	TZ       string
 }
 
-// Build renders the full system prompt for one turn.
+// Build 渲染一轮对话的完整系统提示。
 func (b *PromptBuilder) Build(ctx context.Context, s *Session, now time.Time) (string, error) {
 	var sb strings.Builder
 	sb.WriteString(butlerPrompt)

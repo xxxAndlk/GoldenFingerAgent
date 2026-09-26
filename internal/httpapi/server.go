@@ -1,5 +1,5 @@
-// Package httpapi is the wire layer (pi's packages/protocol analog):
-// JSON DTOs + HTTP handlers over the agent runtime and domain services.
+// Package httpapi 是线上层（相当于 pi 的 packages/protocol）：
+// JSON DTO + 覆盖 agent 运行时与领域服务的 HTTP 处理器。
 package httpapi
 
 import (
@@ -17,22 +17,22 @@ import (
 	"goldenfinger/agent/internal/store"
 )
 
-// Server wires HTTP routes over the runtime (no framework — stdlib mux).
+// Server 在运行时之上装配 HTTP 路由（无框架——标准库 mux）。
 type Server struct {
 	Repos   *store.Repos
 	Runtime *agent.Runtime
 	WebDir  string
 	Now     func() time.Time
-	// Settings holds runtime-editable model settings (JSON file); nil disables.
+	// Settings 保存可运行时编辑的模型设置（JSON 文件）；nil 表示禁用。
 	Settings *settings.Store
-	// FallbackLLM describes the config.yaml chat model, shown in settings UI
-	// when no runtime override exists.
+	// FallbackLLM 描述 config.yaml 的对话模型，在没有运行时覆盖时
+	// 显示在设置 UI 中。
 	FallbackLLM settings.LLM
-	// Outbox collects "app"-channel reminder deliveries for polling by the web UI.
+	// Outbox 收集 "app" 渠道的提醒投递，供 Web UI 轮询。
 	Outbox *Outbox
 }
 
-// Outbox is a tiny in-memory queue of delivered reminder texts (dev MVP).
+// Outbox 是已投递提醒文本的小型内存队列（开发 MVP）。
 type Outbox struct {
 	items []OutboxItem
 }
@@ -61,7 +61,7 @@ func (o *Outbox) Drain(userID string) []OutboxItem {
 	return out
 }
 
-// Handler builds the http.Handler with all routes.
+// Handler 构建包含全部路由的 http.Handler。
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -86,7 +86,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/voice/transcribe", s.handleTranscribe)
 	mux.HandleFunc("POST /api/voice/speak", s.handleSpeak)
 
-	// Static web UI.
+	// 静态 Web UI。
 	mux.Handle("GET /", http.FileServer(http.Dir(s.WebDir)))
 
 	return s.withLogging(mux)
@@ -102,7 +102,7 @@ func (s *Server) withLogging(next http.Handler) http.Handler {
 	})
 }
 
-// statusWriter captures the response status code for access logs.
+// statusWriter 为访问日志捕获响应状态码。
 type statusWriter struct {
 	http.ResponseWriter
 	status int
@@ -113,7 +113,7 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
-// reqID correlates all log lines produced within one HTTP request.
+// reqID 关联同一 HTTP 请求内产生的所有日志行。
 type ctxKey string
 
 const reqIDKey ctxKey = "reqid"
@@ -148,7 +148,7 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// ---- helpers ----
+// ---- 辅助函数 ----
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -160,8 +160,8 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// currentUser resolves the demo user from the X-User-Id header, or falls back
-// to the first (auto-provisioned) user. Auth is a stub in the MVP.
+// currentUser 从 X-User-Id 请求头解析演示用户，否则回退到第一个
+// （自动预置的）用户。MVP 中认证是桩。
 func (s *Server) currentUser(w http.ResponseWriter, r *http.Request) *store.User {
 	ctx := r.Context()
 	if id := r.Header.Get("X-User-Id"); id != "" {
@@ -170,7 +170,7 @@ func (s *Server) currentUser(w http.ResponseWriter, r *http.Request) *store.User
 			return u
 		}
 	}
-	// Demo fallback: auto-provision a general user.
+	// 演示回退：自动预置一个普通用户。
 	users, err := s.Repos.Users.ListAll(ctx)
 	if err == nil && len(users) > 0 {
 		return &users[0]

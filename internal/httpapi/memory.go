@@ -17,7 +17,7 @@ func (s *Server) handleListPersons(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-	// Include each person's current facts for the memory panel.
+		// 为记忆面板包含每个人物的当前事实。
 	type personWithFacts struct {
 		store.Person
 		Aliases []string     `json:"aliases"`
@@ -83,7 +83,7 @@ func (s *Server) handleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
-// handleForgetPerson runs the forget cascade (memory 可遗忘).
+// handleForgetPerson 运行遗忘级联（记忆可遗忘）。
 func (s *Server) handleForgetPerson(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(w, r)
 	if u == nil {

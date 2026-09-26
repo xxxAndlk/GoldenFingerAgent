@@ -9,7 +9,7 @@ type AuditRepo struct{ q Querier }
 
 func NewAuditRepo(q Querier) *AuditRepo { return &AuditRepo{q: q} }
 
-// Append records one audit entry (all write paths must call this).
+// Append 记录一条审计条目（所有写路径都必须调用）。
 func (r *AuditRepo) Append(ctx context.Context, ownerID *string, actor, action, target string, detail json.RawMessage) error {
 	_, err := r.q.Exec(ctx, `
 		INSERT INTO audit_log (owner_user_id, actor, action, target, detail_jsonb)
@@ -18,8 +18,8 @@ func (r *AuditRepo) Append(ctx context.Context, ownerID *string, actor, action, 
 	return err
 }
 
-// Exists reports whether an audit entry with (owner, action, target) is present.
-// Used as an idempotency guard (e.g. one digest per user per day).
+// Exists 报告是否存在 (owner, action, target) 的审计条目。
+// 用作幂等保护（例如每个用户每天一条摘要）。
 func (r *AuditRepo) Exists(ctx context.Context, ownerID, action, target string) (bool, error) {
 	var found bool
 	err := r.q.QueryRow(ctx, `
@@ -29,7 +29,7 @@ func (r *AuditRepo) Exists(ctx context.Context, ownerID, action, target string) 
 	return found, err
 }
 
-// Recent returns the latest audit entries for an owner (traceability UI).
+// Recent 返回某位 owner 的最新审计条目（供溯源 UI 使用）。
 func (r *AuditRepo) Recent(ctx context.Context, ownerID string, limit int) ([]AuditEntry, error) {
 	rows, err := r.q.Query(ctx, `
 		SELECT id, owner_user_id, actor, action, target, detail_jsonb, created_at
@@ -56,7 +56,7 @@ type ConsentRepo struct{ q Querier }
 
 func NewConsentRepo(q Querier) *ConsentRepo { return &ConsentRepo{q: q} }
 
-// Active returns a non-revoked consent for (subject, scope).
+// Active 返回 (subject, scope) 下未撤销的同意记录。
 func (r *ConsentRepo) Active(ctx context.Context, subjectUserID, scope string) (*Consent, error) {
 	c := &Consent{}
 	err := r.q.QueryRow(ctx, `

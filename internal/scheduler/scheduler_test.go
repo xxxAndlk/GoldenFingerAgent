@@ -90,7 +90,7 @@ func TestFireDeliversAndIsIdempotent(t *testing.T) {
 		t.Fatalf("want 1 delivery, got %d", dispatch.count())
 	}
 
-	// Second tick: the reminder is already sent — no double-send.
+	// 第二次 tick：提醒已发送——不会重复发送。
 	if err := sched.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestFireDeliversAndIsIdempotent(t *testing.T) {
 		t.Fatalf("double send! got %d", dispatch.count())
 	}
 
-	// Task should now be notified.
+	// 任务现在应处于已通知状态。
 	got, err := repos.Tasks.Get(ctx, u.ID, taskRow.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func TestFireDeliversAndIsIdempotent(t *testing.T) {
 		t.Errorf("task status = %q, want notified", got.Status)
 	}
 
-	// Escalation reminder queued (level 2 after ack timeout).
+	// 已排队升级提醒（ack 超时后 2 级）。
 	reminders, err := repos.Reminders.ListByTask(ctx, taskRow.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ func TestFireDeliversAndIsIdempotent(t *testing.T) {
 }
 
 func TestDNDDeferralOnEnqueue(t *testing.T) {
-	// Now is daytime; the task fires at 23:00 (inside DND) → deferred to 07:00.
+	// 现在是白天；任务在 23:00 触发（免打扰时段内）→ 延迟到 07:00。
 	fixed := time.Date(2026, 3, 5, 10, 0, 0, 0, cst)
 	repos, sched, _, u := setup(t, func() time.Time { return fixed })
 	ctx := context.Background()
@@ -166,7 +166,7 @@ func TestEnqueueIdempotentAcrossRestarts(t *testing.T) {
 	if err := repos.Tasks.Create(ctx, taskRow); err != nil {
 		t.Fatal(err)
 	}
-	// Simulate a restart: two scheduler instances enqueue the same task.
+	// 模拟重启：两个调度实例入队同一个任务。
 	if err := sched.EnqueueForTask(ctx, taskRow); err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestDigestIncludesInferredMemoryAndStaysQuiet(t *testing.T) {
 	repos, sched, dispatch, u := setup(t, func() time.Time { return fixed })
 	ctx := context.Background()
 
-	// Nothing to decide → no digest (仅在需决策时打扰).
+	// 无事可决策 → 不发摘要（仅在需决策时打扰）。
 	if err := sched.sendDigest(ctx, *u, fixed); err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +227,7 @@ func TestDigestIncludesInferredMemoryAndStaysQuiet(t *testing.T) {
 		t.Fatalf("digest must stay quiet with nothing to decide, sent %d", dispatch.count())
 	}
 
-	// An inferred fact awaiting confirmation IS a decision → digest mentions it.
+	// 待确认的推断事实就是一个决策 → 摘要会提到它。
 	p := &store.Person{OwnerUserID: u.ID, CanonicalName: "张阿姨"}
 	if err := repos.Persons.Create(ctx, p); err != nil {
 		t.Fatal(err)
@@ -249,7 +249,7 @@ func TestDigestIncludesInferredMemoryAndStaysQuiet(t *testing.T) {
 		t.Errorf("digest must carry the inferred fact, got %q", body)
 	}
 
-	// Idempotent: same day digest not re-sent.
+	// 幂等：同日摘要不重发。
 	if err := sched.sendDigest(ctx, *u, fixed); err != nil {
 		t.Fatal(err)
 	}

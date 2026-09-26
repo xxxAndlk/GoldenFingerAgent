@@ -37,12 +37,12 @@ func TestChildConsentGate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Without consent → blocked.
+	// 无同意 → 被阻止。
 	if err := guard.RequireConsent(ctx, child, "basic"); !errors.Is(err, ErrConsentRequired) {
 		t.Fatalf("want ErrConsentRequired, got %v", err)
 	}
 
-	// Guardian grants consent → passes.
+	// 监护人授予同意 → 放行。
 	var guardianID *string
 	if _, err := repos.Consents.Grant(ctx, child.ID, "basic", guardianID); err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func TestChildConsentGate(t *testing.T) {
 		t.Fatalf("consent granted but blocked: %v", err)
 	}
 
-	// Adults never need consent.
+	// 成年人永不需要同意。
 	adult := &store.User{UserType: store.UserElder, Name: "老人", TZ: "Asia/Shanghai"}
 	if err := repos.Users.Create(ctx, adult); err != nil {
 		t.Fatal(err)
@@ -90,11 +90,11 @@ func TestFactTypePolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Evaluative facts blocked for everyone.
+	// 评价性事实对所有人一律阻止。
 	if err := guard.FactTypeAllowed(adult, "personality", "脾气不好"); !errors.Is(err, ErrContentBlocked) {
 		t.Error("evaluative must be blocked for adults too")
 	}
-	// Children: blocked fact types rejected, factual ones allowed.
+	// 儿童：被阻止的事实类型拒绝，事实型放行。
 	if err := guard.FactTypeAllowed(child, "health", "感冒"); !errors.Is(err, ErrContentBlocked) {
 		t.Error("child health facts must be blocked")
 	}

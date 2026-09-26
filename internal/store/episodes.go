@@ -51,7 +51,7 @@ func (r *EpisodeRepo) Similar(ctx context.Context, ownerID string, vec []float32
 	return out, rows.Err()
 }
 
-// ClearPersonRefs rewrites episode summaries to drop a forgotten person's name.
+// ClearPersonRefs 重写 episode 摘要，去除被遗忘之人的姓名。
 func (r *EpisodeRepo) ClearPersonRefs(ctx context.Context, ownerID, personName string) error {
 	_, err := r.q.Exec(ctx, `
 		UPDATE episode SET summary = replace(summary, $3, '[已遗忘]')
@@ -65,7 +65,7 @@ func (r *EpisodeRepo) HardDeleteByOwner(ctx context.Context, ownerID string) err
 	return err
 }
 
-// ListRecent returns the latest episodes for a user (context building).
+// ListRecent 返回某用户的最新 episode（供构建上下文使用）。
 func (r *EpisodeRepo) ListRecent(ctx context.Context, ownerID string, limit int) ([]Episode, error) {
 	rows, err := r.q.Query(ctx, `
 		SELECT id, owner_user_id, summary, raw_ref,

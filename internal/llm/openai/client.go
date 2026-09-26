@@ -1,6 +1,6 @@
-// Package openai is the OpenAI Responses-protocol chat client plus an
-// OpenAI-compatible embeddings client. Any gateway speaking POST /responses
-// (DeepSeek, OpenAI, one-api/new-api relays) works by swapping base_url+model.
+// Package openai 是 OpenAI Responses 协议聊天客户端，外加一个
+// OpenAI 兼容的 embeddings 客户端。任何支持 POST /responses 的网关
+// （DeepSeek、OpenAI、one-api/new-api 中转）只需更换 base_url+model 即可使用。
 package openai
 
 import (
@@ -100,7 +100,7 @@ type responsesResponse struct {
 	} `json:"error"`
 }
 
-// streamEvent is the superset of SSE event payloads we care about.
+// streamEvent 是我们关心的 SSE 事件载荷的超集。
 type streamEvent struct {
 	Type     string             `json:"type"`
 	Delta    string             `json:"delta"`
@@ -223,7 +223,7 @@ func (c *Client) Chat(ctx context.Context, req llm.ChatRequest) (*llm.ChatRespon
 	return convertResponse(&rr), nil
 }
 
-// Stream emits SSE text deltas and returns the assembled final message.
+// Stream 发送 SSE 文本增量并返回组装后的最终消息。
 func (c *Client) Stream(ctx context.Context, req llm.ChatRequest, onDelta func(string)) (*llm.ChatResponse, error) {
 	payload, err := json.Marshal(c.buildRequest(req, true))
 	if err != nil {
@@ -293,7 +293,7 @@ func (c *Client) Stream(ctx context.Context, req llm.ChatRequest, onDelta func(s
 	if final != nil {
 		return convertResponse(final), nil
 	}
-	// Gateway ended without a completed event: return what we accumulated.
+	// 网关结束但未收到 completed 事件：返回已累积的内容。
 	return &llm.ChatResponse{
 		Message:      llm.Message{Role: llm.RoleAssistant, Content: content.String()},
 		FinishReason: "stop",
@@ -316,7 +316,7 @@ type embedResponse struct {
 	} `json:"error"`
 }
 
-// Embed implements llm.Embedder.
+// Embed 实现 llm.Embedder。
 func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	model := c.EmbedModel
 	if model == "" {

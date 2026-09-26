@@ -12,7 +12,7 @@ import (
 	"goldenfinger/agent/internal/nlu"
 )
 
-// ResultStatus classifies a tool execution outcome.
+// ResultStatus 对工具执行结果进行分类。
 type ResultStatus string
 
 const (
@@ -22,33 +22,32 @@ const (
 	StatusError   ResultStatus = "error"
 )
 
-// ToolResult feeds back to the model as DATA (never instructions) and may
-// short-circuit the turn with a clarify question.
+// ToolResult 以 DATA 形式（绝非指令）回馈给模型，也可能
+// 用澄清问题短路本轮对话。
 type ToolResult struct {
 	Status   ResultStatus       `json:"status"`
 	Data     any                `json:"data,omitempty"`
-	Question string             `json:"question,omitempty"` // user-facing clarify (Chinese)
+	Question string             `json:"question,omitempty"` // 面向用户的澄清（中文）
 	Pending  *nlu.PendingAction `json:"-"`
 	Cards    []Card             `json:"-"`
 	Trace    string             `json:"trace,omitempty"`
 }
 
-// Tool is one callable capability. Args arrive as raw (UNTRUSTED) JSON from
-// the model and must be validated inside Execute.
+// Tool 是一个可调用能力。参数以原始（UNTRUSTED）JSON 从模型到达，
+// 必须在 Execute 内部校验。
 type Tool interface {
 	Spec() llm.ToolSpec
 	Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error)
 }
 
-// ToolContext gives tools access to domain services and turn state.
-// ToolContext gives tools access to domain services and turn state.
+// ToolContext 为工具提供领域服务与轮次状态访问。
 type ToolContext struct {
 	Session     *Session
 	Runtime     *Runtime
 	SourceMsgID *string
 }
 
-// Registry maps tool names to implementations and exposes specs to the model.
+// Registry 把工具名映射到实现，并向模型暴露规格。
 type Registry struct {
 	tools map[string]Tool
 	order []string
@@ -66,7 +65,7 @@ func NewRegistry(tools ...Tool) *Registry {
 	return r
 }
 
-// Specs returns tool declarations for the chat request.
+// Specs 返回聊天请求所需的工具声明。
 func (r *Registry) Specs() []llm.ToolSpec {
 	out := make([]llm.ToolSpec, 0, len(r.order))
 	for _, name := range r.order {
@@ -75,8 +74,8 @@ func (r *Registry) Specs() []llm.ToolSpec {
 	return out
 }
 
-// Execute dispatches one tool call. Unknown tools yield an error result
-// (fed back to the model as data).
+// Execute 派发一次工具调用。未知工具产生错误结果
+// （作为数据回馈给模型）。
 func (r *Registry) Execute(ctx context.Context, call llm.ToolCall, tc *ToolContext) (ToolResult, error) {
 	t, ok := r.tools[call.Name]
 	if !ok {

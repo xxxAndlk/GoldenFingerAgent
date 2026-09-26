@@ -180,7 +180,8 @@
   .md p { margin: 0; }
   .md p + p { margin-top: 8px; }
   .md p.md-h { font-weight: 700; color: #223047; margin-top: 10px; margin-bottom: 2px; }
-  .md ul, .md ol { margin: 6px 0 6px 1.35em; }
+  /* padding-left (not margin) keeps outside markers inside the bubble */
+  .md ul, .md ol { margin: 6px 0; padding-left: 1.5em; }
   .md li { margin: 4px 0; }
   .md strong { font-weight: 700; }
   .md code { background: #f0f4f9; border-radius: 6px; padding: 1px 6px; font-size: .92em; font-family: Consolas, "Courier New", monospace; }
@@ -386,12 +387,12 @@ function nowHHMM() {
   return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
 }
 
-// ---- safe markdown rendering (escape first, then transform) ----
+// ---- 安全 markdown 渲染（先转义，再转换） ----
 function escHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// inline marks on already-escaped text
+// 对已转义文本应用行内标记
 function mdInline(s) {
   s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
@@ -400,7 +401,7 @@ function mdInline(s) {
   return s;
 }
 
-// render a chat reply's markdown subset: bold, headings, lists, quotes, code
+// 渲染聊天回复的 markdown 子集：粗体、标题、列表、引用、代码
 function renderMD(text) {
   if (text == null) return '';
   const lines = escHtml(text).split(/\r?\n/);
@@ -451,7 +452,7 @@ function renderMD(text) {
   }
   if (inCode) out.push('<pre><code>' + codeLines.join('\n') + '</code></pre>');
   flushAll();
-  return out.join('');
+  return '<div class="md">' + out.join('') + '</div>';
 }
 
 createApp({

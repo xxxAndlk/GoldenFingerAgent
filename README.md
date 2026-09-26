@@ -56,6 +56,7 @@ go run ./cmd/server
 - 对话模型走 **OpenAI Responses 协议**（`POST {base_url}/responses`）；`config.yaml` 的 `llm` 段支持 `api_key` 直填、`api_key_env`（环境变量名）、`GFA_LLM_API_KEY` 三种方式，页面「⚙️ 设置」里的配置优先级最高。
 - 页面「⚙️ 设置」预置 DeepSeek V4.1 Flash（`deepseek-flash`）与 DeepSeek V4 Pro（`deepseek-v4-pro`），选预设后只需填 key。
 - 向量模型走 OpenAI 兼容端点（`POST {base_url}/embeddings`，自建网关记得带 `/v1` 前缀）；key 用 `embedder.api_key` 或 `GFA_EMBED_API_KEY`。
+- **联网搜索（Firecrawl Search API）**：去 [firecrawl.dev](https://www.firecrawl.dev) 注册拿 API key；填到 `config.yaml` 的 `search.api_key`（或设环境变量 `GFA_SEARCH_API_KEY`），`search.base_url` 默认 `https://api.firecrawl.dev`、`search.count` 默认 8。**不配置时自动回落 dev stub**（返回固定示例结果），dev 可直接跑、CI 不依赖外网。配好后对管家说「帮我查一下……」即触发 `web_search` 工具。
 - `settings.json` 含密钥，**不要提交**（已在 .gitignore）。
 
 ### 试试这些话

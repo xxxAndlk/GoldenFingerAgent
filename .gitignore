@@ -2,6 +2,7 @@ settings.json
 
 # build artifacts
 *.exe
+/.bma
 /server
 /migrate
 /bin/

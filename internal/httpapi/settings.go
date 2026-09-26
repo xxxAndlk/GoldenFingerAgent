@@ -13,12 +13,12 @@ import (
 type llmSettingsDTO struct {
 	BaseURL string `json:"base_url"`
 	Model   string `json:"model"`
-	APIKey  string `json:"api_key"` // masked on GET; empty on PUT keeps the stored key
+	APIKey  string `json:"api_key"` // GET 时打码；PUT 传空表示保留已存密钥
 	HasKey  bool   `json:"has_key"`
 }
 
-// effectiveRuntime returns a runtime whose LLM client comes from the JSON
-// settings file when configured there, falling back to config.yaml otherwise.
+// effectiveRuntime 返回一个 LLM 客户端取自 JSON 设置文件的运行时；
+// 设置文件配置了模型时用它，否则回退到 config.yaml。
 func (s *Server) effectiveRuntime() *agent.Runtime {
 	rt := s.Runtime
 	if s.Settings == nil {
@@ -73,7 +73,7 @@ func (s *Server) handlePutLLMSettings(w http.ResponseWriter, r *http.Request) {
 	cur := s.Settings.LLM()
 	next := settings.LLM{BaseURL: req.BaseURL, Model: req.Model, APIKey: req.APIKey}
 	if next.APIKey == "" || next.APIKey == maskKey(cur.APIKey) {
-		next.APIKey = cur.APIKey // unchanged
+		next.APIKey = cur.APIKey // 未变更
 	}
 	if err := s.Settings.SaveLLM(next); err != nil {
 		writeError(w, 500, err.Error())

@@ -22,6 +22,13 @@ embedder:
   model: "bge-m3"
   dim: 1024
 
+# Web search: Firecrawl Search API (https://www.firecrawl.dev 注册领 key)。
+# 留空 api_key 时回落 dev stub（返回固定示例结果），配置后走真实搜索。
+search:
+  base_url: "https://api.firecrawl.dev"
+  api_key: "" # or set GFA_SEARCH_API_KEY
+  count: 8
+
 thresholds:
   task_auto: 0.85
   task_clarify: 0.6

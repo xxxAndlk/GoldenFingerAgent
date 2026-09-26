@@ -12,13 +12,14 @@ import (
 	"goldenfinger/agent/internal/task"
 )
 
-// ToolServices bundles the domain services shared by tool executors.
-// (No business rules here — rules live in the domain packages.)
+// ToolServices 打包工具执行器共享的领域服务。
+// （这里不含业务规则——规则在领域包中。）
 type ToolServices struct {
 	Memory  *memory.Service
 	Tasks   *task.Service
 	Intents *intent.Service
 	Weather extsvc.WeatherService
+	Search  extsvc.SearchService
 	Guard   *compliance.Guard
 	Repos   *store.Repos
 	Now     func() time.Time

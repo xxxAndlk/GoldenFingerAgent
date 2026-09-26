@@ -1,4 +1,4 @@
-// Package config loads YAML configuration with GFA_* environment overrides.
+// Package config 加载 YAML 配置，并支持 GFA_* 环境变量覆盖。
 package config
 
 import (
@@ -15,6 +15,7 @@ type Config struct {
 	Database   Database   `yaml:"database"`
 	LLM        LLM        `yaml:"llm"`
 	Embedder   LLM        `yaml:"embedder"`
+	Search     Search     `yaml:"search"`
 	Thresholds Thresholds `yaml:"thresholds"`
 	DND        DND        `yaml:"dnd"`
 	Scheduler  Scheduler  `yaml:"scheduler"`
@@ -33,12 +34,12 @@ type Database struct {
 
 type LLM struct {
 	BaseURL     string  `yaml:"base_url"`
-	APIKey      string  `yaml:"api_key"`     // direct key; prefer env in shared environments
-	APIKeyEnv   string  `yaml:"api_key_env"` // name of an env var holding the key (overrides api_key)
+	APIKey      string  `yaml:"api_key"`     // 直接密钥；共享环境建议优先用环境变量
+	APIKeyEnv   string  `yaml:"api_key_env"` // 存放密钥的环境变量名（优先级高于 api_key）
 	Model       string  `yaml:"model"`
 	Temperature float64 `yaml:"temperature"`
 	MaxTokens   int     `yaml:"max_tokens"`
-	Dim         int     `yaml:"dim"` // embedder only
+	Dim         int     `yaml:"dim"` // 仅 embedder 使用
 }
 
 type Thresholds struct {
@@ -46,6 +47,13 @@ type Thresholds struct {
 	TaskClarify   float64 `yaml:"task_clarify"`
 	PersonClarify float64 `yaml:"person_clarify"`
 	FactConfirmed float64 `yaml:"fact_confirmed"`
+}
+
+// Search 配置 Web 搜索（Firecrawl Search API）。
+type Search struct {
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
+	Count   int    `yaml:"count"`
 }
 
 type DND struct {
@@ -62,7 +70,7 @@ type Scheduler struct {
 }
 
 type Digest struct {
-	Time string `yaml:"time"` // "11:00" user-local
+	Time string `yaml:"time"` // "11:00" 用户本地时区
 }
 
 type Memory struct {
@@ -70,7 +78,7 @@ type Memory struct {
 	RecencyHalfLife    time.Duration `yaml:"recency_half_life"`
 }
 
-// Load reads path (or GFA_CONFIG, default config.yaml) and applies env overrides.
+// Load 读取 path（或 GFA_CONFIG，默认 config.yaml）并应用环境变量覆盖。
 func Load(path string) (*Config, error) {
 	if path == "" {
 		path = os.Getenv("GFA_CONFIG")
@@ -134,6 +142,12 @@ func (c *Config) applyDefaults() {
 	if c.LLM.MaxTokens == 0 {
 		c.LLM.MaxTokens = 2048
 	}
+	if c.Search.BaseURL == "" {
+		c.Search.BaseURL = "https://api.firecrawl.dev"
+	}
+	if c.Search.Count == 0 {
+		c.Search.Count = 8
+	}
 }
 
 func (c *Config) applyEnv() {
@@ -160,7 +174,7 @@ func (c *Config) applyEnv() {
 			c.Embedder.Dim = n
 		}
 	}
-	// API keys: YAML api_key < env var named by api_key_env < GFA_*_API_KEY.
+	// API 密钥优先级：YAML api_key < api_key_env 指定的环境变量 < GFA_*_API_KEY。
 	if c.LLM.APIKeyEnv != "" {
 		if v := os.Getenv(c.LLM.APIKeyEnv); v != "" {
 			c.LLM.APIKey = v
@@ -176,6 +190,9 @@ func (c *Config) applyEnv() {
 	}
 	if v := os.Getenv("GFA_EMBED_API_KEY"); v != "" {
 		c.Embedder.APIKey = v
+	}
+	if v := os.Getenv("GFA_SEARCH_API_KEY"); v != "" {
+		c.Search.APIKey = v
 	}
 }
 

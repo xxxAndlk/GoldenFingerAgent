@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// vecToString encodes a float32 slice as pgvector text format '[0.1,0.2,...]'.
+// vecToString 把 float32 切片编码为 pgvector 文本格式 '[0.1,0.2,...]'。
 func vecToString(v []float32) string {
 	if len(v) == 0 {
 		return ""
@@ -23,7 +23,7 @@ func vecToString(v []float32) string {
 	return b.String()
 }
 
-// parseVec decodes pgvector text format (possibly parenthesized) into []float32.
+// parseVec 把 pgvector 文本格式（可能带括号）解码为 []float32。
 func parseVec(s string) ([]float32, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {

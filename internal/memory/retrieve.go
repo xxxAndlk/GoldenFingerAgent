@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Snippet is one retrievable memory item (fact or episode) with its rank score.
+// Snippet 是一个可检索的记忆条目（事实或片段）及其排序得分。
 type Snippet struct {
 	ID     string  `json:"id"`
 	Kind   string  `json:"kind"` // "fact" | "episode"
@@ -17,14 +17,14 @@ type Snippet struct {
 	Status string  `json:"status,omitempty"`
 }
 
-// RankScoring: 0.6*cosine + 0.25*recency + 0.15*confidence.
+// 排序得分：0.6*cosine + 0.25*recency + 0.15*confidence。
 const (
 	weightSim  = 0.6
 	weightRec  = 0.25
 	weightConf = 0.15
 )
 
-// Search embeds the query and ranks facts + episodes.
+// Search 对查询做嵌入并对事实与片段排序。
 func (s *Service) Search(ctx context.Context, ownerID, query string, k int) ([]Snippet, error) {
 	if k <= 0 {
 		k = 8
@@ -74,7 +74,7 @@ func (s *Service) Search(ctx context.Context, ownerID, query string, k int) ([]S
 	return out, nil
 }
 
-// finalScore blends similarity, recency (exponential decay) and confidence.
+// finalScore 融合相似度、时效性（指数衰减）与置信度。
 func finalScore(sim float64, updatedAt time.Time, confidence float64, halfLife time.Duration) float64 {
 	age := time.Since(updatedAt)
 	if age < 0 {

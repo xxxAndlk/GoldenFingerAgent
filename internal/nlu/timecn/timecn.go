@@ -1,6 +1,5 @@
-// Package timecn is a deterministic Chinese relative/absolute time parser.
-// Rule-first (this file), LLM fallback lives in the nlu package and always
-// validates the LLM's answer before accepting it.
+// Package timecn 是确定性的中文相对/绝对时间解析器。
+// 规则优先（本文件），LLM 兜底位于 nlu 包，且接受前总是校验 LLM 的答案。
 package timecn
 
 import (
@@ -10,7 +9,7 @@ import (
 	"time"
 )
 
-// TimeResult is a parsed time expression.
+// TimeResult 是解析后的时间表达式。
 type TimeResult struct {
 	Abs        time.Time
 	Deadline   *time.Time
@@ -40,13 +39,13 @@ var (
 	reMinuteMark = regexp.MustCompile(`(\d{1,2})\s*分(?:钟)?`)
 )
 
-// weekdayMap maps Chinese weekday chars to Go weekdays (Sunday=0).
+// weekdayMap 把中文星期字符映射为 Go 的星期（周日=0）。
 var weekdayMap = map[rune]time.Weekday{
 	'一': time.Monday, '二': time.Tuesday, '三': time.Wednesday, '四': time.Thursday,
 	'五': time.Friday, '六': time.Saturday, '日': time.Sunday, '天': time.Sunday,
 }
 
-// weekdayOf extracts the weekday from a capture group like "三" or "天".
+// weekdayOf 从类似 "三" 或 "天" 的捕获组中提取星期。
 func weekdayOf(s string) (time.Weekday, bool) {
 	for _, r := range s {
 		wd, ok := weekdayMap[r]
@@ -55,8 +54,8 @@ func weekdayOf(s string) (time.Weekday, bool) {
 	return 0, false
 }
 
-// Parse tries deterministic rules. ok=false means no rule matched (caller may
-// fall back to LLM and then re-validate).
+// Parse 依次尝试确定性规则。ok=false 表示没有规则命中（调用方可以
+// 回落到 LLM，然后再重新校验）。
 func Parse(raw string, now time.Time, loc *time.Location) (TimeResult, bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -68,20 +67,20 @@ func Parse(raw string, now time.Time, loc *time.Location) (TimeResult, bool) {
 	now = now.In(loc)
 	res := TimeResult{Raw: raw, Method: "rule"}
 
-	// 1) explicit recurrence wins over one-shot parsing.
+	// 1) 显式重复规则优先于一次性解析。
 	if rec, abs, ok := parseRecurrence(raw, now, loc); ok {
 		res.Recurrence = rec
 		res.Abs = abs
 		return res, true
 	}
 
-	// 2) relative offsets: X分钟后 / X小时后 / X天后.
+	// 2) 相对偏移：X分钟后 / X小时后 / X天后。
 	if t, ok := parseRelative(raw, now); ok {
 		res.Abs = t
 		return res, true
 	}
 
-	// 3) calendar expressions anchored on day keywords / weekday / dates.
+	// 3) 以日期关键词/星期/日期为锚点的日历表达。
 	if t, ok := parseCalendar(raw, now, loc); ok {
 		res.Abs = t
 		return res, true
@@ -126,12 +125,11 @@ func parseRelative(raw string, now time.Time) (time.Time, bool) {
 
 type tod struct{ hour, min int }
 
-// rePeriod matches bare time-of-day period words (day keywords handled separately).
+// rePeriod 匹配单纯的时段词（日期关键词另行处理）。
 var rePeriod = regexp.MustCompile(`(凌晨|早上|上午|中午|正午|下午|傍晚|晚上|夜里|夜间)`)
 
-// periodInfo extracts the day offset and period word from raw's keywords.
-// Day keywords that embed a period (明早/今晚…) seed the period when no bare
-// period word is present.
+// periodInfo 从 raw 的关键词中提取日期偏移与时段词。
+// 内嵌时段的日期关键词（明早/今晚…）在没有独立时段词时作为时段来源。
 func periodInfo(raw string) (dayOffset int, hasDay bool, period string) {
 	for _, m := range reDayKeyword.FindAllStringSubmatch(raw, -1) {
 		switch m[1] {
@@ -153,14 +151,14 @@ func periodInfo(raw string) (dayOffset int, hasDay bool, period string) {
 			period = m[1]
 		}
 	}
-	// A bare period word anywhere wins over an implied one.
+	// 任何位置的独立时段词都优先于隐含的时段。
 	if m := rePeriod.FindStringSubmatch(raw); m != nil {
 		period = m[1]
 	}
 	return dayOffset, hasDay, period
 }
 
-// timeOfDayDefault extracts an explicit clock time from raw, else returns the default.
+// timeOfDayDefault 从 raw 中提取显式时钟时间，否则返回默认值。
 func timeOfDayDefault(raw string, defHour, defMin int) tod {
 	_, _, period := periodInfo(raw)
 	hour, min, found := extractClock(raw, period)
@@ -170,7 +168,7 @@ func timeOfDayDefault(raw string, defHour, defMin int) tod {
 	return tod{hour, min}
 }
 
-// extractClock finds H点(半|MM分)? or HH:MM and applies the meridiem implied by period.
+// extractClock 查找 H点(半|MM分)? 或 HH:MM，并应用时段隐含的上午/下午调整。
 func extractClock(raw, period string) (int, int, bool) {
 	if m := reClock.FindStringSubmatch(raw); m != nil {
 		h, _ := strconv.Atoi(m[1])
@@ -200,7 +198,7 @@ func extractClock(raw, period string) (int, int, bool) {
 			}
 		}
 	}
-	// Meridiem adjustment. "下午/傍晚/晚上/夜里" shift afternoon hours.
+	// 上午/下午调整。"下午/傍晚/晚上/夜里" 把下午的小时数偏移。
 	switch {
 	case strings.Contains(period, "下午"), strings.Contains(period, "傍晚"),
 		strings.Contains(period, "晚上"), strings.Contains(period, "夜里"),
@@ -209,7 +207,7 @@ func extractClock(raw, period string) (int, int, bool) {
 			h += 12
 		}
 	case strings.Contains(period, "凌晨"):
-		// keep small hours as-is
+		// 凌晨的小时数保持原样
 	case strings.Contains(period, "中午"), strings.Contains(period, "正午"):
 		if h < 11 {
 			h += 12
@@ -222,7 +220,7 @@ func parseHourToken(tok string) int {
 	if n, err := strconv.Atoi(tok); err == nil {
 		return n
 	}
-	// Chinese numerals 一..十[一二]
+	// 中文数字 一..十[一二]
 	conv := map[string]int{
 		"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6,
 		"七": 7, "八": 8, "九": 9, "十": 10, "十一": 11, "十二": 12,
@@ -234,7 +232,7 @@ func parseHourToken(tok string) int {
 }
 
 func parseCalendar(raw string, now time.Time, loc *time.Location) (time.Time, bool) {
-	// Full dates first.
+	// 先处理完整日期。
 	if m := reDateYMD.FindStringSubmatch(raw); m != nil {
 		y, _ := strconv.Atoi(m[1])
 		mo, _ := strconv.Atoi(m[2])
@@ -245,7 +243,7 @@ func parseCalendar(raw string, now time.Time, loc *time.Location) (time.Time, bo
 
 	dayOffset, hasDay, _ := periodInfo(raw)
 
-	// Weekday expressions.
+	// 星期表达。
 	if m := reWeekday.FindStringSubmatch(raw); m != nil {
 		wd, ok := weekdayOf(m[2])
 		if ok {
@@ -255,7 +253,7 @@ func parseCalendar(raw string, now time.Time, loc *time.Location) (time.Time, bo
 		}
 	}
 
-	// M月D日 within the current year (roll to next year if already past).
+	// 当年内的 M月D日（若已过去则顺延到下一年）。
 	if m := reDateMD.FindStringSubmatch(raw); m != nil {
 		mo, _ := strconv.Atoi(m[1])
 		d, _ := strconv.Atoi(m[2])
@@ -269,7 +267,7 @@ func parseCalendar(raw string, now time.Time, loc *time.Location) (time.Time, bo
 		}
 	}
 
-	// Month/year end markers.
+	// 月/年末标记。
 	if reMonthEnd.MatchString(raw) {
 		tod := timeOfDayDefault(raw, 9, 0)
 		firstOfNext := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, loc)
@@ -281,21 +279,21 @@ func parseCalendar(raw string, now time.Time, loc *time.Location) (time.Time, bo
 		return time.Date(now.Year(), 12, 31, tod.hour, tod.min, 0, 0, loc), true
 	}
 
-	// Day keyword or bare time of day: anchor on today + dayOffset.
+	// 日期关键词或单纯时段：以今天 + dayOffset 为锚点。
 	if hasDay || reHourMin.MatchString(raw) || reClock.MatchString(raw) {
 		tod := timeOfDayDefault(raw, -1, -1)
 		if tod.hour < 0 {
 			if !hasDay {
 				return time.Time{}, false
 			}
-			// Bare day keyword with no clock ("后天") defaults to 9:00.
+				// 无时钟的裸日期关键词（"后天"）默认 9:00。
 			tod.hour, tod.min = 9, 0
 		}
 		d := now.AddDate(0, 0, dayOffset)
 		t := time.Date(d.Year(), d.Month(), d.Day(), tod.hour, tod.min, 0, 0, loc)
 		if !hasDay && t.Before(now) {
-			// Bare clock with no day keyword: a past time rolls to tomorrow.
-			// Explicit "今天/今晚" keeps the past time (user asked for today).
+				// 无日期关键词的裸时钟：已过去的时间顺延到明天。
+				// 显式 "今天/今晚" 保留已过去的时间（用户明确要今天）。
 			t = t.AddDate(0, 0, 1)
 		}
 		return t, true
@@ -303,18 +301,18 @@ func parseCalendar(raw string, now time.Time, loc *time.Location) (time.Time, bo
 	return time.Time{}, false
 }
 
-// nextWeekday returns the next occurrence of wd.
-// prefix: "下下" = week after next, "下" = next week, otherwise the upcoming one.
+// nextWeekday 返回 wd 的下一次出现。
+// prefix："下下" = 下下周，"下" = 下周，否则是最近的一次。
 func nextWeekday(now time.Time, wd time.Weekday, prefix string) time.Time {
 	days := (int(wd) - int(now.Weekday()) + 7) % 7
 	if days == 0 {
-		days = 7 // "周三" said on Wednesday means next Wednesday
+		days = 7 // 周三当天说"周三"指下周三
 	}
 	switch {
 	case strings.HasPrefix(prefix, "下下"):
 		days += 7
 	case strings.HasPrefix(prefix, "下"):
-		// "下周三" = Wednesday of next week (ISO-style: jump to next Monday-based week).
+			// "下周三" = 下下周的周三（ISO 风格：跳到下一个以周一为起点的一周）。
 		daysToNextMon := (8 - int(now.Weekday())) % 7
 		if daysToNextMon == 0 {
 			daysToNextMon = 7

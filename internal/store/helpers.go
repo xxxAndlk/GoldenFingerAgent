@@ -9,7 +9,7 @@ import (
 
 var errNoRows = pgx.ErrNoRows
 
-// notNullJSON returns a JSON-safe value for jsonb columns.
+// notNullJSON 为 jsonb 列返回 JSON 安全的值。
 func notNullJSON(b []byte) []byte {
 	if len(b) == 0 {
 		return []byte("{}")
@@ -17,7 +17,7 @@ func notNullJSON(b []byte) []byte {
 	return b
 }
 
-// isUniqueViolation reports whether err is a Postgres unique-constraint violation.
+// isUniqueViolation 判断 err 是否为 Postgres 唯一约束冲突。
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"

@@ -12,9 +12,9 @@ import (
 	"goldenfinger/agent/internal/store"
 )
 
-// resolvePendingImpl completes a frozen clarify hypothesis from the user's
-// reply — deterministically, with no second LLM hop (doc: 低置信必反问 →
-// answer resolves it). done=false abandons the pending action (new topic).
+// resolvePendingImpl 根据用户回复完成一个冻结的澄清假设——
+// 确定性完成，不经过第二次 LLM 调用（文档：低置信必反问 →
+// 答复即解决）。done=false 表示放弃待办动作（新话题）。
 func resolvePendingImpl(ctx context.Context, s *Session, userText string, rt *Runtime, now time.Time) (*TurnResult, bool) {
 	p := s.Pending
 	if p.Expired(now) {
@@ -35,12 +35,12 @@ func resolvePendingImpl(ctx context.Context, s *Session, userText string, rt *Ru
 		return resolveTimeMissing(ctx, s, rt, p, userText, now)
 	}
 
-	// Unknown pending type: drop it and let normal routing handle the message.
+	// 未知的待办类型：丢弃并让常规路由处理该消息。
 	s.Pending = nil
 	return nil, false
 }
 
-// resolveTaskConfirm handles "要记下…对吗？" → 对 / 不对 / unrelated.
+// resolveTaskConfirm 处理 "要记下…对吗？" → 对 / 不对 / 无关。
 func resolveTaskConfirm(ctx context.Context, s *Session, rt *Runtime, p *nlu.PendingAction, outcome nlu.MatchOutcome, now time.Time) (*TurnResult, bool) {
 	switch outcome {
 	case nlu.MatchDeny:
@@ -65,7 +65,7 @@ func resolveTaskConfirm(ctx context.Context, s *Session, rt *Runtime, p *nlu.Pen
 			}
 		}
 		if absTime == nil {
-			at := now.Add(time.Hour) // frozen payload had a time once; fall back safely
+				at := now.Add(time.Hour) // 冻结载荷曾有过时间；安全回退
 			absTime = &at
 		}
 		res, err := scheduleTask(ctx, &ToolContext{Session: s, Runtime: rt}, u, tp, tp.PersonID, absTime, tp.Confidence, nil, true)
@@ -74,21 +74,21 @@ func resolveTaskConfirm(ctx context.Context, s *Session, rt *Runtime, p *nlu.Pen
 		}
 		return resultFromTool(res), true
 	case nlu.MatchNone:
-		// Not an answer — new topic: abandon the pending task (audit) and fall through.
+		// 不是答复——新话题：放弃待办任务（审计）并继续常规处理。
 		s.Pending = nil
 		return nil, false
 	}
 	return nil, false
 }
 
-// resolvePersonDisambig handles "哪位张阿姨？" → option pick.
+// resolvePersonDisambig 处理 "哪位张阿姨？" → 选项选择。
 func resolvePersonDisambig(ctx context.Context, s *Session, rt *Runtime, p *nlu.PendingAction, outcome nlu.MatchOutcome, opt *nlu.Option, now time.Time) (*TurnResult, bool) {
 	if outcome != nlu.MatchOption {
 		if outcome == nlu.MatchNone {
 			s.Pending = nil
-			return nil, false // new topic
+			return nil, false // 新话题
 		}
-		// bare affirm/deny doesn't disambiguate — re-ask.
+		// 单纯的肯定/否定无法消歧——重新提问。
 		return &TurnResult{Reply: p.Question}, true
 	}
 
@@ -168,7 +168,7 @@ func resolvePersonDisambig(ctx context.Context, s *Session, rt *Runtime, p *nlu.
 	return &TurnResult{Reply: "好的。"}, true
 }
 
-// resolveFactConfirm handles "记住这个对吗？" → 对 (write confirmed) / 不对 (drop).
+// resolveFactConfirm 处理 "记住这个对吗？" → 对（写入确认）/ 不对（丢弃）。
 func resolveFactConfirm(ctx context.Context, s *Session, rt *Runtime, p *nlu.PendingAction, outcome nlu.MatchOutcome) (*TurnResult, bool) {
 	var fp nlu.FactPayload
 	if err := json.Unmarshal(p.Payload, &fp); err != nil {
@@ -185,7 +185,7 @@ func resolveFactConfirm(ctx context.Context, s *Session, rt *Runtime, p *nlu.Pen
 		if err != nil {
 			return &TurnResult{Reply: "我这边有点卡住了，稍后再试好吗？"}, true
 		}
-		fp.Confidence = 0.95 // user confirmed
+		fp.Confidence = 0.95 // 用户已确认
 		res, err := saveFactFlow(ctx, &ToolContext{Session: s, Runtime: rt}, u, fp, fp.PersonID)
 		if err != nil {
 			return &TurnResult{Reply: "记的时候出了点问题，再说一次好吗？"}, true
@@ -197,7 +197,7 @@ func resolveFactConfirm(ctx context.Context, s *Session, rt *Runtime, p *nlu.Pen
 	}
 }
 
-// resolveTimeMissing handles "什么时候提醒你呢？" → parse the reply as the time.
+// resolveTimeMissing 处理 "什么时候提醒你呢？" → 把回复解析为时间。
 func resolveTimeMissing(ctx context.Context, s *Session, rt *Runtime, p *nlu.PendingAction, userText string, now time.Time) (*TurnResult, bool) {
 	var tm nlu.TimeMissingPayload
 	if err := json.Unmarshal(p.Payload, &tm); err != nil {
@@ -216,7 +216,7 @@ func resolveTimeMissing(ctx context.Context, s *Session, rt *Runtime, p *nlu.Pen
 	}
 	tr, ok := parseTime(&ToolContext{Session: s, Runtime: rt}, userText, now, loadLocation(u.TZ))
 	if !ok {
-		// One re-ask with the candidates; keep pending alive but reset TTL.
+		// 带候选重新问一次；保持待办存活但重置 TTL。
 		p.ExpiresAt = now.Add(nlu.DefaultPendingTTL)
 		return &TurnResult{Reply: "我还是没听明白时间。比如说「明天早上8点」或者「20分钟后」，要什么时候呢？"}, true
 	}
@@ -240,7 +240,7 @@ func resolveTimeMissing(ctx context.Context, s *Session, rt *Runtime, p *nlu.Pen
 	return resultFromTool(res), true
 }
 
-// resultFromTool maps a tool result to a turn result (reply text from data.reply).
+// resultFromTool 把工具结果映射为轮次结果（回复文本取自 data.reply）。
 func resultFromTool(res ToolResult) *TurnResult {
 	reply := ""
 	if res.Data != nil {

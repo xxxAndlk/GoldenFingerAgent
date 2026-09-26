@@ -1,6 +1,6 @@
-// Package agent is the pi-style tool-calling loop + session state
-// (pi's packages/agent analog). Product rules live in domain packages;
-// this layer is a dumb cycle: append → LLM → tools → repeat.
+// Package agent 是 pi 风格的工具调用循环 + 会话状态
+// （对应 pi 的 packages/agent）。产品规则位于领域包中；
+// 本层是一个朴素循环：追加 → LLM → 工具 → 重复。
 package agent
 
 import (
@@ -10,7 +10,7 @@ import (
 	"goldenfinger/agent/internal/nlu"
 )
 
-// Card is a UI action card (task/reminder with 完成/推迟/取消 buttons).
+// Card 是一张 UI 操作卡（带 完成/推迟/取消 按钮的任务/提醒）。
 type Card struct {
 	Type    string       `json:"type"` // "task" | "reminder" | "person" | "note"
 	Title   string       `json:"title"`
@@ -24,19 +24,19 @@ type CardAction struct {
 	Verb  string `json:"verb"`  // done / snooze / cancel
 }
 
-// Session carries per-conversation state (pi's agent.ts analog).
+// Session 承载每次对话的状态（对应 pi 的 agent.ts）。
 type Session struct {
 	ID       string
 	UserID   string
 	Messages []llm.Message
 	Pending  *nlu.PendingAction `json:"-"`
-	Trace    []string           // debug tool trace
+	Trace    []string           // 调试用工具轨迹
 }
 
-// Append adds one message to the transcript.
+// Append 向对话记录追加一条消息。
 func (s *Session) Append(m llm.Message) { s.Messages = append(s.Messages, m) }
 
-// TurnResult is the user-facing outcome of one conversation turn.
+// TurnResult 是一轮对话面向用户的输出结果。
 type TurnResult struct {
 	Reply   string             `json:"reply"`
 	Pending *nlu.PendingAction `json:"pending,omitempty"`
@@ -44,15 +44,15 @@ type TurnResult struct {
 	Trace   []string           `json:"trace,omitempty"`
 }
 
-// Clock abstracts time for deterministic tests.
+// Clock 抽象时间，便于确定性测试。
 type Clock interface{ Now() time.Time }
 
-// SystemClock is the production clock.
+// SystemClock 是生产环境时钟。
 type SystemClock struct{}
 
 func (SystemClock) Now() time.Time { return time.Now() }
 
-// FixedClock returns a constant time (tests).
+// FixedClock 返回恒定时间（测试用）。
 type FixedClock struct{ T time.Time }
 
 func (f FixedClock) Now() time.Time { return f.T }

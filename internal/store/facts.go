@@ -43,7 +43,7 @@ func (r *FactRepo) Insert(ctx context.Context, f *Fact) error {
 	).Scan(&f.ID, &f.CreatedAt, &f.UpdatedAt)
 }
 
-// SetValidity closes a fact's validity window (supersede keeps the row for traceability).
+// SetValidity 关闭事实的有效期窗口（supersede 保留该行用于溯源）。
 func (r *FactRepo) SetValidity(ctx context.Context, id string, validTo *time.Time) error {
 	_, err := r.q.Exec(ctx,
 		`UPDATE fact SET valid_to = $2, updated_at = now() WHERE id = $1`, id, validTo)
@@ -62,7 +62,7 @@ func (r *FactRepo) ListByPerson(ctx context.Context, personID string) ([]Fact, e
 	return scanFacts(rows)
 }
 
-// ListCurrentByOwner returns all current (non-deleted, valid) facts for a user's persons.
+// ListCurrentByOwner 返回用户全部人物当前（未删除、有效）的事实。
 func (r *FactRepo) ListCurrentByOwner(ctx context.Context, ownerID string, limit int) ([]Fact, error) {
 	rows, err := r.q.Query(ctx, `
 		SELECT f.id, f.person_id, f.fact_type, f.value_text, f.confidence, f.status,
@@ -91,14 +91,14 @@ func scanFacts(rows pgx.Rows) ([]Fact, error) {
 	return out, rows.Err()
 }
 
-// InferredFact is a current inferred fact with its person name (digest prompts).
+// InferredFact 是附带人物名的当前推断事实（用于摘要提示）。
 type InferredFact struct {
 	Fact
 	PersonName string `json:"person_name"`
 }
 
-// ListInferredCurrent returns current inferred (not yet confirmed) facts —
-// the daily digest asks the user to confirm these (memory consolidation).
+// ListInferredCurrent 返回当前推断（尚未确认）的事实——
+// 每日摘要会请用户确认这些事实（记忆整合）。
 func (r *FactRepo) ListInferredCurrent(ctx context.Context, ownerID string) ([]InferredFact, error) {
 	rows, err := r.q.Query(ctx, `
 		SELECT f.id, f.person_id, f.fact_type, f.value_text, f.confidence, f.status,
@@ -126,7 +126,7 @@ func (r *FactRepo) ListInferredCurrent(ctx context.Context, ownerID string) ([]I
 	return out, rows.Err()
 }
 
-// FindConflict returns current facts of the same (person, fact_type) with a different value.
+// FindConflict 返回同 (person, fact_type) 但取值不同的当前事实。
 func (r *FactRepo) FindConflict(ctx context.Context, personID, factType, valueText string) ([]Fact, error) {
 	rows, err := r.q.Query(ctx, `
 		SELECT `+factCols+` FROM fact
@@ -139,7 +139,7 @@ func (r *FactRepo) FindConflict(ctx context.Context, personID, factType, valueTe
 	return scanFacts(rows)
 }
 
-// Similar ranks facts by pgvector cosine distance against the query embedding.
+// Similar 按 pgvector 余弦距离对查询嵌入向量做事实排序。
 func (r *FactRepo) Similar(ctx context.Context, ownerID string, vec []float32, k int) ([]ScoredFact, error) {
 	rows, err := r.q.Query(ctx, `
 		SELECT f.id, f.person_id, f.fact_type, f.value_text, f.confidence, f.status,
@@ -167,13 +167,13 @@ func (r *FactRepo) Similar(ctx context.Context, ownerID string, vec []float32, k
 	return out, rows.Err()
 }
 
-// HardDelete removes a fact outright (forget cascade).
+// HardDelete 直接删除一条事实（遗忘级联）。
 func (r *FactRepo) HardDelete(ctx context.Context, id string) error {
 	_, err := r.q.Exec(ctx, `DELETE FROM fact WHERE id = $1`, id)
 	return err
 }
 
-// Get returns one fact regardless of owner (caller checks ownership).
+// Get 返回一条事实，不校验 owner（由调用方检查归属）。
 func (r *FactRepo) Get(ctx context.Context, id string) (*Fact, error) {
 	return scanFact(r.q.QueryRow(ctx, `SELECT `+factCols+` FROM fact WHERE id = $1`, id))
 }

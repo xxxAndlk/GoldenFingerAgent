@@ -1,4 +1,4 @@
-// Command migrate applies pending SQL migrations (thin wrapper over store.Migrate).
+// Command migrate 应用待执行的 SQL 迁移（对 store.Migrate 的薄封装）。
 package main
 
 import (

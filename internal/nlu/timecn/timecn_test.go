@@ -7,7 +7,7 @@ import (
 
 var cst = time.FixedZone("CST", 8*3600)
 
-// anchor: 2026-03-05 (Thursday) 10:00 CST.
+// anchor: 2026-03-05（周四）10:00 CST。
 var anchor = time.Date(2026, 3, 5, 10, 0, 0, 0, cst)
 
 func mustParse(t *testing.T, raw string) TimeResult {
@@ -54,9 +54,9 @@ func TestDayKeywordsWithClock(t *testing.T) {
 }
 
 func TestBareClockRollsToTomorrowWhenPast(t *testing.T) {
-	// 7:00 is already past the 10:00 anchor → tomorrow 07:00.
+	// 7:00 已过 10:00 锚点 → 明天 07:00。
 	assertTime(t, "7点叫我", time.Date(2026, 3, 6, 7, 0, 0, 0, cst))
-	// 15:00 is still ahead today.
+	// 15:00 今天还没到。
 	assertTime(t, "下午3点提醒我", time.Date(2026, 3, 5, 15, 0, 0, 0, cst))
 }
 
@@ -66,7 +66,7 @@ func TestChineseHourNumerals(t *testing.T) {
 }
 
 func TestWeekdays(t *testing.T) {
-	// anchor is Thursday 2026-03-05.
+	// 锚点是周四 2026-03-05。
 	assertTime(t, "下周三", time.Date(2026, 3, 11, 9, 0, 0, 0, cst))
 	assertTime(t, "下周三下午3点", time.Date(2026, 3, 11, 15, 0, 0, 0, cst))
 	assertTime(t, "周六", time.Date(2026, 3, 7, 9, 0, 0, 0, cst))
@@ -77,7 +77,7 @@ func TestDates(t *testing.T) {
 	assertTime(t, "3月8日", time.Date(2026, 3, 8, 9, 0, 0, 0, cst))
 	assertTime(t, "3月8号上午10点", time.Date(2026, 3, 8, 10, 0, 0, 0, cst))
 	assertTime(t, "2027年1月5日", time.Date(2027, 1, 5, 9, 0, 0, 0, cst))
-	// Past date rolls to next year.
+	// 已过去的日期顺延到下一年。
 	assertTime(t, "3月1日", time.Date(2027, 3, 1, 9, 0, 0, 0, cst))
 }
 

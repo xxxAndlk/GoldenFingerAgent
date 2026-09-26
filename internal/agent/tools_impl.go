@@ -16,7 +16,7 @@ import (
 	"goldenfinger/agent/internal/task"
 )
 
-// ---- shared helpers ----
+// ---- 共享辅助函数 ----
 
 func toolSpec(name, desc string, props map[string]any, required ...string) llm.ToolSpec {
 	params := map[string]any{"type": "object", "properties": props}
@@ -34,7 +34,7 @@ func decodeArgs(args json.RawMessage, v any) error {
 	return json.Unmarshal(args, v)
 }
 
-// parseTime runs the rule parser first, LLM fallback second (hard-validated).
+// parseTime 先走规则解析器，再走 LLM 回退（带硬校验）。
 func parseTime(tc *ToolContext, rawExpr string, now time.Time, loc *time.Location) (timecn.TimeResult, bool) {
 	if res, ok := timecn.Parse(rawExpr, now, loc); ok {
 		return res, true
@@ -83,7 +83,7 @@ type createTaskArgs struct {
 	Title       string  `json:"title"`
 	TimeExprRaw string  `json:"time_expr_raw"`
 	PersonName  string  `json:"person_name"`
-	Confidence  float64 `json:"self_reported_confidence"` // model's own confidence 0~1
+	Confidence  float64 `json:"self_reported_confidence"` // 模型自报置信度 0~1
 }
 
 type createTaskTool struct{}
@@ -115,9 +115,9 @@ func (createTaskTool) Execute(ctx context.Context, args json.RawMessage, tc *Too
 	}, nil)
 }
 
-// createTaskFlow is shared by create_task / set_alarm and the clarify resolver.
-// Confidence gating lives here (in domain terms): ≥0.85 auto (undoable),
-// 0.6–0.85 clarify, <0.6 discard.
+// createTaskFlow 由 create_task / set_alarm 及澄清解析器共享。
+// 置信度门控在此（领域术语）：≥0.85 自动（可撤销），
+// 0.6–0.85 澄清，<0.6 丢弃。
 func createTaskFlow(ctx context.Context, tc *ToolContext, p nlu.TaskPayload, sourceMsgID *string) (ToolResult, error) {
 	svcs := tc.Runtime.Tools
 	u, err := userOf(tc)
@@ -132,10 +132,10 @@ func createTaskFlow(ctx context.Context, tc *ToolContext, p nlu.TaskPayload, sou
 		TimeRequired:    true,
 	}
 	if in.LLMSelfReported == 0 {
-		in.LLMSelfReported = 0.75 // model didn't self-report; neutral baseline
+		in.LLMSelfReported = 0.75 // 模型未自报置信度；中性基线
 	}
 
-	// Person resolution.
+	// 人物消歧。
 	personID := ""
 	if p.PersonName != "" {
 		res, err := svcs.Memory.ResolvePerson(ctx, u.ID, p.PersonName)
@@ -173,7 +173,7 @@ func createTaskFlow(ctx context.Context, tc *ToolContext, p nlu.TaskPayload, sou
 		}
 	}
 
-	// Time normalization (rules → LLM fallback → clarify).
+	// 时间归一化（规则 → LLM 回退 → 澄清）。
 	var absTime *time.Time
 	timeNote := "无时间"
 	if p.TimeExprRaw != "" {
@@ -188,7 +188,7 @@ func createTaskFlow(ctx context.Context, tc *ToolContext, p nlu.TaskPayload, sou
 		}
 	}
 	if absTime == nil {
-		// Time missing/unparseable → clarify (frozen hypothesis).
+		// 时间缺失/无法解析 → 澄清（冻结假设）。
 		payload, _ := json.Marshal(nlu.TimeMissingPayload{Task: p})
 		pending := nlu.NewPending(nlu.PendingTimeMissing, payload,
 			"你想让我什么时候提醒你呢？", nil, now)
@@ -229,7 +229,7 @@ func createTaskFlow(ctx context.Context, tc *ToolContext, p nlu.TaskPayload, sou
 	}
 }
 
-// scheduleTask persists + enqueues the task (auto path or confirmed path).
+// scheduleTask 持久化任务并入队（自动路径或确认路径）。
 func scheduleTask(ctx context.Context, tc *ToolContext, u *store.User, p nlu.TaskPayload,
 	personID string, absTime *time.Time, score float64, sourceMsgID *string, auto bool) (ToolResult, error) {
 	svcs := tc.Runtime.Tools
@@ -283,7 +283,7 @@ func scheduleTask(ctx context.Context, tc *ToolContext, u *store.User, p nlu.Tas
 	}, nil
 }
 
-// inferEventTemplate is a cheap keyword map (trip/appointment/medication).
+// inferEventTemplate 是廉价的关键词映射（出行/预约/服药）。
 func inferEventTemplate(text string) string {
 	switch {
 	case strings.Contains(text, "票") || strings.Contains(text, "飞机") || strings.Contains(text, "火车") || strings.Contains(text, "出发") || strings.Contains(text, "行程"):
@@ -396,7 +396,7 @@ func (saveFactTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolC
 		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
 	}
 
-	// Person disambiguation first (same flow as create_task).
+	// 人物消歧先行（与 create_task 相同流程）。
 	res, err := svcs.Memory.ResolvePerson(ctx, u.ID, a.PersonName)
 	if err != nil {
 		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
@@ -429,7 +429,7 @@ func (saveFactTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolC
 	}, "")
 }
 
-// saveFactFlow executes the governance pipeline and maps the outcome to a reply.
+// saveFactFlow 执行治理管线并把结果映射为回复。
 func saveFactFlow(ctx context.Context, tc *ToolContext, u *store.User, p nlu.FactPayload, personID string) (ToolResult, error) {
 	svcs := tc.Runtime.Tools
 	outcome, fact, err := svcs.Memory.SaveFact(ctx, memory.SaveFactInput{
@@ -667,7 +667,7 @@ func (updateTaskTool) Execute(ctx context.Context, args json.RawMessage, tc *Too
 			tr, ok = parseTime(tc, a.SnoozeExpr, svcs.Now(), loadLocation(u.TZ))
 		}
 		if !ok {
-			// Default snooze: 30 minutes.
+			// 默认延后：30 分钟。
 			tr.Abs = svcs.Now().Add(30 * time.Minute)
 		}
 		_, err = svcs.Tasks.Snooze(ctx, u.ID, a.TaskID, tr.Abs)
@@ -696,7 +696,7 @@ func (listTasksTool) Spec() llm.ToolSpec {
 
 func (listTasksTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error) {
 	var a listTasksArgs
-	_ = decodeArgs(args, &a) // empty args ok
+	_ = decodeArgs(args, &a) // 空参数也可接受
 	svcs := tc.Runtime.Tools
 	u, err := userOf(tc)
 	if err != nil {
@@ -746,8 +746,8 @@ func taskTitle(t *store.Task) string {
 }
 
 // ---- create_intent / list_intents / cancel_intent ----
-// Standing intents: event-conditioned reminders ("当……时提醒我"). Time-based
-// reminders belong to create_task/set_alarm — not here.
+// 常备意图：事件条件提醒（"当……时提醒我"）。基于时间的
+// 提醒属于 create_task/set_alarm——不在这里。
 
 type createIntentArgs struct {
 	Description   string     `json:"description"`
@@ -804,7 +804,7 @@ func (createIntentTool) Execute(ctx context.Context, args json.RawMessage, tc *T
 	}, nil
 }
 
-// triggerPhrase renders groups as 「A 且 B / C 且 D」 for the confirmation text.
+// triggerPhrase 把条件组渲染为「A 且 B / C 且 D」用于确认文案。
 func triggerPhrase(groups [][]string) string {
 	parts := make([]string, 0, len(groups))
 	for _, g := range groups {
@@ -909,9 +909,56 @@ func (weatherTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolCo
 	return ToolResult{Status: StatusOK, Data: w}, nil
 }
 
+// ---- web_search ----
+
+type webSearchArgs struct {
+	Query string `json:"query"`
+	Count int    `json:"count"`
+}
+
+type webSearchTool struct{}
+
+func (webSearchTool) Spec() llm.ToolSpec {
+	return toolSpec("web_search", "联网搜索。用自然语言关键词查询最新信息（新闻、知识、实时数据）。query 为搜索词，count 为返回条数（1~10，缺省 8）。",
+		map[string]any{
+			"query": map[string]any{"type": "string", "description": "搜索关键词"},
+			"count": map[string]any{"type": "integer", "description": "可选：返回条数 1~10，缺省 8"},
+		}, "query")
+}
+
+func (webSearchTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error) {
+	var a webSearchArgs
+	if err := decodeArgs(args, &a); err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	q := strings.TrimSpace(a.Query)
+	if q == "" {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": "web_search: query 不能为空"}}, nil
+	}
+	if len(q) > 500 {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": "web_search: query 超过 500 字符上限"}}, nil
+	}
+	count := a.Count
+	if count <= 0 {
+		count = 8
+	}
+	if count > 10 {
+		count = 10
+	}
+	svcs := tc.Runtime.Tools
+	if svcs.Search == nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": "web_search: 搜索服务未装配"}}, nil
+	}
+	results, err := svcs.Search.Search(ctx, q, count)
+	if err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	return ToolResult{Status: StatusOK, Data: map[string]any{"query": q, "results": results}}, nil
+}
+
 // ---- registry wiring ----
 
-// DefaultTools returns the full MVP tool set.
+// DefaultTools 返回完整的 MVP 工具集。
 func DefaultTools() []Tool {
 	return []Tool{
 		getDateTimeTool{},
@@ -928,7 +975,8 @@ func DefaultTools() []Tool {
 		listIntentsTool{},
 		cancelIntentTool{},
 		weatherTool{},
+		webSearchTool{},
 	}
 }
 
-var _ = strings.Contains // reserved for future keyword heuristics
+var _ = strings.Contains // 预留给未来的关键词启发式

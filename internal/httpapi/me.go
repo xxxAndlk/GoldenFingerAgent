@@ -17,7 +17,7 @@ func loadTZ(tz string) *time.Location {
 	return loc
 }
 
-// handleMe returns the current user's profile (auth is a demo stub).
+// handleMe 返回当前用户的资料（认证是演示用桩）。
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	u := s.currentUser(w, r)
 	if u == nil {
@@ -37,7 +37,7 @@ type consentRequest struct {
 	SubjectID string `json:"subject_user_id"`
 }
 
-// handleConsent records guardian consent for a child account (doc §9).
+// handleConsent 记录针对儿童账号的监护人同意（文档 §9）。
 func (s *Server) handleConsent(w http.ResponseWriter, r *http.Request) {
 	var req consentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -75,11 +75,11 @@ type transcribeRequest struct {
 	Format   string `json:"format"`
 }
 
-// handleTranscribe is the ASR stub endpoint (voice interface placeholder).
+// handleTranscribe 是 ASR 桩端点（语音接口占位）。
 func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	var req transcribeRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	// Stub response; a real ASR service slots in behind extsvc.ASRService.
+	// 桩响应；真实的 ASR 服务可接入 extsvc.ASRService 背后。
 	writeJSON(w, 200, map[string]string{"text": "（语音识别 stub：这是一段模拟的转写文本）"})
 }
 
@@ -87,7 +87,7 @@ type speakRequest struct {
 	Text string `json:"text"`
 }
 
-// handleSpeak is the TTS stub endpoint (voice interface placeholder).
+// handleSpeak 是 TTS 桩端点（语音接口占位）。
 func (s *Server) handleSpeak(w http.ResponseWriter, r *http.Request) {
 	var req speakRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Text == "" {

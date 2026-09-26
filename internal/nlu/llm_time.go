@@ -21,8 +21,8 @@ const timeFallbackPrompt = `把下面的中文时间表达换算成绝对时间�
 
 var reRecurrence = regexp.MustCompile(`^(daily@\d{2}:\d{2}|weekly@W[1-7]T\d{2}:\d{2}|monthly@\d{1,2}T\d{2}:\d{2})$`)
 
-// llmTimeFallback asks the LLM to normalize a time phrase the rules missed,
-// then HARD-VALIDATES the answer. Invalid answers are rejected (ok=false).
+// llmTimeFallback 让 LLM 规范化规则未命中的时间短语，
+// 然后对答案做强制校验。无效答案会被拒绝（ok=false）。
 func llmTimeFallback(ctx context.Context, client llm.Client, model, rawExpr string, now time.Time, loc *time.Location) (timecn.TimeResult, bool) {
 	prompt := fmt.Sprintf(timeFallbackPrompt, now.In(loc).Format(time.RFC3339)) + "\n时间表达: " + rawExpr
 	resp, err := client.Chat(ctx, llm.ChatRequest{
@@ -47,7 +47,7 @@ func llmTimeFallback(ctx context.Context, client llm.Client, model, rawExpr stri
 		return timecn.TimeResult{}, false
 	}
 
-	// Hard validation — the model is never trusted blindly.
+	// 强制校验——绝不盲目信任模型。
 	abs, err := time.Parse(time.RFC3339, strings.TrimSpace(out.AbsTime))
 	if err != nil {
 		return timecn.TimeResult{}, false

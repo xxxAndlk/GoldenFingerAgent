@@ -1,4 +1,4 @@
-// Package mock provides deterministic scripted LLM implementations for tests.
+// Package mock 提供用于测试的确定性脚本化 LLM 实现。
 package mock
 
 import (
@@ -9,13 +9,13 @@ import (
 	"goldenfinger/agent/internal/llm"
 )
 
-// Scripted replays a queue of canned ChatResponses in order. Requests are
-// recorded so tests can assert on what the agent sent.
+// Scripted 按顺序回放一串预置的 ChatResponses。请求会被
+// 记录下来，便于测试断言 agent 发送了什么。
 type Scripted struct {
 	mu        sync.Mutex
 	Responses []llm.ChatResponse
 	Calls     []llm.ChatRequest
-	// Matcher optionally rejects a request (returns error) instead of replaying.
+	// Matcher 可选：拒绝请求（返回 error）而非回放。
 	Matcher func(req llm.ChatRequest) error
 }
 
@@ -51,10 +51,10 @@ func (s *Scripted) Stream(ctx context.Context, req llm.ChatRequest, onDelta func
 	return resp, nil
 }
 
-// FixedEmbedder returns a constant-size deterministic vector per text.
+// FixedEmbedder 对每段文本返回固定长度的确定性向量。
 type FixedEmbedder struct {
 	Dim int
-	// Vec optionally overrides generated vectors by text.
+	// Vec 可选：按文本覆盖生成的向量。
 	Vec map[string][]float32
 }
 
@@ -70,7 +70,7 @@ func (f *FixedEmbedder) Embed(ctx context.Context, texts []string) ([][]float32,
 			continue
 		}
 		v := make([]float32, dim)
-		// Deterministic pseudo-vector derived from the text bytes.
+		// 由文本字节派生的确定性伪向量。
 		var sum float32
 		for _, b := range t {
 			sum += float32(b)
@@ -86,7 +86,7 @@ func (f *FixedEmbedder) Embed(ctx context.Context, texts []string) ([][]float32,
 
 // ---- test helpers ----
 
-// TextResponse builds a plain text assistant reply.
+// TextResponse 构造一个纯文本的助手回复。
 func TextResponse(content string) llm.ChatResponse {
 	return llm.ChatResponse{
 		Message:      llm.Message{Role: llm.RoleAssistant, Content: content},
@@ -94,7 +94,7 @@ func TextResponse(content string) llm.ChatResponse {
 	}
 }
 
-// ToolResponse builds an assistant reply that calls one tool.
+// ToolResponse 构造一个调用单个工具的助手回复。
 func ToolResponse(id, name, argsJSON string) llm.ChatResponse {
 	return llm.ChatResponse{
 		Message: llm.Message{

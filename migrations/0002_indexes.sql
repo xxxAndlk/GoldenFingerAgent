@@ -1,4 +1,4 @@
--- 0002_indexes.sql — lookup and vector similarity indexes.
+-- 0002_indexes.sql — 查询与向量相似度索引。
 
 CREATE INDEX person_owner_idx ON person (owner_user_id) WHERE deleted_at IS NULL;
 CREATE INDEX alias_person_idx ON alias (person_id);
