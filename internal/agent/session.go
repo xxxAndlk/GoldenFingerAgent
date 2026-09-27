@@ -31,6 +31,8 @@ type Session struct {
 	Messages []llm.Message
 	Pending  *nlu.PendingAction `json:"-"`
 	Trace    []string           // 调试用工具轨迹
+	// DeviceSteps 记录本次操控任务的设备动作步数（单任务 ≤15 步上限）。
+	DeviceSteps int `json:"-"`
 }
 
 // Append 向对话记录追加一条消息。

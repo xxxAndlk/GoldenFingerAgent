@@ -3,7 +3,6 @@ package memory
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -14,12 +13,8 @@ import (
 
 func testRepos(t *testing.T) (*store.Repos, *Service) {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping memory integration tests")
-	}
 	ctx := context.Background()
-	db, err := store.Connect(ctx, url)
+	db, err := store.Connect(ctx, ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +22,7 @@ func testRepos(t *testing.T) (*store.Repos, *Service) {
 	if _, err := db.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	repos := store.NewRepos(db.Pool)
+	repos := store.NewRepos(db)
 	svc := NewService(repos.Persons, repos.Facts, repos.Episodes, repos.Audit,
 		&mock.FixedEmbedder{Dim: 1024}, nlu.Thresholds{FactConfirmed: 0.8}, 720*time.Hour, nil)
 	return repos, svc

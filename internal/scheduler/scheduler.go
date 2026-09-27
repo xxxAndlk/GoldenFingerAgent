@@ -193,6 +193,28 @@ func (s *DBScheduler) fire(ctx context.Context, r store.Reminder, now time.Time)
 		log.Printf("scheduler: mark notified %s: %v", t.ID, err)
 	}
 
+	// 周期任务续排：daily/weekly 成功投递后自动排下一次。
+	// 从本次预定 fire 时间计算，沿用 DedupeKey 生成新键避免唯一冲突；
+	// 任务保持 notified，不提前置 done（下一次到期继续触发）。
+	if rec := task.Recurrence(t); rec != "" {
+		loc := loadLocation(user.TZ)
+		if next, ok := task.NextOccurrence(rec, r.FireAt, loc); ok {
+			nr := &store.Reminder{
+				TaskID:    t.ID,
+				FireAt:    next,
+				Channel:   s.policy.ChannelForLevel(1),
+				Level:     1,
+				DedupeKey: task.RecurrenceDedupeKey(t.ID, 1, next),
+			}
+			created, err := s.repos.Reminders.InsertIdempotent(ctx, nr)
+			if err != nil {
+				log.Printf("[sched] recurrence enqueue %s: %v", t.ID, err)
+			} else if created {
+				log.Printf("[sched] recurrence task=%q next=%s", task.Title(t), next.Format("01-02 15:04"))
+			}
+		}
+	}
+
 	// 如果任务仍未完成，安排下一个升级级别。
 	if next, ok := s.policy.NextLevel(r.Level); ok {
 		esc := &store.Reminder{

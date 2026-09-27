@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -24,12 +23,8 @@ var fixedNow = time.Date(2026, 3, 5, 10, 0, 0, 0, time.FixedZone("CST", 8*3600))
 // testHarness 用测试数据库 + 脚本化 LLM 装配一个完整 Runtime。
 func testHarness(t *testing.T, script ...llm.ChatResponse) (*Session, *Runtime, *store.User) {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping agent integration tests")
-	}
 	ctx := context.Background()
-	db, err := store.Connect(ctx, url)
+	db, err := store.Connect(ctx, ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +32,7 @@ func testHarness(t *testing.T, script ...llm.ChatResponse) (*Session, *Runtime, 
 	if _, err := db.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	repos := store.NewRepos(db.Pool)
+	repos := store.NewRepos(db)
 
 	u := &store.User{UserType: store.UserGeneral, Name: "agent-user", TZ: "Asia/Shanghai"}
 	if err := repos.Users.Create(ctx, u); err != nil {

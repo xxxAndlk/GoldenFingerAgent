@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
+	"goldenfinger/agent/internal/device"
 	"goldenfinger/agent/internal/intent"
 	"goldenfinger/agent/internal/llm"
 	"goldenfinger/agent/internal/memory"
@@ -183,6 +185,9 @@ func createTaskFlow(ctx context.Context, tc *ToolContext, p nlu.TaskPayload, sou
 			absTime = &at
 			in.TimeParsed = true
 			timeNote = fmt.Sprintf("%q→%s[%s]", p.TimeExprRaw, tr.Abs.In(loc).Format("01-02 15:04"), tr.Method)
+			if tr.Recurrence != "" {
+				p.Recurrence = tr.Recurrence // timecn 已解析出 daily@/weekly@ 周期
+			}
 		} else {
 			timeNote = fmt.Sprintf("%q→解析失败", p.TimeExprRaw)
 		}
@@ -214,6 +219,7 @@ func createTaskFlow(ctx context.Context, tc *ToolContext, p nlu.TaskPayload, sou
 		payload, _ := json.Marshal(nlu.TaskPayload{
 			RawText: p.RawText, Kind: p.Kind, Title: p.Title,
 			TimeExprRaw: p.TimeExprRaw, PersonName: p.PersonName, PersonID: personID,
+			Recurrence: p.Recurrence,
 			Confidence: score,
 		})
 		abs := absTime.Format("2006-01-02 15:04")
@@ -245,6 +251,7 @@ func scheduleTask(ctx context.Context, tc *ToolContext, u *store.User, p nlu.Tas
 		AbsTime:     absTime,
 		Confidence:  score,
 		SourceMsgID: sourceMsgID,
+		Recurrence:  p.Recurrence,
 		AutoAccept:  auto,
 	}
 	if personID != "" {
@@ -956,6 +963,353 @@ func (webSearchTool) Execute(ctx context.Context, args json.RawMessage, tc *Tool
 	return ToolResult{Status: StatusOK, Data: map[string]any{"query": q, "results": results}}, nil
 }
 
+// ---- 设备操控工具（经 ToolServices.Device 可选注入） ----
+
+// maxDeviceSteps 是单次操控任务允许的最大设备动作步数。
+const maxDeviceSteps = 15
+
+// deviceHubOf 取设备通道；未装配时返回 nil。
+func deviceHubOf(tc *ToolContext) *device.Hub {
+	if tc == nil || tc.Runtime == nil || tc.Runtime.Tools == nil {
+		return nil
+	}
+	return tc.Runtime.Tools.Device
+}
+
+// deviceStep 递增本任务的设备动作计数；超过上限返回需要终止的人话。
+func deviceStep(tc *ToolContext) (string, bool) {
+	if tc.Session == nil {
+		return "", true
+	}
+	tc.Session.DeviceSteps++
+	if tc.Session.DeviceSteps > maxDeviceSteps {
+		return fmt.Sprintf("我没能完成：设备操作已达 %d 步上限，请把目标拆小一点，或先确认当前屏幕再继续。", maxDeviceSteps), false
+	}
+	return "", true
+}
+
+// sendDevice 下发一次设备动作：计数 + [phone] 日志（动作/目标/耗时/结果）。
+func sendDevice(ctx context.Context, tc *ToolContext, action string, params map[string]any, target string) (ToolResult, error) {
+	if msg, ok := deviceStep(tc); !ok {
+		return ToolResult{Status: StatusLimit, Data: map[string]string{"error": msg}}, nil
+	}
+	hub := deviceHubOf(tc)
+	if hub == nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": "设备未连接"}}, nil
+	}
+	start := time.Now()
+	res, err := hub.Send(ctx, action, params)
+	cost := time.Since(start).Round(time.Millisecond).String()
+	if err != nil {
+		log.Printf("[phone] action=%s target=%v cost=%s result=%v", action, target, cost, err)
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": "设备执行失败：" + err.Error()}}, nil
+	}
+	log.Printf("[phone] action=%s target=%v cost=%s result=%v", action, target, cost, res)
+	if !res.OK {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": "设备执行失败：" + res.Error}}, nil
+	}
+	data := map[string]any{"reply": "已执行 " + action}
+	if len(res.Data) > 0 {
+		var extra map[string]any
+		if json.Unmarshal(res.Data, &extra) == nil && len(extra) > 0 {
+			data = extra
+		}
+	}
+	return ToolResult{Status: StatusOK, Data: data}, nil
+}
+
+// nodeIndexByText 在最近一帧里按文本/描述匹配节点（返回第一个命中）。
+func nodeIndexByText(hub *device.Hub, text string) (int, bool) {
+	if hub == nil {
+		return 0, false
+	}
+	s := hub.LatestScreen()
+	if s == nil {
+		return 0, false
+	}
+	text = strings.TrimSpace(text)
+	for _, n := range s.Nodes {
+		if strings.TrimSpace(n.Text) == text || strings.Contains(n.Text, text) || strings.Contains(n.ContentDescription, text) {
+			return n.Index, true
+		}
+	}
+	return 0, false
+}
+
+// ---- screen_observe ----
+
+type screenObserveTool struct{}
+
+func (screenObserveTool) Spec() llm.ToolSpec {
+	return toolSpec("screen_observe", "读取设备当前屏幕的节点树（序号/文本/描述/可点击/坐标）。执行设备操作前先调用它确认屏幕内容。",
+		map[string]any{})
+}
+
+func (screenObserveTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error) {
+	hub := deviceHubOf(tc)
+	if hub == nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": "设备未连接"}}, nil
+	}
+	s := hub.LatestScreen()
+	if s == nil || len(s.Nodes) == 0 {
+		return ToolResult{Status: StatusOK, Data: map[string]string{"text": "暂无画面，请稍候"}}, nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "设备 %s 屏幕（%s）：\n", s.DeviceID, s.At.In(time.Local).Format("15:04:05"))
+	for _, n := range s.Nodes {
+		fmt.Fprintf(&b, "[%d] %s desc=%q clickable=%v bounds=%v\n",
+			n.Index, n.Text, n.ContentDescription, n.Clickable, n.Bounds)
+	}
+	return ToolResult{Status: StatusOK, Data: map[string]string{"text": b.String()}}, nil
+}
+
+// ---- tap / longClick ----
+
+type tapArgs struct {
+	NodeIndex *int   `json:"node_index"`
+	X         *int   `json:"x"`
+	Y         *int   `json:"y"`
+	Text      string `json:"text,omitempty"` // 按文本定位节点（服务端匹配）
+	LongPress bool   `json:"long_press,omitempty"`
+}
+
+type tapTool struct{}
+
+func (tapTool) Spec() llm.ToolSpec {
+	return toolSpec("tap", "点击设备屏幕元素：传 node_index（来自 screen_observe）或 x/y 坐标；长按设 long_press=true；也可传 text 让服务端按文本匹配。",
+		map[string]any{
+			"node_index": map[string]any{"type": "integer"},
+			"x":          map[string]any{"type": "integer"},
+			"y":          map[string]any{"type": "integer"},
+			"text":       map[string]any{"type": "string"},
+			"long_press": map[string]any{"type": "boolean"},
+		})
+}
+
+func (tapTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error) {
+	var a tapArgs
+	if err := decodeArgs(args, &a); err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	action := "click"
+	if a.NodeIndex != nil {
+		params := map[string]any{"node_index": *a.NodeIndex}
+		if a.LongPress {
+			action, params = "longClick", map[string]any{"node_index": *a.NodeIndex}
+		}
+		return sendDevice(ctx, tc, action, params, fmt.Sprintf("node=%d", *a.NodeIndex))
+	}
+	if a.Text != "" {
+		if idx, ok := nodeIndexByText(deviceHubOf(tc), a.Text); ok {
+			params := map[string]any{"node_index": idx}
+			if a.LongPress {
+				action, params = "longClick", map[string]any{"node_index": idx}
+			}
+			return sendDevice(ctx, tc, action, params, fmt.Sprintf("text=%q node=%d", a.Text, idx))
+		}
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": fmt.Sprintf("屏幕上没找到「%s」这个元素，请先 screen_observe 看看", a.Text)}}, nil
+	}
+	if a.X != nil && a.Y != nil {
+		return sendDevice(ctx, tc, "gestureTap", map[string]any{"x": *a.X, "y": *a.Y}, fmt.Sprintf("(%d,%d)", *a.X, *a.Y))
+	}
+	return ToolResult{Status: StatusError, Data: map[string]string{"error": "tap 需要 node_index 或 x/y 坐标"}}, nil
+}
+
+// ---- input_text ----
+
+type inputTextArgs struct {
+	Text string `json:"text"`
+}
+
+type inputTextTool struct{}
+
+func (inputTextTool) Spec() llm.ToolSpec {
+	return toolSpec("input_text", "向当前聚焦的输入框输入文本（setText）。",
+		map[string]any{"text": map[string]any{"type": "string"}}, "text")
+}
+
+func (inputTextTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error) {
+	var a inputTextArgs
+	if err := decodeArgs(args, &a); err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	if strings.TrimSpace(a.Text) == "" {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": "input_text 需要非空 text"}}, nil
+	}
+	return sendDevice(ctx, tc, "setText", map[string]any{"text": a.Text}, truncate(a.Text, 24))
+}
+
+// ---- swipe / scroll ----
+
+type swipeArgs struct {
+	Direction  string `json:"direction"` // up|down|left|right → scrollBackward/Forward
+	NodeIndex  *int   `json:"node_index"`
+	X1         *int   `json:"x1"`
+	Y1         *int   `json:"y1"`
+	X2         *int   `json:"x2"`
+	Y2         *int   `json:"y2"`
+	DurationMS int    `json:"duration_ms"`
+}
+
+type swipeTool struct{}
+
+func (swipeTool) Spec() llm.ToolSpec {
+	return toolSpec("swipe", "滑动屏幕：给 x1,y1,x2,y2 则手势滑动（gestureSwipe，可带 duration_ms）；给 direction（up/down/left/right）则滚动（scrollForward/scrollBackward，可带 node_index 限定容器）。",
+		map[string]any{
+			"direction":   map[string]any{"type": "string"},
+			"node_index":  map[string]any{"type": "integer"},
+			"x1":          map[string]any{"type": "integer"},
+			"y1":          map[string]any{"type": "integer"},
+			"x2":          map[string]any{"type": "integer"},
+			"y2":          map[string]any{"type": "integer"},
+			"duration_ms": map[string]any{"type": "integer"},
+		})
+}
+
+func (swipeTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error) {
+	var a swipeArgs
+	if err := decodeArgs(args, &a); err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	if a.Direction != "" {
+		action := "scrollForward"
+		switch a.Direction {
+		case "up", "left":
+			action = "scrollBackward"
+		}
+		params := map[string]any{"direction": a.Direction}
+		if a.NodeIndex != nil {
+			params["node_index"] = *a.NodeIndex
+		}
+		return sendDevice(ctx, tc, action, params, fmt.Sprintf("dir=%s node=%v", a.Direction, a.NodeIndex))
+	}
+	if a.X1 != nil && a.Y1 != nil && a.X2 != nil && a.Y2 != nil {
+		params := map[string]any{
+			"x1": *a.X1, "y1": *a.Y1, "x2": *a.X2, "y2": *a.Y2,
+		}
+		if a.DurationMS > 0 {
+			params["duration_ms"] = a.DurationMS
+		}
+		return sendDevice(ctx, tc, "gestureSwipe", params, fmt.Sprintf("(%d,%d)->(%d,%d)", *a.X1, *a.Y1, *a.X2, *a.Y2))
+	}
+	return ToolResult{Status: StatusError, Data: map[string]string{"error": "swipe 需要 direction 或 x1,y1,x2,y2 坐标"}}, nil
+}
+
+// ---- back / home ----
+
+type backArgs struct {
+	Home bool `json:"home,omitempty"`
+}
+
+type backTool struct{}
+
+func (backTool) Spec() llm.ToolSpec {
+	return toolSpec("back", "返回上一页（globalBack）；设 home=true 则回到桌面（globalHome）。",
+		map[string]any{"home": map[string]any{"type": "boolean"}})
+}
+
+func (backTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error) {
+	var a backArgs
+	if err := decodeArgs(args, &a); err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	action := "globalBack"
+	if a.Home {
+		action = "globalHome"
+	}
+	return sendDevice(ctx, tc, action, map[string]any{}, action)
+}
+
+// ---- open_app ----
+
+// appNameToPackage 最小内置中文应用名→包名映射（未知应用不猜包名）。
+var appNameToPackage = map[string]string{
+	"微信":   "com.tencent.mm",
+	"设置":   "com.android.settings",
+	"电话":   "com.android.dialer",
+	"相机":   "com.android.camera",
+	"短信":   "com.android.messaging",
+	"浏览器": "com.android.browser",
+	"相册":   "com.android.gallery3d",
+	"时钟":   "com.android.deskclock",
+	"日历":   "com.android.calendar",
+}
+
+type openAppArgs struct {
+	Package string `json:"package"`
+	AppName string `json:"app_name,omitempty"`
+}
+
+type openAppTool struct{}
+
+func (openAppTool) Spec() llm.ToolSpec {
+	return toolSpec("open_app", "打开设备上的应用：传 package 包名（如 com.tencent.mm）或中文应用名（微信/设置/电话等）。不认识的应用名不要猜包名，把名字原样返回让用户确认。",
+		map[string]any{
+			"package":  map[string]any{"type": "string"},
+			"app_name": map[string]any{"type": "string"},
+		})
+}
+
+func (openAppTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error) {
+	var a openAppArgs
+	if err := decodeArgs(args, &a); err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	pkg := strings.TrimSpace(a.Package)
+	if pkg == "" {
+		name := strings.TrimSpace(a.AppName)
+		if p, ok := appNameToPackage[name]; ok {
+			pkg = p
+		} else if name != "" {
+			return ToolResult{Status: StatusError, Data: map[string]string{
+				"error": fmt.Sprintf("我不确定「%s」对应哪个应用，请告诉我它的完整包名（例如 com.tencent.mm）", name),
+			}}, nil
+		}
+	}
+	if pkg == "" {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": "open_app 需要 package 或 app_name"}}, nil
+	}
+	return sendDevice(ctx, tc, "openApp", map[string]any{"package": pkg}, pkg)
+}
+
+// ---- wait ----
+
+type waitArgs struct {
+	Seconds int `json:"seconds"`
+}
+
+type waitTool struct{}
+
+func (waitTool) Spec() llm.ToolSpec {
+	return toolSpec("wait", "等待若干秒让界面加载/动画结束（默认 1 秒，最长 10 秒）。",
+		map[string]any{"seconds": map[string]any{"type": "integer"}})
+}
+
+func (waitTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error) {
+	var a waitArgs
+	if err := decodeArgs(args, &a); err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	if a.Seconds <= 0 {
+		a.Seconds = 1
+	}
+	if a.Seconds > 10 {
+		a.Seconds = 10
+	}
+	if msg, ok := deviceStep(tc); !ok {
+		return ToolResult{Status: StatusLimit, Data: map[string]string{"error": msg}}, nil
+	}
+	start := time.Now()
+	select {
+	case <-ctx.Done():
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": "等待被中断"}}, nil
+	case <-time.After(time.Duration(a.Seconds) * time.Second):
+	}
+	cost := time.Since(start).Round(time.Millisecond).String()
+	log.Printf("[phone] action=wait target=%ds cost=%s result=ok", a.Seconds, cost)
+	return ToolResult{Status: StatusOK, Data: map[string]string{"reply": fmt.Sprintf("已等待 %d 秒", a.Seconds)}}, nil
+}
+
 // ---- registry wiring ----
 
 // DefaultTools 返回完整的 MVP 工具集。
@@ -976,6 +1330,13 @@ func DefaultTools() []Tool {
 		cancelIntentTool{},
 		weatherTool{},
 		webSearchTool{},
+		screenObserveTool{},
+		tapTool{},
+		inputTextTool{},
+		swipeTool{},
+		backTool{},
+		openAppTool{},
+		waitTool{},
 	}
 }
 

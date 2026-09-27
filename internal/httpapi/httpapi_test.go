@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -32,12 +31,8 @@ func (fakeQueue) CancelForTask(ctx context.Context, id string) error      { retu
 // newTestServer 用脚本化 LLM 装配完整技术栈。
 func newTestServer(t *testing.T, script ...llm.ChatResponse) (*Server, *store.Repos) {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping httpapi integration tests")
-	}
 	ctx := context.Background()
-	db, err := store.Connect(ctx, url)
+	db, err := store.Connect(ctx, ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +40,7 @@ func newTestServer(t *testing.T, script ...llm.ChatResponse) (*Server, *store.Re
 	if _, err := db.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	repos := store.NewRepos(db.Pool)
+	repos := store.NewRepos(db)
 
 	th := nlu.Thresholds{TaskAuto: 0.85, TaskClarify: 0.6, PersonClarify: 0.8, FactConfirmed: 0.8}
 	mem := memory.NewService(repos.Persons, repos.Facts, repos.Episodes, repos.Audit,

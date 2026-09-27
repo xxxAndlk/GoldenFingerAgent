@@ -1,0 +1,11 @@
+# Android/Gradle 构建产物与本地配置不入库
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+app/libs/

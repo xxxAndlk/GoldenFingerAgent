@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标前景：金色「金手指 + 灯泡」意象（纯矢量，程序化，无外部图）。
+     中央为灯泡（服务/灵感），灯泡内为竖起的金色手指（金手指操控）。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 灯泡外圈（浅金） -->
+    <path
+        android:fillColor="#F2D98C"
+        android:pathData="M54,30 a18,18 0 1,0 0,36 a18,18 0 1,0 0,-36 z" />
+    <!-- 灯座（深金） -->
+    <path
+        android:fillColor="#B8891F"
+        android:pathData="M54,66 l-7,6 h14 z" />
+    <path
+        android:fillColor="#8A6A14"
+        android:pathData="M54,78 l-4,4 h8 z" />
+    <!-- 金手指（竖立在灯泡内，金色渐变示意：深金描边 + 亮金填充） -->
+    <path
+        android:strokeColor="#8A6A14"
+        android:strokeWidth="3"
+        android:fillColor="#F5C24B"
+        android:pathData="M49,30 c0,-3 2,-5 5,-5 s5,2 5,5 l0,12 c1,-1 3,-1 4,0 l2,1 c2,1 3,3 3,5 l0,2 c0,5 -4,9 -9,9 l-6,0 c-4,0 -7,-3 -7,-7 l0,-4 c0,-3 2,-6 5,-7 l2,-1 c1,-1 3,-1 4,0 z" />
+    <!-- 灯泡高光 -->
+    <path
+        android:fillColor="#FFF3C4"
+        android:pathData="M46,36 a3,3 0 1,0 0,6 a3,3 0 1,0 0,-6 z" />
+    <!-- 光芒（四角短线） -->
+    <path
+        android:strokeColor="#C9A227"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M54,14 L54,20 M78,30 L73,34 M30,30 L35,34 M54,92 L54,86" />
+</vector>

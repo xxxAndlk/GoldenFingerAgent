@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 本机 Go 服务（随机端口）与 WebView 走 cleartext localhost -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+    <!-- 其余（云 LLM/向量 API）走系统默认（https） -->
+</network-security-config>

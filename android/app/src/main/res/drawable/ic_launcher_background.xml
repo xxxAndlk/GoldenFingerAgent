@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标背景：暖金渐变色 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="315"
+        android:startColor="#E8C04C"
+        android:endColor="#B8891F" />
+</shape>

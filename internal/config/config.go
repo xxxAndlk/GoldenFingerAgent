@@ -29,7 +29,7 @@ type Server struct {
 }
 
 type Database struct {
-	URL string `yaml:"url"`
+	Path string `yaml:"path"`
 }
 
 type LLM struct {
@@ -103,6 +103,9 @@ func Load(path string) (*Config, error) {
 }
 
 func (c *Config) applyDefaults() {
+	if c.Database.Path == "" {
+		c.Database.Path = "data/gfa.db"
+	}
 	if c.Server.Addr == "" {
 		c.Server.Addr = ":8080"
 	}
@@ -151,8 +154,8 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) applyEnv() {
-	if v := os.Getenv("GFA_DATABASE_URL"); v != "" {
-		c.Database.URL = v
+	if v := os.Getenv("GFA_DATABASE_PATH"); v != "" {
+		c.Database.Path = v
 	}
 	if v := os.Getenv("GFA_SERVER_ADDR"); v != "" {
 		c.Server.Addr = v
@@ -197,9 +200,6 @@ func (c *Config) applyEnv() {
 }
 
 func (c *Config) validate() error {
-	if c.Database.URL == "" {
-		return fmt.Errorf("config: database.url is required")
-	}
 	if c.Thresholds.TaskAuto == 0 {
 		c.Thresholds.TaskAuto = 0.85
 	}

@@ -53,9 +53,10 @@ type CreateInput struct {
 	Deadline       *time.Time
 	Confidence     float64
 	SourceMsgID    *string
-	LinkedPersonID *string
+		LinkedPersonID *string
 		EventTemplate  string
-		AutoAccept     bool // >= task_auto 阈值 → 直接排定（可撤销）
+		Recurrence     string // 周期表达式 daily@HH:MM / weekly@WnTHH:MM
+		AutoAccept     bool   // >= task_auto 阈值 → 直接排定（可撤销）
 	}
 
 // Create 按门禁插入一条 draft/pending_confirm/scheduled 任务，然后
@@ -72,7 +73,11 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (*store.Task, erro
 		LinkedPersonID: in.LinkedPersonID,
 		EventTemplate:  in.EventTemplate,
 	}
-	payload, _ := json.Marshal(map[string]string{"title": in.Title})
+	schema := map[string]any{"title": in.Title}
+	if in.Recurrence != "" {
+		schema[SchemaRecurrenceKey] = in.Recurrence
+	}
+	payload, _ := json.Marshal(schema)
 	t.Schema = payload
 
 	switch {
@@ -117,6 +122,7 @@ func (s *Service) Confirm(ctx context.Context, ownerID, id string) (*store.Task,
 }
 
 // Done 关闭任务并取消待发的提醒。
+// 周期任务（schema 含 daily/weekly recurrence）完成本轮后排下一次。
 func (s *Service) Done(ctx context.Context, ownerID, id string) error {
 	t, err := s.repo.Get(ctx, ownerID, id)
 	if err != nil {
@@ -127,7 +133,21 @@ func (s *Service) Done(ctx context.Context, ownerID, id string) error {
 	}
 	log.Printf("[task] %s %q: %s → done", id, Title(t), t.Status)
 	s.auditAppend(ctx, ownerID, actorUser, "task_done", id, nil)
-	return s.queue.CancelForTask(ctx, id)
+	if err := s.queue.CancelForTask(ctx, id); err != nil {
+		return err
+	}
+	// 周期任务：完成本轮 → 排下一次提醒（沿用原 AbsTime 的时区）。
+	if rec := Recurrence(t); rec != "" && t.AbsTime != nil {
+		next, ok := NextOccurrence(rec, *t.AbsTime, t.AbsTime.Location())
+		if ok {
+			t.AbsTime = &next
+			if err := s.queue.EnqueueForTask(ctx, t); err != nil {
+				return err
+			}
+			log.Printf("[task] %s %q: recurrence → next %s", id, Title(t), next.Format("01-02 15:04"))
+		}
+	}
+	return nil
 }
 
 // Cancel 取消任务及其待发的提醒。

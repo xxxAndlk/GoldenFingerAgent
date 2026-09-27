@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 启动主题：背景色 + 居中 logo（App 冷启动立刻可见，无白屏） -->
+    <style name="Theme.Butler" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">@color/gold</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="android:windowBackground">@drawable/splash_logo</item>
+        <item name="android:statusBarColor">@color/gold</item>
+    </style>
+
+    <!-- 启动闪屏主题（API 31+ 也可用 SplashScreen，但保持最小依赖） -->
+    <style name="Theme.Butler.Splash">
+        <item name="android:windowBackground">@drawable/splash_logo</item>
+    </style>
+</resources>

@@ -16,7 +16,7 @@ func main() {
 		fatal(err)
 	}
 	ctx := context.Background()
-	db, err := store.Connect(ctx, cfg.Database.URL)
+	db, err := store.Connect(ctx, cfg.Database.Path)
 	if err != nil {
 		fatal(err)
 	}

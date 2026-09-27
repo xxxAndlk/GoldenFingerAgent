@@ -3,7 +3,6 @@ package compliance
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 
 	"goldenfinger/agent/internal/store"
@@ -11,12 +10,8 @@ import (
 
 func testGuard(t *testing.T) (*Guard, *store.Repos) {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping compliance integration tests")
-	}
 	ctx := context.Background()
-	db, err := store.Connect(ctx, url)
+	db, err := store.Connect(ctx, ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,7 +19,7 @@ func testGuard(t *testing.T) (*Guard, *store.Repos) {
 	if _, err := db.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	repos := store.NewRepos(db.Pool)
+	repos := store.NewRepos(db)
 	return NewGuard(repos.Consents, repos.Audit, repos.Users), repos
 }
 

@@ -2,11 +2,12 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/google/uuid"
 )
 
 // 常驻意图的生命周期状态（事件触发的前瞻记忆）。
@@ -43,13 +44,13 @@ func NewIntentRepo(q Querier) *IntentRepo { return &IntentRepo{q: q} }
 const intentCols = `id, owner_user_id, description, trigger_groups, status,
 	fire_count, max_fires, cooldown_seconds, last_fired_at, expires_at, created_at`
 
-func scanIntent(row pgx.Row) (*StandingIntent, error) {
+func scanIntent(row Row) (*StandingIntent, error) {
 	it := &StandingIntent{}
 	var groups []byte
 	err := row.Scan(&it.ID, &it.OwnerUserID, &it.Description, &groups, &it.Status,
 		&it.FireCount, &it.MaxFires, &it.CooldownSeconds, &it.LastFiredAt, &it.ExpiresAt, &it.CreatedAt)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
@@ -60,7 +61,7 @@ func scanIntent(row pgx.Row) (*StandingIntent, error) {
 	return it, nil
 }
 
-func scanIntents(rows pgx.Rows) ([]StandingIntent, error) {
+func scanIntents(rows *sql.Rows) ([]StandingIntent, error) {
 	var out []StandingIntent
 	for rows.Next() {
 		it := StandingIntent{}
@@ -78,21 +79,22 @@ func scanIntents(rows pgx.Rows) ([]StandingIntent, error) {
 }
 
 func (r *IntentRepo) Insert(ctx context.Context, it *StandingIntent) error {
+	it.ID = uuid.NewString()
 	groups, _ := json.Marshal(it.TriggerGroups)
-	return r.q.QueryRow(ctx, `
-		INSERT INTO standing_intent (owner_user_id, description, trigger_groups,
-			status, max_fires, cooldown_seconds, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, created_at`,
-		it.OwnerUserID, it.Description, groups, it.Status,
-		it.MaxFires, it.CooldownSeconds, it.ExpiresAt,
-	).Scan(&it.ID, &it.CreatedAt)
+	return r.q.QueryRowContext(ctx, `
+		INSERT INTO standing_intent (id, owner_user_id, description, trigger_groups,
+			status, max_fires, cooldown_seconds, expires_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		RETURNING created_at`,
+		it.ID, it.OwnerUserID, it.Description, groups, it.Status,
+		it.MaxFires, it.CooldownSeconds, it.ExpiresAt, nowForDB(), nowForDB(),
+	).Scan(&it.CreatedAt)
 }
 
 func (r *IntentRepo) ListByOwner(ctx context.Context, ownerID string) ([]StandingIntent, error) {
-	rows, err := r.q.Query(ctx, `
+	rows, err := r.q.QueryContext(ctx, `
 		SELECT `+intentCols+` FROM standing_intent
-		WHERE owner_user_id = $1 AND deleted_at IS NULL
+		WHERE owner_user_id = ? AND deleted_at IS NULL
 		ORDER BY created_at DESC`, ownerID)
 	if err != nil {
 		return nil, err
@@ -102,29 +104,28 @@ func (r *IntentRepo) ListByOwner(ctx context.Context, ownerID string) ([]Standin
 }
 
 func (r *IntentRepo) Get(ctx context.Context, ownerID, id string) (*StandingIntent, error) {
-	return scanIntent(r.q.QueryRow(ctx, `
+	return scanIntent(r.q.QueryRowContext(ctx, `
 		SELECT `+intentCols+` FROM standing_intent
-		WHERE id = $1 AND owner_user_id = $2 AND deleted_at IS NULL`, id, ownerID))
+		WHERE id = ? AND owner_user_id = ? AND deleted_at IS NULL`, id, ownerID))
 }
 
 // Cancel 始终是显式操作（意图永远不会被推断取消）。
 func (r *IntentRepo) Cancel(ctx context.Context, ownerID, id string) (*StandingIntent, error) {
-	return scanIntent(r.q.QueryRow(ctx, `
-		UPDATE standing_intent SET status = '`+IntentCancelled+`', updated_at = now()
-		WHERE id = $1 AND owner_user_id = $2 AND status IN ('pending','armed','fired')
-		RETURNING `+intentCols, id, ownerID))
+	return scanIntent(r.q.QueryRowContext(ctx, `
+		UPDATE standing_intent SET status = '`+IntentCancelled+`', updated_at = ?
+		WHERE id = ? AND owner_user_id = ? AND status IN ('pending','armed','fired')
+		RETURNING `+intentCols, nowForDB(), id, ownerID))
 }
 
-// MatchCandidates 返回当前可触发的 armed 意图（冷却已过、未过期）。
-// 冷却期已过的 fired 意图无需额外定时器即可再次进入候选。
+// MatchCandidates 返回当前可触发的 armed 意图（未过期）。
+// 冷却期过滤在 Go 侧完成（SQLite 的 datetime() 无法解析
+// modernc 存储的带时区时间文本，故不做 SQL 侧 cooldown 运算）。
 func (r *IntentRepo) MatchCandidates(ctx context.Context, ownerID string, now time.Time) ([]StandingIntent, error) {
-	rows, err := r.q.Query(ctx, `
+	rows, err := r.q.QueryContext(ctx, `
 		SELECT `+intentCols+` FROM standing_intent
-		WHERE owner_user_id = $1 AND deleted_at IS NULL
-		  AND (expires_at IS NULL OR expires_at > $2)
-		  AND (status = 'armed'
-		       OR (status = 'fired' AND last_fired_at IS NOT NULL
-		           AND last_fired_at + cooldown_seconds * interval '1 second' <= $2))
+		WHERE owner_user_id = ? AND deleted_at IS NULL
+		  AND (expires_at IS NULL OR expires_at > ?)
+		  AND status IN ('armed', 'fired')
 		ORDER BY created_at ASC
 		LIMIT 64`, ownerID, now)
 	if err != nil {
@@ -135,28 +136,25 @@ func (r *IntentRepo) MatchCandidates(ctx context.Context, ownerID string, now ti
 }
 
 // Fire 原子地标记一次命中：触发预算耗尽 → done，否则 fired。
-// 在 MatchCandidates 相同的资格谓词上做 CAS，使并发的多轮对话
-// 不会对同一意图重复触发。
+// 并发安全依赖 MaxOpenConns(1) 单连接串行化；CAS 谓词只做状态约束。
 func (r *IntentRepo) Fire(ctx context.Context, id string, now time.Time) (*StandingIntent, error) {
-	return scanIntent(r.q.QueryRow(ctx, `
+	return scanIntent(r.q.QueryRowContext(ctx, `
 		UPDATE standing_intent SET
 			fire_count = fire_count + 1,
-			last_fired_at = $2,
+			last_fired_at = ?,
 			status = CASE WHEN fire_count + 1 >= max_fires THEN 'done' ELSE 'fired' END,
-			updated_at = now()
-		WHERE id = $1 AND deleted_at IS NULL
-		  AND (status = 'armed'
-		       OR (status = 'fired' AND last_fired_at IS NOT NULL
-		           AND last_fired_at + cooldown_seconds * interval '1 second' <= $2))
-		RETURNING `+intentCols, id, now))
+			updated_at = ?
+		WHERE id = ? AND deleted_at IS NULL
+		  AND status IN ('armed', 'fired')
+		RETURNING `+intentCols, now, nowForDB(), id))
 }
 
 // MarkExpired 是维护操作：过期检测搭在聊天/检查路径上
 // （OpenClaw 同样如此——不引入额外的定时器子系统）。
 func (r *IntentRepo) MarkExpired(ctx context.Context, now time.Time) error {
-	_, err := r.q.Exec(ctx, `
-		UPDATE standing_intent SET status = '`+IntentExpired+`', updated_at = now()
-		WHERE status IN ('pending','armed','fired') AND expires_at IS NOT NULL AND expires_at <= $1`,
-		now)
+	_, err := r.q.ExecContext(ctx, `
+		UPDATE standing_intent SET status = '`+IntentExpired+`', updated_at = ?
+		WHERE status IN ('pending','armed','fired') AND expires_at IS NOT NULL AND expires_at <= ?`,
+		nowForDB(), now)
 	return err
 }

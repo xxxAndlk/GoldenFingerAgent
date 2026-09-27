@@ -15,8 +15,7 @@ type Repos struct {
 }
 
 // NewRepos 在一个 Querier 之上构建仓储（用 WithTx 可得到事务范围的仓储）。
-func NewRepos(q Querier) *Repos {
-	return &Repos{
+func NewRepos(q Querier) *Repos {	return &Repos{
 		Users:     NewUserRepo(q),
 		Persons:   NewPersonRepo(q),
 		Facts:     NewFactRepo(q),

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"goldenfinger/agent/internal/compliance"
+	"goldenfinger/agent/internal/device"
 	"goldenfinger/agent/internal/extsvc"
 	"goldenfinger/agent/internal/intent"
 	"goldenfinger/agent/internal/memory"
@@ -25,4 +26,6 @@ type ToolServices struct {
 	Now     func() time.Time
 	LocOf   func(tz string) *time.Location
 	Th      nlu.Thresholds
+	// Device 是设备操控通道；nil 表示未装配（设备工具返回"设备未连接"）。
+	Device *device.Hub
 }

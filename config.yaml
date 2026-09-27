@@ -3,7 +3,7 @@ server:
   web_dir: "web"
 
 database:
-  url: "postgres://gfa:gfa@localhost:5433/gfa?sslmode=disable"
+  path: "data/gfa.db"
 
 # Chat model: OpenAI Responses protocol (POST {base_url}/responses).
 # api_key can be set here directly, via api_key_env (name of an env var),

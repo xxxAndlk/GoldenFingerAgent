@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -32,12 +31,8 @@ func (d *recordingDispatcher) count() int {
 
 func setup(t *testing.T, now func() time.Time) (*store.Repos, *DBScheduler, *recordingDispatcher, *store.User) {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping scheduler integration tests")
-	}
 	ctx := context.Background()
-	db, err := store.Connect(ctx, url)
+	db, err := store.Connect(ctx, ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +40,7 @@ func setup(t *testing.T, now func() time.Time) (*store.Repos, *DBScheduler, *rec
 	if _, err := db.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	repos := store.NewRepos(db.Pool)
+	repos := store.NewRepos(db)
 
 	u := &store.User{UserType: store.UserGeneral, Name: "sched-user", TZ: "Asia/Shanghai"}
 	if err := repos.Users.Create(ctx, u); err != nil {

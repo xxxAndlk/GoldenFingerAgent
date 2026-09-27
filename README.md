@@ -16,7 +16,7 @@
 | `internal/llm` | `packages/ai` | 统一 LLM API（OpenAI 兼容客户端 + 模型目录 + 测试脚本客户端） |
 | `internal/agent` | `packages/agent` | 工具调用循环、会话状态、工具注册、系统提示词组装 |
 | `internal/httpapi` | `packages/protocol` | JSON wire 类型 + HTTP 传输 |
-| `internal/store` | `packages/session-backends` | Postgres + pgvector 持久化（含聊天会话） |
+| `internal/store` | `packages/session-backends` | SQLite 持久化（纯 Go，CGO_ENABLED=0；含聊天会话） |
 | `internal/nlu` `memory` `task` `scheduler` `compliance` `extsvc` | *(自建"大脑")* | 抽取流水线、记忆逻辑、任务状态机、澄清策略、合规 |
 
 **能外接全外接**：LLM 走 OpenAI 兼容 API（DeepSeek/Moonshot/通义/豆包换 `base_url` 即可）；ASR/TTS/推送/短信/天气全部接口 + Stub，接真服务即插即用。调度为进程内 DB tick 循环（`dedupe_key` 幂等），预留 Temporal Cloud 替换。
@@ -39,16 +39,13 @@
 - 全链路日志输出在**服务端终端**（C 端页面不展示），请求 ID 贯穿：`[http]` 访问 / `[chat]` 对话 / `[agent]` 模型调用（**含真实报错**，不再静默兜底） / `[tool]` 工具入参与耗时 / `[task]` 状态迁移 / `[sched]` 调度（触发/顺延/升级/盘点） / `[memory]` 记忆写入与遗忘级联 / `[settings]` 模型设置变更
 - 页面不显示任何服务端日志；每条管家回复的「处理过程」（工具轨迹 + 置信度 + 时间归一化方式）仅在 URL 带 `?debug` 时显示
 
-## 快速开始（Windows / Docker Desktop）
+## 快速开始
 
 ```bash
-# 1. 启动 Postgres + pgvector（宿主机端口 5433）
-docker compose up -d
-
-# 2. 建表
+# 1. 建表（无需 docker；SQLite 单文件 data/gfa.db，自动创建）
 go run ./cmd/migrate
 
-# 3. 配置 LLM（OpenAI Responses 协议；config.yaml 的 llm 段已可直接填 api_key）
+# 2. 配置 LLM（OpenAI Responses 协议；config.yaml 的 llm 段已可直接填 api_key）
 #    也可以启动后在页面右上角「⚙️ 设置」里填（存到 settings.json，立即生效、全设备通用）
 go run ./cmd/server
 # 打开 http://localhost:8080
@@ -74,11 +71,7 @@ go run ./cmd/server
 ## 测试
 
 ```bash
-# 单测（无需数据库）
-go test ./internal/nlu/... ./internal/task/... ./internal/scheduler/... ./internal/llm/...
-
-# 全量（含集成；需 TEST_DATABASE_URL）
-set TEST_DATABASE_URL=postgres://gfa:gfa@localhost:5433/gfa?sslmode=disable
+# 全量（SQLite 内存库，无需外部数据库）
 go test ./...
 ```
 
@@ -95,7 +88,7 @@ internal/memory/               # 人物画像/事实/备忘 + 检索排序 + 上
 internal/task/                 # 8 态状态机 + intent/fact 提醒模板
 internal/scheduler/            # DB tick 调度 + DND/升级/盘点
 internal/settings/             # 运行时模型设置（settings.json，页面可改）
-internal/store/                # Postgres + pgvector 仓储
+internal/store/                # SQLite（modernc.org/sqlite）仓储 + 应用层余弦相似度
 internal/compliance/           # 监护人同意/内容过滤/事实类型门控
 internal/extsvc/               # 外接服务接口 + stub
 internal/httpapi/              # HTTP API + 静态页
@@ -110,4 +103,4 @@ web/                           # Vue3 单页（无构建，vendor/ 内置 vue.gl
 
 ## 记忆注入的向量维度注意
 
-`fact.embedding` / `episode.embedding` 为 `VECTOR(1024)`，需与 `config.yaml` 的 `embedder.dim` 一致（默认 `bge-m3`，1024 维）。更换 embedding 模型且维度不同时，需新迁移 + 重嵌入。
+`fact.embedding` / `episode.embedding` 为定长 1024 维 BLOB（小端 float32），需与 `config.yaml` 的 `embedder.dim` 一致（默认 `bge-m3`，1024 维）。更换 embedding 模型且维度不同时，需新迁移 + 重嵌入。

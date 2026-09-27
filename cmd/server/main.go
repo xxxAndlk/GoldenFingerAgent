@@ -15,6 +15,7 @@ import (
 	"goldenfinger/agent/internal/agent"
 	"goldenfinger/agent/internal/compliance"
 	"goldenfinger/agent/internal/config"
+	"goldenfinger/agent/internal/device"
 	"goldenfinger/agent/internal/extsvc"
 	"goldenfinger/agent/internal/extsvc/firecrawl"
 	"goldenfinger/agent/internal/extsvc/stub"
@@ -39,7 +40,7 @@ func main() {
 	defer stop()
 
 	// ---- 持久化 ----
-	db, err := store.Connect(ctx, cfg.Database.URL)
+	db, err := store.Connect(ctx, cfg.Database.Path)
 	if err != nil {
 		fatal(err)
 	}
@@ -49,7 +50,7 @@ func main() {
 	} else if len(applied) > 0 {
 		log.Printf("migrations applied: %v", applied)
 	}
-	repos := store.NewRepos(db.Pool)
+	repos := store.NewRepos(db)
 
 	// ---- 外部服务（接口 + 桩实现；LLM 为真实服务） ----
 	llmClient := openai.New(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model)
@@ -116,6 +117,8 @@ func main() {
 
 	// ---- agent 运行时 ----
 	intentsSvc := intent.NewService(repos.Intents, repos.Audit, nil)
+	deviceHub := device.NewHub()
+	defer deviceHub.Close()
 	svcs := &agent.ToolServices{
 		Memory:  mem,
 		Tasks:   tasksSvc,
@@ -126,6 +129,7 @@ func main() {
 		Repos:   repos,
 		Now:     time.Now,
 		Th:      th,
+		Device:  deviceHub,
 	}
 	userFn := func(ctx context.Context, userID string) agent.UserContext {
 		u, err := repos.Users.Get(ctx, userID)
@@ -160,6 +164,7 @@ func main() {
 		Outbox:      outbox,
 		Settings:    st,
 		FallbackLLM: settings.LLM{BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model},
+		Device:      deviceHub,
 	}
 
 	// ---- 调度器主循环 ----

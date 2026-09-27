@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="gold">#C9A227</color>
+    <color name="gold_dark">#9A7D1E</color>
+    <color name="bg_splash">#F7F4EC</color>
+    <color name="ink">#333333</color>
+    <color name="white">#FFFFFF</color>
+    <color name="danger">#E53935</color>
+</resources>

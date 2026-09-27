@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -12,7 +11,7 @@ import (
 	"goldenfinger/agent/internal/store"
 )
 
-// padVec 把短测试向量填充到 schema 维度（VECTOR(1024)）。
+// padVec 把短测试向量填充到 schema 维度（1024）。
 func padVec(head ...float32) []float32 {
 	v := make([]float32, 1024)
 	copy(v, head)
@@ -23,12 +22,9 @@ func jsonEqual(a, b any) bool { return reflect.DeepEqual(a, b) }
 
 func testDB(t *testing.T) *store.DB {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping store integration tests")
-	}
 	ctx := context.Background()
-	db, err := store.Connect(ctx, url)
+	// 单连接内存库：Connect 内 SetMaxOpenConns(1) 保证 :memory: 不丢。
+	db, err := store.Connect(ctx, ":memory:")
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -42,7 +38,7 @@ func testDB(t *testing.T) *store.DB {
 func TestMigrateAndUserRoundTrip(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	repos := store.NewRepos(db.Pool)
+	repos := store.NewRepos(db)
 
 	u := &store.User{UserType: store.UserGeneral, Name: "测试用户", TZ: "Asia/Shanghai"}
 	if err := repos.Users.Create(ctx, u); err != nil {
@@ -60,7 +56,7 @@ func TestMigrateAndUserRoundTrip(t *testing.T) {
 func TestReminderIdempotent(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	repos := store.NewRepos(db.Pool)
+	repos := store.NewRepos(db)
 
 	u := &store.User{UserType: store.UserGeneral, Name: "rem-user", TZ: "Asia/Shanghai"}
 	if err := repos.Users.Create(ctx, u); err != nil {
@@ -101,7 +97,7 @@ func TestReminderIdempotent(t *testing.T) {
 func TestTaskTransitionCAS(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	repos := store.NewRepos(db.Pool)
+	repos := store.NewRepos(db)
 
 	u := &store.User{UserType: store.UserGeneral, Name: "cas-user", TZ: "Asia/Shanghai"}
 	if err := repos.Users.Create(ctx, u); err != nil {
@@ -129,7 +125,7 @@ func TestTaskTransitionCAS(t *testing.T) {
 func TestFactSimilarAndForgetCascade(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	repos := store.NewRepos(db.Pool)
+	repos := store.NewRepos(db)
 
 	u := &store.User{UserType: store.UserGeneral, Name: "fact-user", TZ: "Asia/Shanghai"}
 	if err := repos.Users.Create(ctx, u); err != nil {
@@ -185,7 +181,7 @@ func TestFactSimilarAndForgetCascade(t *testing.T) {
 func TestSessionStateAndMessages(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	repos := store.NewRepos(db.Pool)
+	repos := store.NewRepos(db)
 
 	u := &store.User{UserType: store.UserGeneral, Name: "sess-user", TZ: "Asia/Shanghai"}
 	if err := repos.Users.Create(ctx, u); err != nil {

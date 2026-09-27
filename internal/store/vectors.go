@@ -1,48 +1,51 @@
 package store
 
 import (
+	"encoding/binary"
 	"fmt"
-	"strconv"
-	"strings"
+	"math"
 )
 
-// vecToString 把 float32 切片编码为 pgvector 文本格式 '[0.1,0.2,...]'。
-func vecToString(v []float32) string {
+// vecToBlob 把 float32 切片编码为定长小端 BLOB（4 字节/元素）。
+func vecToBlob(v []float32) []byte {
 	if len(v) == 0 {
-		return ""
+		return nil
 	}
-	var b strings.Builder
-	b.WriteByte('[')
+	b := make([]byte, 4*len(v))
 	for i, f := range v {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString(strconv.FormatFloat(float64(f), 'f', -1, 32))
+		binary.LittleEndian.PutUint32(b[i*4:], math.Float32bits(f))
 	}
-	b.WriteByte(']')
-	return b.String()
+	return b
 }
 
-// parseVec 把 pgvector 文本格式（可能带括号）解码为 []float32。
-func parseVec(s string) ([]float32, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
+// parseBlob 把定长小端 BLOB 解码为 []float32。
+func parseBlob(b []byte) ([]float32, error) {
+	if len(b) == 0 {
 		return nil, nil
 	}
-	s = strings.TrimPrefix(s, "[")
-	s = strings.TrimSuffix(s, "]")
-	parts := strings.Split(s, ",")
-	out := make([]float32, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" {
-			continue
-		}
-		f, err := strconv.ParseFloat(p, 32)
-		if err != nil {
-			return nil, fmt.Errorf("parse vector element %q: %w", p, err)
-		}
-		out = append(out, float32(f))
+	if len(b)%4 != 0 {
+		return nil, fmt.Errorf("parse blob: length %d is not a multiple of 4", len(b))
+	}
+	out := make([]float32, len(b)/4)
+	for i := range out {
+		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[i*4:]))
 	}
 	return out, nil
+}
+
+// cosine 计算两个等长向量的余弦相似度；任一为空或长度不等返回 0。
+func cosine(a, b []float32) float32 {
+	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
+		return 0
+	}
+	var dot, na, nb float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+		na += float64(a[i]) * float64(a[i])
+		nb += float64(b[i]) * float64(b[i])
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return float32(dot / (math.Sqrt(na) * math.Sqrt(nb)))
 }

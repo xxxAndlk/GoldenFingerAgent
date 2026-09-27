@@ -3,16 +3,20 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"time"
 	"unicode/utf8"
 
 	"goldenfinger/agent/internal/agent"
+	"goldenfinger/agent/internal/device"
 	"goldenfinger/agent/internal/settings"
 	"goldenfinger/agent/internal/store"
 )
@@ -30,6 +34,8 @@ type Server struct {
 	FallbackLLM settings.LLM
 	// Outbox 收集 "app" 渠道的提醒投递，供 Web UI 轮询。
 	Outbox *Outbox
+	// Device 是设备操控通道（WS/屏幕缓存）；nil 时相关路由返回 503。
+	Device *device.Hub
 }
 
 // Outbox 是已投递提醒文本的小型内存队列（开发 MVP）。
@@ -85,6 +91,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings/llm", s.handlePutLLMSettings)
 	mux.HandleFunc("POST /api/voice/transcribe", s.handleTranscribe)
 	mux.HandleFunc("POST /api/voice/speak", s.handleSpeak)
+	mux.HandleFunc("GET /ws/device", s.handleDeviceWS)
+	mux.HandleFunc("POST /api/screen", s.handleScreen)
 
 	// 静态 Web UI。
 	mux.Handle("GET /", http.FileServer(http.Dir(s.WebDir)))
@@ -111,6 +119,15 @@ type statusWriter struct {
 func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack 支持 WebSocket 升级（把握手交给底层连接）。
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("http: response does not implement http.Hijacker")
+	}
+	return hj.Hijack()
 }
 
 // reqID 关联同一 HTTP 请求内产生的所有日志行。

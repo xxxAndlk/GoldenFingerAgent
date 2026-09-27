@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 启动页 logo：居中灯泡+金手指（与图标同源），米白背景 -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/bg_splash" />
+    <item>
+        <bitmap
+            android:gravity="center"
+            android:src="@drawable/ic_launcher_foreground"
+            android:scaleType="fitCenter" />
+    </item>
+</layer-list>

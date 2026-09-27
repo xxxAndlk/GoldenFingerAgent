@@ -20,6 +20,7 @@ const (
 	StatusClarify ResultStatus = "clarify"
 	StatusDiscard ResultStatus = "discarded"
 	StatusError   ResultStatus = "error"
+	StatusLimit   ResultStatus = "limit" // 达到单任务步骤/预算上限（给人话）
 )
 
 // ToolResult 以 DATA 形式（绝非指令）回馈给模型，也可能

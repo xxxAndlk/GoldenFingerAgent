@@ -21,7 +21,7 @@ type Option struct {
 }
 
 // PendingAction 是等待用户下一条消息的冻结假设。
-// 它存放在 chat_session.state_jsonb 中，因此重启后依然存在。
+	// 它存放在 chat_session.state_json 中，因此重启后依然存在。
 type PendingAction struct {
 	Type      string          `json:"type"`
 	Payload   json.RawMessage `json:"payload"` // 冻结假设（raw_text、kind、candidates…）
@@ -136,9 +136,10 @@ type TaskPayload struct {
 	TimeExprRaw   string  `json:"time_expr_raw"`
 	PersonName    string  `json:"person_name,omitempty"`
 	PersonID      string  `json:"person_id,omitempty"`
-	EventTemplate string  `json:"event_template,omitempty"`
-	Confidence    float64 `json:"confidence"`
-}
+		EventTemplate string  `json:"event_template,omitempty"`
+		Recurrence    string  `json:"recurrence,omitempty"` // daily@HH:MM / weekly@WnTHH:MM（timecn 解析产物）
+		Confidence    float64 `json:"confidence"`
+	}
 
 // PersonCandidate 是消歧选项之一。
 type PersonCandidate struct {

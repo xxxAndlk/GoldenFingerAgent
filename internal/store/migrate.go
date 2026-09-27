@@ -2,34 +2,34 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io/fs"
 	"sort"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
+	"sync"
+	"time"
 
 	"goldenfinger/agent/migrations"
 )
 
-// migrateLockKey 在进程之间串行化 schema 变更（测试套件并发执行
-// Migrate；否则 CREATE TABLE 会在 pg_type 上竞争）。
-const migrateLockKey = 872034721
+// migrateMu 在进程之间串行化 schema 变更（测试套件并发执行 Migrate）。
+var migrateMu sync.Mutex
 
 // Migrate 按文件名顺序应用 migrations.FS 中待执行的 *.sql 文件。
 // 每个文件只执行一次；已应用的文件名记录在 schema_migrations 表中。
+// SQLite 的 Exec 不保证执行多语句，因此按 ';' 裸拆逐条执行（本批 DDL
+// 无函数/触发器/含分号字面量，可安全拆分），整文件包在一个事务内。
 func (d *DB) Migrate(ctx context.Context) ([]string, error) {
-		// 在咨询锁下创建记账表（仅 IF NOT EXISTS 仍会在表的复合类型上竞争）。
-	if err := d.WithTx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLockKey); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
-			name TEXT PRIMARY KEY,
-			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-		)`)
-		return err
-	}); err != nil {
+	migrateMu.Lock()
+	defer migrateMu.Unlock()
+
+	// 先建记账表（DDL 可事务，统一在后续 WithTx 中完成亦可；此处单独建
+	// 保证多连接并发下记账表一定存在）。
+	if _, err := d.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		name TEXT PRIMARY KEY,
+		applied_at DATETIME NOT NULL
+	)`); err != nil {
 		return nil, fmt.Errorf("create schema_migrations: %w", err)
 	}
 
@@ -51,26 +51,28 @@ func (d *DB) Migrate(ctx context.Context) ([]string, error) {
 		if err != nil {
 			return applied, err
 		}
-			// 在同一事务内加锁并复查存在性：在锁竞争中落败的并发迁移者
-			// 会看到该行并跳过。
+		// 事务内复查存在性并应用：并发迁移者在锁竞争中落败会看到该行并跳过。
 		done := false
-		if err := d.WithTx(ctx, func(tx pgx.Tx) error {
-			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLockKey); err != nil {
-				return err
-			}
+		if err := d.WithTx(ctx, func(tx *sql.Tx) error {
 			var exists bool
-			if err := tx.QueryRow(ctx,
-				`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = $1)`, name).Scan(&exists); err != nil {
+			if err := tx.QueryRowContext(ctx,
+				`SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = ?)`, name).Scan(&exists); err != nil {
 				return err
 			}
 			if exists {
 				done = true
 				return nil
 			}
-			if _, err := tx.Exec(ctx, string(raw)); err != nil {
-				return fmt.Errorf("apply %s: %w", name, err)
+			for _, stmt := range splitStatements(string(raw)) {
+				if strings.TrimSpace(stmt) == "" {
+					continue
+				}
+				if _, err := tx.ExecContext(ctx, stmt); err != nil {
+					return fmt.Errorf("apply %s: %w", name, err)
+				}
 			}
-			_, err := tx.Exec(ctx, `INSERT INTO schema_migrations (name) VALUES ($1)`, name)
+			_, err := tx.ExecContext(ctx,
+				`INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)`, name, time.Now())
 			return err
 		}); err != nil {
 			return applied, err
@@ -80,4 +82,16 @@ func (d *DB) Migrate(ctx context.Context) ([]string, error) {
 		}
 	}
 	return applied, nil
+}
+
+// splitStatements 按分号拆分 SQL 脚本（去除行注释）。
+func splitStatements(raw string) []string {
+	var lines []string
+	for _, line := range strings.Split(raw, "\n") {
+		if idx := strings.Index(line, "--"); idx >= 0 {
+			line = line[:idx]
+		}
+		lines = append(lines, line)
+	}
+	return strings.Split(strings.Join(lines, "\n"), ";")
 }

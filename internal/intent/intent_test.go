@@ -2,7 +2,6 @@ package intent
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
@@ -45,12 +44,8 @@ func TestMatchTrigger(t *testing.T) {
 // TestServiceLifecycle 覆盖 触发 → 冷却 → 再触发 → 预算耗尽，
 // 以及过期与显式取消——全部使用可控时钟。
 func TestServiceLifecycle(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping intent integration tests")
-	}
 	ctx := context.Background()
-	db, err := store.Connect(ctx, url)
+	db, err := store.Connect(ctx, ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +53,7 @@ func TestServiceLifecycle(t *testing.T) {
 	if _, err := db.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	repos := store.NewRepos(db.Pool)
+	repos := store.NewRepos(db)
 	u := &store.User{UserType: store.UserGeneral, Name: "intent-user", TZ: "Asia/Shanghai"}
 	if err := repos.Users.Create(ctx, u); err != nil {
 		t.Fatal(err)

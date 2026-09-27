@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">金手指管家</string>
+    <string name="accessibility_label">金手指管家 · 手机操控</string>
+    <string name="accessibility_desc">用于查看屏幕节点、执行点击/输入/滑动等操作以帮助您操控手机（仅本机）。付款/转账/删除等敏感操作会要求您确认；按音量键可随时急停。</string>
+    <string name="perms_title">开启以下权限，管家才能帮您</string>
+    <string name="a11y_title">无障碍服务</string>
+    <string name="a11y_desc">管家查看屏幕、点击/输入/滑动的唯一通道</string>
+    <string name="overlay_title">悬浮窗</string>
+    <string name="overlay_desc">显示「AI 正在操作」悬浮条与停止按钮</string>
+    <string name="battery_title">电池优化白名单</string>
+    <string name="battery_desc">防止系统省电策略杀掉常驻服务</string>
+    <string name="notif_title">通知权限</string>
+    <string name="notif_desc">接收到点提醒的系统通知</string>
+    <string name="go_open">去开启</string>
+</resources>
