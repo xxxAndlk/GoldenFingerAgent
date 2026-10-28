@@ -190,7 +190,8 @@ class Executor(
         handler.post {
             try {
                 service.takeScreenshot(
-                    AccessibilityService.ScreenshotResult.TYPE_FULLSCREEN,
+                    android.view.Display.DEFAULT_DISPLAY,
+                    java.util.concurrent.Executor { cmd -> handler.post(cmd) },
                     object : AccessibilityService.TakeScreenshotCallback {
                         override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
                             try {

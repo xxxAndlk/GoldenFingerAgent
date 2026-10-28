@@ -1,0 +1,18 @@
+{
+  "name": "goldenfinger-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "金手指管家桌面挂件与协作模式",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "postinstall": "node node_modules/electron/install.js",
+    "test": "node --test",
+    "check": "node --check main.js && node --check preload.js && node --check renderer.js && node --check collaboration.js && node --check assistant-api.js && node --check active-window.js",
+    "dist": "node scripts/pack-win.js"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0"
+  }
+}

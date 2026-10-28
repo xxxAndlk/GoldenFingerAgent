@@ -1,0 +1,96 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 3.53kB 0.0s done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.m.daocloud.io/eclipse-temurin:17-jdk-jammy
+#2 DONE 0.0s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [ 1/11] FROM docker.m.daocloud.io/eclipse-temurin:17-jdk-jammy@sha256:43f4431cc895d37ceb115e2e1f160545ec45caee9c1cb4246fc6bb879d58aeda
+#4 resolve docker.m.daocloud.io/eclipse-temurin:17-jdk-jammy@sha256:43f4431cc895d37ceb115e2e1f160545ec45caee9c1cb4246fc6bb879d58aeda 0.0s done
+#4 DONE 0.0s
+
+#5 [ 4/11] RUN set -eux;     curl -fsSL "https://mirrors.aliyun.com/golang/go1.26.5.linux-amd64.tar.gz" -o /tmp/go.tgz;     tar -C /usr/local -xzf /tmp/go.tgz;     rm /tmp/go.tgz
+#5 CACHED
+
+#6 [ 2/11] RUN sed -i 's@//.*archive.ubuntu.com@//mirrors.aliyun.com@g; s@//.*security.ubuntu.com@//mirrors.aliyun.com@g' /etc/apt/sources.list
+#6 CACHED
+
+#7 [ 3/11] RUN apt-get update && apt-get install -y --no-install-recommends         ca-certificates curl wget unzip git bash python3 xz-utils     && rm -rf /var/lib/apt/lists/*
+#7 CACHED
+
+#8 [ 5/11] RUN set -eux;     mkdir -p "/opt/android-sdk/cmdline-tools";     curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" -o /tmp/cmdtools.zip;     unzip -q /tmp/cmdtools.zip -d "/opt/android-sdk/cmdline-tools";     mv "/opt/android-sdk/cmdline-tools/cmdline-tools" "/opt/android-sdk/cmdline-tools/latest";     rm /tmp/cmdtools.zip
+#8 CACHED
+
+#9 [ 6/11] RUN set -eux;     yes | sdkmanager --licenses >/dev/null 2>&1 || true;     sdkmanager         "platform-tools"         "platforms;android-34"         "build-tools;34.0.0" >/dev/null;     sdkmanager --list_installed
+#9 0.398 + yes
+#9 0.400 + sdkmanager --licenses
+#9 4.622 + sdkmanager platform-tools platforms;android-34 build-tools;34.0.0
+#9 61.69 + sdkmanager --list_installed
+#9 62.15 Loading package information...                                                  Loading local repository...                                                     [=========                              ] 25% Loading local repository...       [=========                              ] 25% Fetch remote repository...        [=======================================] 100% Fetch remote repository...       
+#9 62.17 Installed packages:
+#9 62.17   Path                 | Version | Description                | Location            
+#9 62.17   -------              | ------- | -------                    | -------             
+#9 62.17   build-tools;34.0.0   | 34.0.0  | Android SDK Build-Tools 34 | build-tools/34.0.0  
+#9 62.17   platform-tools       | 37.0.1  | Android SDK Platform-Tools | platform-tools      
+#9 62.17   platforms;android-34 | 3       | Android SDK Platform 34    | platforms/android-34
+#9 62.17 
+#9 DONE 62.3s
+
+#10 [ 7/11] RUN set -eux;     curl -fsSL "https://mirrors.cloud.tencent.com/AndroidSDK/android-ndk-r26b-linux.zip" -o /tmp/ndk.zip;     unzip -q /tmp/ndk.zip -d /tmp;     mkdir -p "/opt/android-sdk/ndk";     mv "/tmp/android-ndk-r26b" "/opt/android-sdk/ndk/26.3.11579264";     rm /tmp/ndk.zip;     test -f "/opt/android-sdk/ndk/26.3.11579264/source.properties"
+#10 0.330 + curl -fsSL https://mirrors.cloud.tencent.com/AndroidSDK/android-ndk-r26b-linux.zip -o /tmp/ndk.zip
+#10 46.96 + unzip -q /tmp/ndk.zip -d /tmp
+#10 57.68 + mkdir -p /opt/android-sdk/ndk
+#10 57.69 + mv /tmp/android-ndk-r26b /opt/android-sdk/ndk/26.3.11579264
+#10 57.70 + rm /tmp/ndk.zip
+#10 57.76 + test -f /opt/android-sdk/ndk/26.3.11579264/source.properties
+#10 DONE 57.8s
+
+#11 [ 8/11] RUN go install golang.org/x/mobile/cmd/gomobile@latest
+#11 0.520 go: downloading golang.org/x/mobile v0.0.0-20260908204917-8b95e45f8d3e
+#11 0.820 go: downloading golang.org/x/mod v0.41.0
+#11 0.821 go: downloading golang.org/x/sync v0.23.0
+#11 0.822 go: downloading golang.org/x/tools v0.50.0
+#11 DONE 6.2s
+
+#12 [ 9/11] RUN set -eux;     curl -fsSL "https://mirrors.cloud.tencent.com/gradle/gradle-8.9-bin.zip" -o /tmp/gradle.zip;     unzip -q /tmp/gradle.zip -d /opt;     rm /tmp/gradle.zip
+#12 0.269 + curl -fsSL https://mirrors.cloud.tencent.com/gradle/gradle-8.9-bin.zip -o /tmp/gradle.zip
+#12 9.836 + unzip -q /tmp/gradle.zip -d /opt
+#12 10.54 + rm /tmp/gradle.zip
+#12 DONE 10.6s
+
+#13 [10/11] RUN java -version && go version && gradle --version | head -8
+#13 0.329 openjdk version "17.0.20.1" 2026-08-18
+#13 0.329 OpenJDK Runtime Environment Temurin-17.0.20.1+1 (build 17.0.20.1+1)
+#13 0.329 OpenJDK 64-Bit Server VM Temurin-17.0.20.1+1 (build 17.0.20.1+1, mixed mode, sharing)
+#13 0.342 go version go1.26.5 linux/amd64
+#13 0.681 
+#13 0.681 Welcome to Gradle 8.9!
+#13 0.681 
+#13 0.681 Here are the highlights of this release:
+#13 0.681  - Enhanced Error and Warning Messages
+#13 0.681  - IDE Integration Improvements
+#13 0.681  - Daemon JVM Information
+#13 0.681 
+#13 DONE 0.7s
+
+#14 [11/11] WORKDIR /work
+#14 DONE 0.1s
+
+#15 exporting to image
+#15 exporting layers
+#15 exporting layers 41.3s done
+#15 exporting manifest sha256:5f4cb0ec33d44d503aef31c586b3071ee393068e86db146e5ce661569b1686a6 0.0s done
+#15 exporting config sha256:f4959cffe067971ae711635a6e71059920081bf5541a64576e3b35e6d33bbcc5 0.0s done
+#15 exporting attestation manifest sha256:241c2857ae27b2fb4047507c37664e0089ccf8d67a6c86235183a09b09e8274e 0.1s done
+#15 exporting manifest list sha256:7b1593cf24ef1cc687279d8202f825e447af0b52dfd6b9a2e4d21e400143ca45
+#15 exporting manifest list sha256:7b1593cf24ef1cc687279d8202f825e447af0b52dfd6b9a2e4d21e400143ca45 0.0s done
+#15 naming to docker.io/library/gfa-android-build:latest done
+#15 unpacking to docker.io/library/gfa-android-build:latest
+#15 unpacking to docker.io/library/gfa-android-build:latest 13.9s done
+#15 DONE 55.5s

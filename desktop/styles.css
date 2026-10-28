@@ -1,0 +1,112 @@
+:root {
+  color-scheme: dark;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: transparent;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; overflow: hidden; background: transparent; color: #f7f5ef; }
+button, textarea { font: inherit; }
+button { cursor: pointer; }
+[hidden] { display: none !important; }
+
+.orb {
+  position: fixed;
+  inset: 4px;
+  width: 68px;
+  height: 68px;
+  border: 1px solid rgba(255, 231, 166, .55);
+  border-radius: 50%;
+  color: #2a210d;
+  background: radial-gradient(circle at 35% 25%, #fff0b5 0, #e3b84e 42%, #9c6817 100%);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .35), inset 0 1px 1px rgba(255, 255, 255, .6);
+}
+.orb-letter { font-size: 28px; font-weight: 750; }
+.orb-dot {
+  position: absolute;
+  right: 1px;
+  top: 3px;
+  width: 13px;
+  height: 13px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: #55d99a;
+}
+
+.panel {
+  width: 100vw;
+  height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  border: 1px solid #3c3a36;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #171817;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .5);
+}
+.titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 15px 16px 12px;
+  border-bottom: 1px solid #30312f;
+  -webkit-app-region: drag;
+}
+.titlebar strong { display: block; font-size: 16px; letter-spacing: .03em; }
+.connection { display: block; margin-top: 3px; color: #999e98; font-size: 11px; }
+.connection.online { color: #75d5a4; }
+.connection.offline { color: #f2a49b; }
+.icon-button {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 8px;
+  color: #d8d9d4;
+  background: transparent;
+  -webkit-app-region: no-drag;
+}
+.icon-button:hover { background: #2a2c29; }
+
+.collaboration {
+  margin: 12px 12px 4px;
+  padding: 12px;
+  border: 1px solid #353832;
+  border-radius: 12px;
+  background: #20231f;
+}
+.collab-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.collab-heading strong { font-size: 13px; }
+.collab-heading p { margin: 4px 0 0; color: #a8ada5; font-size: 11px; line-height: 1.5; }
+.collab-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 9px; }
+#collab-status { color: #b9bdb5; font-size: 11px; }
+.text-button { padding: 3px 0; border: 0; color: #e8c46c; background: none; font-size: 11px; }
+.text-button:disabled { color: #656960; cursor: default; }
+.switch { position: relative; flex: 0 0 40px; height: 24px; }
+.switch input { position: absolute; opacity: 0; }
+.switch span { display: block; width: 40px; height: 24px; border-radius: 20px; background: #494d46; transition: .2s; }
+.switch span::after { content: ""; display: block; width: 18px; height: 18px; margin: 3px; border-radius: 50%; background: #fff; transition: .2s; }
+.switch input:checked + span { background: #b58b34; }
+.switch input:checked + span::after { transform: translateX(16px); }
+.switch input:focus-visible + span { outline: 2px solid #f1d17d; outline-offset: 2px; }
+
+.messages { padding: 12px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #484b45 transparent; }
+.message {
+  max-width: 88%;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.message.assistant { border: 1px solid #323530; border-bottom-left-radius: 4px; background: #242724; color: #e9ebe5; }
+.message.user { margin-left: auto; border-bottom-right-radius: 4px; background: #8e6b27; color: #fffaf0; }
+.message.system { max-width: 100%; border: 1px solid #4c432b; background: #29261c; color: #dbc98f; font-size: 12px; }
+.message.error { border-color: #67403a; color: #f0aaa0; }
+
+.composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 12px; border-top: 1px solid #30312f; background: #1b1d1a; }
+.composer textarea { min-height: 46px; max-height: 100px; resize: none; padding: 10px; border: 1px solid #41443e; border-radius: 10px; outline: none; background: #252824; color: #f4f5ef; font-size: 13px; line-height: 1.5; }
+.composer textarea:focus { border-color: #b9964a; }
+.composer button { min-width: 58px; border: 0; border-radius: 10px; background: #c39a43; color: #211a0c; font-weight: 650; }
+.composer button:disabled { opacity: .55; cursor: wait; }

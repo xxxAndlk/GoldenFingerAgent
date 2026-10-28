@@ -13,4 +13,16 @@
     <string name="notif_title">通知权限</string>
     <string name="notif_desc">接收到点提醒的系统通知</string>
     <string name="go_open">去开启</string>
+    <string name="listener_label">通知助手 · 消息监听</string>
+    <string name="listener_title">通知读取权</string>
+    <string name="listener_desc">开启后，管家能替您看到微信、短信的新消息：自动接住取件码等线索，太忙可稍后提醒；原消息保持不动</string>
+    <string name="listener_status_on">✅ 已授权</string>
+    <string name="listener_status_off">⚠️ 未授权（授权后才能替您看消息）</string>
+    <string name="btn_open_listener">去授权通知读取权</string>
+    <string name="relay_channel_name">通知助手</string>
+    <string name="relay_channel_desc">转述社交消息，点开查看，可稍后再处理</string>
+    <string name="relay_body_fmt">%1$s来消息</string>
+    <string name="relay_action_10min">10分钟后</string>
+    <string name="relay_action_1h">1小时后</string>
+    <string name="relay_action_tonight">今晚</string>
 </resources>

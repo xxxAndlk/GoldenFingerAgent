@@ -11,10 +11,11 @@ import android.view.accessibility.AccessibilityManager
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.NotificationManagerCompat
 import com.goldenfinger.butler.accessibility.ControlService
 
 /**
- * PermissionsActivity：无障碍 / 悬浮窗 / 电池优化白名单 / 通知 四项权限引导。
+ * PermissionsActivity：无障碍 / 悬浮窗 / 电池优化白名单 / 通知 / 通知读取权 五项权限引导。
  * 每项显示图文说明与「去开启」按钮（跳对应系统设置页），返回后自动刷新状态。
  */
 class PermissionsActivity : AppCompatActivity() {
@@ -22,6 +23,7 @@ class PermissionsActivity : AppCompatActivity() {
     private lateinit var overlayStatus: TextView
     private lateinit var batteryStatus: TextView
     private lateinit var notifStatus: TextView
+    private lateinit var listenerStatus: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -31,6 +33,7 @@ class PermissionsActivity : AppCompatActivity() {
         overlayStatus = findViewById(R.id.overlay_status)
         batteryStatus = findViewById(R.id.battery_status)
         notifStatus = findViewById(R.id.notif_status)
+        listenerStatus = findViewById(R.id.listener_status)
 
         findViewById<Button>(R.id.btn_a11y).setOnClickListener {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -51,6 +54,9 @@ class PermissionsActivity : AppCompatActivity() {
             startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                 .putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
         }
+        findViewById<Button>(R.id.btn_listener).setOnClickListener {
+            startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        }
     }
 
     override fun onResume() {
@@ -63,6 +69,8 @@ class PermissionsActivity : AppCompatActivity() {
         overlayStatus.text = if (Settings.canDrawOverlays(this)) "✅ 已授权" else "⚠️ 未授权（需要它显示操作悬浮条）"
         batteryStatus.text = if (isIgnoringBatteryOptimizations()) "✅ 已加入白名单" else "⚠️ 未加入（建议加入以免服务被省电杀掉）"
         notifStatus.text = if (areNotificationsEnabled()) "✅ 已开启" else "⚠️ 未开启（提醒通知收不到）"
+        listenerStatus.text = if (isNotificationListenerEnabled()) getString(R.string.listener_status_on)
+        else getString(R.string.listener_status_off)
     }
 
     private fun isAccessibilityEnabled(): Boolean {
@@ -85,4 +93,8 @@ class PermissionsActivity : AppCompatActivity() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
         return nm.areNotificationsEnabled()
     }
+
+    /** 通知读取权：本包是否在系统已授权的通知监听器列表中。 */
+    private fun isNotificationListenerEnabled(): Boolean =
+        NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName)
 }

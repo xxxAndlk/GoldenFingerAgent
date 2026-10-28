@@ -48,7 +48,7 @@ class SafetyGuard(private val ctx: Context) {
         // 屏幕文本/前台包名敏感检查（不升级为指令——只作拦截依据）
         val screenText = currentScreenText()
         val pkg = currentPackage()
-        if (pkg in sensitivePackages || screenText.any { it in sensitiveKeywords }) {
+        if (pkg in sensitivePackages || sensitiveKeywords.any { it in screenText }) {
             lastBlock = "需人工确认"
             return confirm("检测到敏感操作（支付/转账/删除/下单类），是否继续？\n\n当前页面：$pkg")
         }

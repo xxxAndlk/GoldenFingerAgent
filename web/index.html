@@ -233,6 +233,26 @@
   .field .hint { font-size: 12px; color: var(--muted); margin-top: 5px; }
   .saveok { font-size: 13px; color: var(--green); margin-top: 8px; }
 
+  /* ---------- 收件箱 ---------- */
+  .ib-search { display: flex; gap: 8px; margin-bottom: 10px; }
+  .ib-search input { flex: 1; min-width: 0; padding: 10px 14px; font-size: 14px; border: 1.5px solid var(--line); border-radius: 12px; outline: none; background: #fbfdff; color: var(--ink); }
+  .ib-search input:focus { border-color: var(--blue); }
+  .ib-search .btn { flex-shrink: 0; }
+  .ib-tabs { display: flex; gap: 6px; margin: 2px 0 10px; }
+  .ib-tab { flex: 1; padding: 9px 4px; font-size: 14px; border: 1.5px solid var(--line); border-radius: 10px; background: #fbfdff; color: #55657a; cursor: pointer; }
+  .ib-tab.on { background: var(--blue-soft); border-color: var(--blue); color: var(--blue-d); font-weight: 700; }
+  .ib-mode { background: var(--green-bg); color: var(--green); }
+  .ib-clue { background: #fff2e3; color: var(--orange); }
+  .ib-sub { color: #666; margin: 3px 0; word-break: break-all; }
+  .ib-time { font-size: 13px; color: var(--muted); margin: 3px 0; }
+  body.elder .ib-search input { font-size: 17px; min-height: 52px; }
+  body.elder .ib-search .btn { min-height: 52px; }
+  body.elder .ib-tab { font-size: 16px; padding: 11px 4px; }
+  body.elder .ib-sub { font-size: 16px; }
+  body.elder .ib-time { font-size: 15px; }
+  body.child .ib-search input { font-size: 16px; min-height: 50px; }
+  body.child .ib-tab { font-size: 15px; }
+
   /* ---------- 适老 / 儿童模式（body.elder / body.child 作用域，不改 general） ---------- */
   body.elder { background: linear-gradient(165deg, #b8d6f6 0%, #dbe9f8 45%, #d2e7da 100%); }
   body.elder #app { max-width: 520px; }
@@ -281,6 +301,7 @@
       <div class="sub">你的生活小帮手，随时为你提供帮助</div>
     </div>
     <button class="round-btn panel-btn" :class="{active: showPanel}" @click="togglePanel" title="记忆面板">🧠</button>
+    <button class="round-btn" :class="{active: showInbox}" @click="toggleInbox" title="收件箱">📮</button>
     <button class="round-btn" :class="{active: showSettings}" @click="toggleSettings" title="设置">⚙️</button>
   </header>
 
@@ -387,6 +408,66 @@
         </div>
       </div>
       <div class="empty">删除后信息将不可恢复（遗忘级联）。</div>
+    </div>
+  </aside>
+
+  <div class="mask" v-if="showInbox" @click="showInbox=false"></div>
+
+  <aside class="drawer" id="inbox-panel" v-show="showInbox">
+    <div class="dhead"><span>📮 收件箱</span><button @click="showInbox=false">✕</button></div>
+    <div class="dbody">
+      <div class="ib-search">
+        <input id="inbox-search" v-model.trim="inboxQuery" placeholder="搜通知：取件码、快递、地址…" @keydown.enter="inboxSearch" autocomplete="off">
+        <button class="btn" @click="inboxSearch">搜索</button>
+      </div>
+      <div v-if="inboxSearched" style="margin-bottom:12px">
+        <span id="inbox-mode" class="chip ib-mode">{{ inboxMode === 'vector' ? '语义' : '关键词' }}</span>
+        <div id="inbox-search-results">
+          <div v-if="!inboxResults.length" class="empty">没有找到相关通知</div>
+          <div class="pitem" v-for="r in inboxResults" :key="r.id">
+            <strong>{{ r.title || '(无标题)' }}</strong><span class="chip">{{ r.app_name }}</span>
+            <div class="ib-sub">{{ r.text }}</div>
+            <div class="ib-time">{{ fmtTime(r.posted_at) }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="ib-tabs">
+        <button id="inbox-tab-snooze" class="ib-tab" :class="{on: inboxTab==='snooze'}" @click="switchInboxTab('snooze')">稍后处理</button>
+        <button id="inbox-tab-clue" class="ib-tab" :class="{on: inboxTab==='clue'}" @click="switchInboxTab('clue')">线索</button>
+        <button id="inbox-tab-watch" class="ib-tab" :class="{on: inboxTab==='watch'}" @click="switchInboxTab('watch')">等待中</button>
+      </div>
+      <div v-if="inboxTab==='snooze'">
+        <div v-if="!snoozes.length" class="empty">没有稍后处理的通知</div>
+        <div class="pitem" v-for="s in snoozes" :key="s.id">
+          <strong>{{ s.title || '(无标题)' }}</strong><span class="chip">{{ statusLabel(s.status) }}</span>
+          <div class="ib-sub">{{ s.text }}</div>
+          <div class="ib-time">到点：{{ fmtTime(s.fire_at) }}</div>
+        </div>
+      </div>
+      <div v-if="inboxTab==='clue'">
+        <div v-if="!clues.length" class="empty">还没有提取到线索</div>
+        <div class="pitem" v-for="c in clues" :key="c.id">
+          <strong>{{ c.title || '(无标题)' }}</strong><span class="chip ib-clue">{{ clueLabel(c) }}</span>
+          <div class="ib-sub">{{ c.text }}</div>
+          <div class="ib-time">{{ c.app_name }} · {{ fmtTime(c.posted_at) }}</div>
+          <div class="ops"><button class="btn" @click="copyClue(c)">复制 {{ c.clue_value }}</button></div>
+        </div>
+      </div>
+      <div v-if="inboxTab==='watch'">
+        <form id="watch-form" class="field" @submit.prevent="addWatch">
+          <label>等谁 / 等什么</label>
+          <input v-model.trim="watchForm.title" placeholder="如：老王" autocomplete="off">
+          <label>包含关键词</label>
+          <input v-model.trim="watchForm.keyword" placeholder="如：地址" autocomplete="off">
+          <button class="btn" type="submit" style="width:100%;margin-top:4px" :disabled="!watchForm.keyword">➕ 添加等待</button>
+        </form>
+        <div v-if="!watches.length" class="empty">没有在等待的通知</div>
+        <div class="pitem" v-for="w in watches" :key="w.id">
+          <strong>{{ w.title || w.keyword }}</strong><span class="chip" :class="{green: w.status==='armed'}">{{ statusLabel(w.status) }}</span>
+          <div class="ib-sub" v-if="w.keyword">关键词：{{ w.keyword }}<span v-if="w.source_pkg"> · 来源：{{ w.source_pkg }}</span></div>
+          <div class="ops" v-if="w.status==='armed'"><button class="btn danger" @click="cancelWatch(w)">取消等待</button></div>
+        </div>
+      </div>
     </div>
   </aside>
 
@@ -561,6 +642,16 @@ createApp({
       persons: [],
       tasks: [],
       intents: [],
+      showInbox: false,
+      inboxTab: 'snooze',
+      inboxQuery: '',
+      inboxMode: 'keyword',
+      inboxSearched: false,
+      inboxResults: [],
+      snoozes: [],
+      clues: [],
+      watches: [],
+      watchForm: { title: '', keyword: '' },
       me: null,
       mode: parseInitialMode(),
       micState: false,
@@ -705,6 +796,75 @@ createApp({
       await apiFetch(`/api/intents/${it.id}`, { method: 'DELETE' });
       this.loadPanel();
     },
+    toggleInbox() {
+      this.showInbox = !this.showInbox;
+      if (this.showInbox) this.switchInboxTab(this.inboxTab);
+    },
+    switchInboxTab(tab) {
+      this.inboxTab = tab;
+      if (tab === 'snooze') this.loadSnoozes();
+      else if (tab === 'clue') this.loadClues();
+      else this.loadWatches();
+    },
+    async loadSnoozes() {
+      try { const d = await apiFetch('/api/inbox/snooze').then(r => r.json()); this.snoozes = d.snoozes || []; }
+      catch (e) { this.snoozes = []; }
+    },
+    async loadClues() {
+      try { const d = await apiFetch('/api/inbox/events?kind=clue').then(r => r.json()); this.clues = d.events || []; }
+      catch (e) { this.clues = []; }
+    },
+    async loadWatches() {
+      try { const d = await apiFetch('/api/inbox/watches').then(r => r.json()); this.watches = d.watches || []; }
+      catch (e) { this.watches = []; }
+    },
+    async inboxSearch() {
+      const q = this.inboxQuery;
+      if (!q) return;
+      try {
+        const d = await apiFetch('/api/inbox/search?q=' + encodeURIComponent(q)).then(r => r.json());
+        this.inboxMode = d.mode || 'keyword';
+        this.inboxResults = d.results || [];
+      } catch (e) {
+        this.inboxMode = 'keyword';
+        this.inboxResults = [];
+      }
+      this.inboxSearched = true;
+    },
+    copyClue(c) {
+      navigator.clipboard.writeText(c.clue_value || '').then(() => {
+        this.pushMsg('sys', '已复制：' + (c.clue_value || ''));
+      }).catch(() => alert('复制失败，请手动复制。'));
+    },
+    async addWatch() {
+      if (!this.watchForm.keyword) return;
+      try {
+        await apiFetch('/api/inbox/watches', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: this.watchForm.title, keyword: this.watchForm.keyword, source_pkg: '' })
+        });
+        this.watchForm = { title: '', keyword: '' };
+        this.loadWatches();
+      } catch (e) { alert('添加失败，请稍后再试。'); }
+    },
+    async cancelWatch(w) {
+      if (!confirm('确定取消等待「' + (w.title || w.keyword) + '」吗？')) return;
+      try {
+        await apiFetch('/api/inbox/watches/' + w.id, { method: 'DELETE' });
+        this.loadWatches();
+      } catch (e) {}
+    },
+    clueLabel(c) {
+      return { pickup: '取件码', code: '验证码', tracking: '运单号' }[c.clue_type] || '线索';
+    },
+    fmtTime(s) {
+      if (!s) return '';
+      const d = new Date(s);
+      if (isNaN(d)) return s;
+      const p = n => String(n).padStart(2, '0');
+      return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    },
     togglePanel() {
       this.showPanel = !this.showPanel;
       if (this.showPanel) this.loadPanel();
@@ -770,7 +930,7 @@ createApp({
       this.sendText(name + '是谁来着？');
     },
     statusLabel(s) {
-      return { pending_confirm: '待确认', scheduled: '已排定', notified: '已提醒', done: '已完成', snoozed: '已推迟', cancelled: '已取消', expired: '已过期', draft: '草稿', armed: '生效中', fired: '已触发' }[s] || s;
+      return { pending: '待处理', pending_confirm: '待确认', scheduled: '已排定', notified: '已提醒', done: '已完成', snoozed: '已推迟', cancelled: '已取消', expired: '已过期', draft: '草稿', armed: '生效中', fired: '已触发' }[s] || s;
     }
   },
   mounted() {

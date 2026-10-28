@@ -20,6 +20,7 @@ import (
 	"goldenfinger/agent/internal/extsvc/firecrawl"
 	"goldenfinger/agent/internal/extsvc/stub"
 	"goldenfinger/agent/internal/httpapi"
+	"goldenfinger/agent/internal/inbox"
 	"goldenfinger/agent/internal/intent"
 	"goldenfinger/agent/internal/llm/openai"
 	"goldenfinger/agent/internal/memory"
@@ -91,6 +92,12 @@ func main() {
 	}
 	mem := memory.NewService(repos.Persons, repos.Facts, repos.Episodes, repos.Audit,
 		embedder, th, cfg.Memory.RecencyHalfLife, nil)
+
+	// 通知中心：watch 命中经 Notify 复用 Outbox（Web/NotifyPoller 轮询）。
+	inboxSvc := inbox.NewService(repos, embedder, time.Now, cfg.Embedder.Dim)
+	inboxSvc.Notify = func(_ context.Context, ownerID, body string) {
+		outbox.Push(ownerID, body, time.Now())
+	}
 
 	policy := scheduler.Policy{
 		DNDStartHour:       22,
@@ -165,6 +172,7 @@ func main() {
 		Settings:    st,
 		FallbackLLM: settings.LLM{BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model},
 		Device:      deviceHub,
+		Inbox:       inboxSvc,
 	}
 
 	// ---- 调度器主循环 ----
@@ -172,6 +180,27 @@ func main() {
 		log.Printf("scheduler started (tick=%s)", cfg.Scheduler.TickInterval)
 		if err := sched.Start(ctx); err != nil && ctx.Err() == nil {
 			log.Printf("scheduler stopped: %v", err)
+		}
+	}()
+
+	// 通知中心：每 30s 扫描到期的 snooze，推送 Outbox。
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				items, err := inboxSvc.Due(ctx, now)
+				if err != nil {
+					log.Printf("inbox due: %v", err)
+					continue
+				}
+				for _, it := range items {
+					outbox.Push(it.OwnerUserID, it.Body, now)
+				}
+			}
 		}
 	}()
 

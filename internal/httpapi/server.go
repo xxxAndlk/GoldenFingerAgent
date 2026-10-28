@@ -17,6 +17,7 @@ import (
 
 	"goldenfinger/agent/internal/agent"
 	"goldenfinger/agent/internal/device"
+	"goldenfinger/agent/internal/inbox"
 	"goldenfinger/agent/internal/settings"
 	"goldenfinger/agent/internal/store"
 )
@@ -36,6 +37,8 @@ type Server struct {
 	Outbox *Outbox
 	// Device 是设备操控通道（WS/屏幕缓存）；nil 时相关路由返回 503。
 	Device *device.Hub
+	// Inbox 是通知中心服务；nil 时 /api/inbox* 端点返回 503。
+	Inbox *inbox.Service
 }
 
 // Outbox 是已投递提醒文本的小型内存队列（开发 MVP）。
@@ -83,6 +86,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/intents", s.handleListIntents)
 	mux.HandleFunc("DELETE /api/intents/{id}", s.handleCancelIntent)
 	mux.HandleFunc("GET /api/memory/export.md", s.handleMemoryExport)
+	mux.HandleFunc("POST /api/memory/capture", s.handleCaptureEpisode)
+	mux.HandleFunc("GET /api/memory/search", s.handleSearchEpisodes)
 	mux.HandleFunc("GET /api/reminders", s.handleReminders)
 	mux.HandleFunc("GET /api/outbox", s.handleOutbox)
 	mux.HandleFunc("GET /api/me", s.handleMe)
@@ -93,6 +98,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/voice/speak", s.handleSpeak)
 	mux.HandleFunc("GET /ws/device", s.handleDeviceWS)
 	mux.HandleFunc("POST /api/screen", s.handleScreen)
+
+	// 通知中心（Inbox nil 时端点 503）。
+	mux.HandleFunc("POST /api/inbox/events", s.handleInboxIngest)
+	mux.HandleFunc("GET /api/inbox/events", s.handleInboxEvents)
+	mux.HandleFunc("GET /api/inbox/search", s.handleInboxSearch)
+	mux.HandleFunc("POST /api/inbox/snooze", s.handleInboxCreateSnooze)
+	mux.HandleFunc("GET /api/inbox/snooze", s.handleInboxListSnoozes)
+	mux.HandleFunc("POST /api/inbox/watches", s.handleInboxCreateWatch)
+	mux.HandleFunc("GET /api/inbox/watches", s.handleInboxListWatches)
+	mux.HandleFunc("DELETE /api/inbox/watches/{id}", s.handleInboxCancelWatch)
 
 	// 静态 Web UI。
 	mux.Handle("GET /", http.FileServer(http.Dir(s.WebDir)))

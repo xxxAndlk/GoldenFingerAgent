@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>金手指管家</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <button id="orb" class="orb" aria-label="展开金手指管家">
+    <span class="orb-letter">金</span>
+    <span id="orb-dot" class="orb-dot" hidden></span>
+  </button>
+
+  <main id="panel" class="panel" hidden>
+    <header class="titlebar">
+      <div>
+        <strong>金手指管家</strong>
+        <span id="connection" class="connection">正在连接…</span>
+      </div>
+      <button id="collapse" class="icon-button" aria-label="收起">—</button>
+    </header>
+
+    <section class="collaboration" aria-labelledby="collab-title">
+      <div class="collab-heading">
+        <div>
+          <strong id="collab-title">协作模式</strong>
+          <p>每 30 秒读取活动应用和窗口标题，每 15 分钟总结。</p>
+        </div>
+        <label class="switch">
+          <input id="collab-toggle" type="checkbox" aria-label="授权协作模式扫描活动软件">
+          <span></span>
+        </label>
+      </div>
+      <div class="collab-footer">
+        <span id="collab-status">未授权，不会扫描</span>
+        <button id="summarize" class="text-button" disabled>立即总结</button>
+      </div>
+    </section>
+
+    <section id="messages" class="messages" aria-live="polite">
+      <article class="message assistant">我是你的桌面管家。你可以问我之前记过的事，或开启协作模式，让我定期总结当前工作。</article>
+    </section>
+
+    <form id="chat-form" class="composer">
+      <textarea id="chat-input" rows="2" maxlength="8000" placeholder="问点什么，或让我记一下…" aria-label="对话内容"></textarea>
+      <button id="send" type="submit">发送</button>
+    </form>
+  </main>
+  <script src="renderer.js"></script>
+</body>
+</html>

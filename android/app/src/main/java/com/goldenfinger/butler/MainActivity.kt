@@ -1,11 +1,14 @@
 package com.goldenfinger.butler
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.ViewGroup
 import android.webkit.WebResourceRequest
@@ -13,8 +16,13 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import com.goldenfinger.butler.memory.MemoryCaptureService
 
 /**
  * MainActivity：全屏 WebView 壳。
@@ -24,6 +32,7 @@ import androidx.appcompat.app.AppCompatActivity
  */
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
+    private lateinit var captureButton: Button
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -31,12 +40,11 @@ class MainActivity : AppCompatActivity() {
         // 确保服务与 Go 服务在跑（冷启动路径）
         GoForegroundService.start(this)
         KeepAliveWorker.schedule(this)
+        ensureMemoryCapture()
 
         webView = WebView(this)
-        webView.layoutParams = ViewGroup.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
-        )
-        setContentView(webView)
+        setContentView(buildContentView())
+        refreshCaptureControl()
 
         val ws = webView.settings.apply {
             javaScriptEnabled = true
@@ -119,6 +127,72 @@ class MainActivity : AppCompatActivity() {
         null
     }
 
+    private fun buildContentView(): android.view.View {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            fitsSystemWindows = true
+        }
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(4), dp(12), dp(4))
+            setBackgroundColor(ContextCompat.getColor(this@MainActivity, R.color.white))
+        }
+        val label = TextView(this).apply {
+            text = "小金小金 · 情景记忆"
+            textSize = 16f
+            setTextColor(ContextCompat.getColor(this@MainActivity, R.color.ink))
+        }
+        captureButton = Button(this).apply {
+            textSize = 14f
+            minHeight = dp(48)
+            setOnClickListener {
+                if (MemoryCaptureService.isEnabled(this@MainActivity)) {
+                    MemoryCaptureService.stop(this@MainActivity)
+                } else if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    MemoryCaptureService.enableAndStart(this@MainActivity)
+                } else {
+                    requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_RECORD_AUDIO)
+                }
+                refreshCaptureControl()
+            }
+        }
+        header.addView(label, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        header.addView(captureButton)
+        root.addView(header, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(webView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        return root
+    }
+
+    private fun refreshCaptureControl() {
+        val enabled = MemoryCaptureService.isEnabled(this)
+        captureButton.text = if (enabled) "停止记录" else "开始记录"
+        captureButton.contentDescription = if (enabled) "停止持续听写和情景记忆" else "开始持续听写和情景记忆"
+    }
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    override fun onResume() {
+        super.onResume()
+        if (::captureButton.isInitialized) refreshCaptureControl()
+    }
+
+    private fun ensureMemoryCapture() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            MemoryCaptureService.startIfEnabled(this)
+        } else {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_RECORD_AUDIO)
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_RECORD_AUDIO && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            MemoryCaptureService.enableAndStart(this)
+        }
+        refreshCaptureControl()
+    }
+
     override fun onBackPressed() {
         if (webView.canGoBack()) {
             webView.goBack()
@@ -130,5 +204,9 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         webView.destroy()
         super.onDestroy()
+    }
+
+    companion object {
+        private const val REQ_RECORD_AUDIO = 41
     }
 }

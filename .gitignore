@@ -10,3 +10,7 @@ settings.json
 # local env
 .env
 *.local
+
+# desktop runtime and packages
+desktop/node_modules/
+desktop/dist/

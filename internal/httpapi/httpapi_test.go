@@ -13,6 +13,7 @@ import (
 	"goldenfinger/agent/internal/agent"
 	"goldenfinger/agent/internal/compliance"
 	"goldenfinger/agent/internal/extsvc/stub"
+	"goldenfinger/agent/internal/inbox"
 	"goldenfinger/agent/internal/llm"
 	"goldenfinger/agent/internal/llm/mock"
 	"goldenfinger/agent/internal/memory"
@@ -75,6 +76,7 @@ func newTestServer(t *testing.T, script ...llm.ChatResponse) (*Server, *store.Re
 		WebDir:  "../../web",
 		Now:     func() time.Time { return fixedNow },
 		Outbox:  &Outbox{},
+		Inbox:   inbox.NewService(repos, nil, func() time.Time { return fixedNow }, 1024),
 	}
 	return srv, repos
 }

@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -50,6 +51,12 @@
                 android:value="持续运行金手指管家 Go 服务并提供提醒通知" />
         </service>
 
+        <!-- 持续听写：仅保存转写文字，通知栏提供明确状态与停止入口 -->
+        <service
+            android:name=".memory.MemoryCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <!-- 无障碍服务（阶段0/1/2） -->
         <service
             android:name=".accessibility.ControlService"
@@ -63,6 +70,22 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!-- 通知监听服务：旁路采集授权应用通知并上报本机 Go 服务（需系统"通知访问权"授权） -->
+        <service
+            android:name=".notify.NotifyListenerService"
+            android:exported="false"
+            android:label="@string/listener_label"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- 转述通知上的「稍后处理」动作 -->
+        <receiver
+            android:name=".notify.SnoozeActionReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".BootReceiver"

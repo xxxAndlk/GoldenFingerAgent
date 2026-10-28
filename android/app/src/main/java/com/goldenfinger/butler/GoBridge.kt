@@ -64,5 +64,5 @@ object GoBridge {
     fun saveUserId(id: String) = prefs().edit().putString(KEY_USER_ID, id).apply()
 
     private fun prefs(c: Context? = null): android.content.SharedPreferences =
-        (c ?: App.instance()).getSharedPreferences(PREF, Context.MODE_PRIVATE)
+        (c ?: App.instance).getSharedPreferences(PREF, Context.MODE_PRIVATE)
 }
