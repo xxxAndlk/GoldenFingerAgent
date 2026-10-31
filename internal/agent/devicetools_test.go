@@ -87,7 +87,7 @@ func TestDeviceToolActionMapping(t *testing.T) {
 	fd, tc := deviceToolCtx(t, sess, rt)
 
 	// tap：node_index → click
-		if _, err := (tapTool{}).Execute(context.Background(), json.RawMessage(`{"node_index":3}`), tc); err != nil {
+	if _, err := (tapTool{}).Execute(context.Background(), json.RawMessage(`{"node_index":3}`), tc); err != nil {
 		t.Fatal(err)
 	}
 	if a, p := fd.nextCmd(t); a != "click" || int(p["node_index"].(float64)) != 3 {
@@ -95,7 +95,7 @@ func TestDeviceToolActionMapping(t *testing.T) {
 	}
 
 	// tap：坐标 → gestureTap
-		if _, err := (tapTool{}).Execute(context.Background(), json.RawMessage(`{"x":10,"y":20}`), tc); err != nil {
+	if _, err := (tapTool{}).Execute(context.Background(), json.RawMessage(`{"x":10,"y":20}`), tc); err != nil {
 		t.Fatal(err)
 	}
 	if a, p := fd.nextCmd(t); a != "gestureTap" || p["x"].(float64) != 10 || p["y"].(float64) != 20 {
@@ -103,7 +103,7 @@ func TestDeviceToolActionMapping(t *testing.T) {
 	}
 
 	// tap：长按 → longClick
-		if _, err := (tapTool{}).Execute(context.Background(), json.RawMessage(`{"node_index":1,"long_press":true}`), tc); err != nil {
+	if _, err := (tapTool{}).Execute(context.Background(), json.RawMessage(`{"node_index":1,"long_press":true}`), tc); err != nil {
 		t.Fatal(err)
 	}
 	if a, _ := fd.nextCmd(t); a != "longClick" {
@@ -111,7 +111,7 @@ func TestDeviceToolActionMapping(t *testing.T) {
 	}
 
 	// input_text → setText
-		if _, err := (inputTextTool{}).Execute(context.Background(), json.RawMessage(`{"text":"你好"}`), tc); err != nil {
+	if _, err := (inputTextTool{}).Execute(context.Background(), json.RawMessage(`{"text":"你好"}`), tc); err != nil {
 		t.Fatal(err)
 	}
 	if a, p := fd.nextCmd(t); a != "setText" || p["text"] != "你好" {
@@ -119,7 +119,7 @@ func TestDeviceToolActionMapping(t *testing.T) {
 	}
 
 	// swipe：direction=up → scrollBackward
-		if _, err := (swipeTool{}).Execute(context.Background(), json.RawMessage(`{"direction":"up"}`), tc); err != nil {
+	if _, err := (swipeTool{}).Execute(context.Background(), json.RawMessage(`{"direction":"up"}`), tc); err != nil {
 		t.Fatal(err)
 	}
 	if a, p := fd.nextCmd(t); a != "scrollBackward" || p["direction"] != "up" {
@@ -127,7 +127,7 @@ func TestDeviceToolActionMapping(t *testing.T) {
 	}
 
 	// swipe：坐标 → gestureSwipe
-		if _, err := (swipeTool{}).Execute(context.Background(), json.RawMessage(`{"x1":0,"y1":100,"x2":0,"y2":400}`), tc); err != nil {
+	if _, err := (swipeTool{}).Execute(context.Background(), json.RawMessage(`{"x1":0,"y1":100,"x2":0,"y2":400}`), tc); err != nil {
 		t.Fatal(err)
 	}
 	if a, p := fd.nextCmd(t); a != "gestureSwipe" || p["y2"].(float64) != 400 {
@@ -135,13 +135,13 @@ func TestDeviceToolActionMapping(t *testing.T) {
 	}
 
 	// back → globalBack；home=true → globalHome
-		if _, err := (backTool{}).Execute(context.Background(), json.RawMessage(`{}`), tc); err != nil {
+	if _, err := (backTool{}).Execute(context.Background(), json.RawMessage(`{}`), tc); err != nil {
 		t.Fatal(err)
 	}
 	if a, _ := fd.nextCmd(t); a != "globalBack" {
 		t.Fatalf("back → %s", a)
 	}
-		if _, err := (backTool{}).Execute(context.Background(), json.RawMessage(`{"home":true}`), tc); err != nil {
+	if _, err := (backTool{}).Execute(context.Background(), json.RawMessage(`{"home":true}`), tc); err != nil {
 		t.Fatal(err)
 	}
 	if a, _ := fd.nextCmd(t); a != "globalHome" {
@@ -149,7 +149,7 @@ func TestDeviceToolActionMapping(t *testing.T) {
 	}
 
 	// open_app：中文名映射包名
-		if _, err := (openAppTool{}).Execute(context.Background(), json.RawMessage(`{"app_name":"微信"}`), tc); err != nil {
+	if _, err := (openAppTool{}).Execute(context.Background(), json.RawMessage(`{"app_name":"微信"}`), tc); err != nil {
 		t.Fatal(err)
 	}
 	if a, p := fd.nextCmd(t); a != "openApp" || p["package"] != "com.tencent.mm" {
@@ -166,7 +166,7 @@ func TestDeviceToolActionMapping(t *testing.T) {
 	}
 
 	// wait：默认 1s（走设备动作计数）
-		if _, err := (waitTool{}).Execute(context.Background(), json.RawMessage(`{}`), tc); err != nil {
+	if _, err := (waitTool{}).Execute(context.Background(), json.RawMessage(`{}`), tc); err != nil {
 		t.Fatal(err)
 	}
 	if sess.DeviceSteps == 0 {
@@ -255,5 +255,79 @@ func TestDeviceLoopMultiTurn(t *testing.T) {
 	}
 	if sess.DeviceSteps != 2 {
 		t.Fatalf("device steps = %d, want 2", sess.DeviceSteps)
+	}
+}
+
+// TestDeviceGuardBlocksSensitiveTap 验证安全闸接在工具层：
+// 敏感页面上的点击会先请求人工确认；用户拒绝后不再下发原动作。
+func TestDeviceGuardBlocksSensitiveTap(t *testing.T) {
+	hub := device.NewHub()
+	t.Cleanup(hub.Close)
+	srv := httptest.NewServer(http.HandlerFunc(hub.ServeWS))
+	t.Cleanup(srv.Close)
+	ws, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http")+"/ws/device", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	if err := ws.WriteJSON(map[string]any{"type": "register", "device_id": "d1"}); err != nil {
+		t.Fatal(err)
+	}
+	var reg map[string]any
+	if err := ws.ReadJSON(&reg); err != nil {
+		t.Fatal(err)
+	}
+	received := make(chan string, 8)
+	go func() {
+		for {
+			var msg map[string]any
+			if err := ws.ReadJSON(&msg); err != nil {
+				return
+			}
+			if msg["type"] != "command" {
+				continue
+			}
+			action, _ := msg["action"].(string)
+			received <- action
+			payload := map[string]any{}
+			if action == "confirm" {
+				payload["approved"] = false // 用户拒绝
+			}
+			data, _ := json.Marshal(payload)
+			_ = ws.WriteJSON(map[string]any{
+				"type": "result", "device_id": "d1", "cmd_id": msg["cmd_id"],
+				"ok": true, "error": "", "data": string(data),
+			})
+		}
+	}()
+
+	rt := &Runtime{Tools: &ToolServices{
+		Device:      hub,
+		DeviceGuard: device.NewGuard(device.GuardConfig{}),
+	}}
+	hub.StoreScreen(&device.Screen{
+		DeviceID: "d1",
+		Nodes:    []device.ScreenNode{{Text: "确认转账 500 元", Index: 0}},
+	})
+	tc := &ToolContext{Session: &Session{ID: "s1", UserID: "u1"}, Runtime: rt}
+
+	res, err := (tapTool{}).Execute(context.Background(), json.RawMessage(`{"node_index":0}`), tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != StatusError {
+		t.Fatalf("sensitive tap should be blocked, got %+v", res)
+	}
+	data, _ := res.Data.(map[string]string)
+	if !strings.Contains(data["error"], "自己确认") {
+		t.Fatalf("human message = %q", data["error"])
+	}
+	// 只应看到 confirm，绝不应看到 click。
+	actions := []string{}
+	for len(received) > 0 {
+		actions = append(actions, <-received)
+	}
+	if strings.Join(actions, ",") != "confirm" {
+		t.Fatalf("device actions = %v, want only confirm", actions)
 	}
 }

@@ -13,7 +13,14 @@ import java.util.concurrent.TimeUnit
 
 /** 将最终转写片段发送到本机 Go 服务；不会发送音频。 */
 object MemoryCaptureApi {
+    /** 口令判定动作：sleep/speak/chat/capture（capture 已由 Go 落库，此处无需处理）。 */
+    data class Action(val type: String, val text: String)
+
+    /** Go 的判定结果：要执行的动作 + 无后文时该等多久再 flush。 */
+    data class Verdict(val actions: List<Action>, val nextFlushMs: Long)
+
     private const val TAG = "MemoryCaptureApi"
+    private const val DEFAULT_MERGE_MS = 4000L
     private val jsonType = "application/json; charset=utf-8".toMediaType()
     private val executor = Executors.newSingleThreadExecutor { r -> Thread(r, "memory-capture-api") }
     private val client = OkHttpClient.Builder()
@@ -50,37 +57,45 @@ object MemoryCaptureApi {
         }
     }
 
-    fun capture(text: String, contextBefore: String, contextAfter: String, capturedAtMillis: Long) {
+    /**
+     * 把一条最终转写交给 Go 判定（唤醒词/指令窗/片段合并都在 Go），
+     * 回调里带回要执行的动作。片段落库也由 Go 完成，这里不再单独上报。
+     */
+    fun onText(deviceId: String, text: String, flush: Boolean, onVerdict: (Verdict) -> Unit) {
         executor.execute {
             try {
-                post(text, contextBefore, contextAfter, capturedAtMillis)
+                onVerdict(postVoice(deviceId, text, flush))
             } catch (t: Throwable) {
-                // 网络暂时不可达时丢弃本次上报，避免在后台无限积累私人语音文本。
-                Log.w(TAG, "capture failed: ${t.message}")
+                Log.w(TAG, "voice verdict failed: ${t.message}")
+                onVerdict(Verdict(emptyList(), DEFAULT_MERGE_MS))
             }
         }
     }
 
-    private fun post(text: String, before: String, after: String, atMillis: Long) {
-        val addr = GoBridge.baseUrl() ?: return
-        val token = GoBridge.token() ?: return
+    private fun postVoice(deviceId: String, text: String, flush: Boolean): Verdict {
+        val addr = GoBridge.baseUrl() ?: throw IllegalStateException("Go service unavailable")
+        val token = GoBridge.token() ?: throw IllegalStateException("token unavailable")
         val payload = JSONObject()
+            .put("device_id", deviceId)
             .put("text", text)
-            .put("context_before", before)
-            .put("context_after", after)
-            .put("source", "android_speech")
-            .put("captured_at", Instant.ofEpochMilli(atMillis).toString())
-            .toString()
+            .put("flush", flush)
         val request = Request.Builder()
-            .url("http://$addr/api/memory/capture")
+            .url("http://$addr/api/voice/text")
             .header("X-Token", token)
             .header("X-User-Id", GoBridge.userId() ?: GoBridge.deviceId() ?: "")
-            .post(payload.toRequestBody(jsonType))
+            .post(payload.toString().toRequestBody(jsonType))
             .build()
         client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                Log.w(TAG, "capture HTTP ${response.code}")
+            if (!response.isSuccessful) throw IllegalStateException("voice HTTP ${response.code}")
+            val body = JSONObject(response.body?.string().orEmpty())
+            val arr = body.optJSONArray("actions") ?: org.json.JSONArray()
+            val actions = ArrayList<Action>(arr.length())
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                actions.add(Action(item.optString("type"), item.optString("text")))
             }
+            val nextFlush = body.optLong("next_flush_ms", DEFAULT_MERGE_MS)
+            return Verdict(actions, if (nextFlush > 0) nextFlush else DEFAULT_MERGE_MS)
         }
     }
 }

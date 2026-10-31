@@ -6,6 +6,11 @@ settings.json
 /server
 /migrate
 /bin/
+.venv-memory
+.archive
+.tmpgo
+.tmpgo-cache
+.runtime
 
 # local env
 .env
@@ -14,3 +19,20 @@ settings.json
 # desktop runtime and packages
 desktop/node_modules/
 desktop/dist/
+
+# android build outputs（由 docker/android/build.sh 生成，不入库）
+/android/app/build/
+/android/app/libs/*.aar
+/android/app/libs/*.jar
+/android/.gradle/
+/android/local.properties
+
+# 本地数据与历史归档（含用户私人数据库与转写文本，绝不入库）
+/data/
+/.archive/
+/artifacts/
+
+# 构建产物（可重新生成，不入库）
+/server-dist/
+/desktop/artifacts/
+/runtime/

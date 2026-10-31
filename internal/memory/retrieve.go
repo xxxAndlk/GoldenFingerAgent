@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -96,15 +97,51 @@ func (s *Service) Search(ctx context.Context, ownerID, query string, k int) ([]S
 		item.lexical = lexicalScore(query, e.Summary)
 	}
 
+	// 可替换长期记忆后端提供跨片段事实；不可用时仅降级，不影响 SQLite 检索。
+	includeHistory := historicalQuery(query)
+	if s.longTerm != nil {
+		facts, err := s.longTerm.Search(ctx, MemoryQuery{OwnerID: ownerID, Query: query, Limit: k})
+		if err != nil {
+			log.Printf("[memory] long-term search deferred: %v", err)
+		} else {
+			for _, fact := range facts {
+				if strings.TrimSpace(fact.ID) == "" || strings.TrimSpace(fact.Text) == "" {
+					continue
+				}
+				historical := fact.InvalidAt != nil
+				if historical && !includeHistory {
+					continue
+				}
+				at := time.Time{}
+				if fact.ValidAt != nil {
+					at = *fact.ValidAt
+				}
+				status := ""
+				if historical {
+					status = "historical"
+				}
+				// ltm 是 GoldenFinger 内部命名空间，业务层不感知后端 UUID 类型。
+				id := "ltm:" + fact.ID
+				items[id] = &rankedSnippet{
+					snippet: Snippet{
+						ID: id, Kind: "fact", Text: fact.Text, Status: status,
+						OccurredAt: fact.ValidAt, RawRef: strings.Join(fact.SourceRefs, ","),
+					},
+					vector: 0.85, lexical: lexicalScore(query, fact.Text), at: at,
+				}
+			}
+		}
+	}
+
 	broadQuery := normalizeRecallText(query) == ""
 	halfLife := s.recencyHalfLifeValue()
 	out := make([]Snippet, 0, len(items))
 	for _, item := range items {
-		if !broadQuery && item.lexical < 0.12 && (len(queryVec) == 0 || item.vector <= 0) {
+		if !broadQuery && item.lexical < 0.12 && item.vector <= 0 {
 			continue
 		}
 		recency := recencyScore(s.now(), item.at, halfLife)
-		if len(queryVec) > 0 {
+		if len(queryVec) > 0 || item.vector > 0 {
 			item.snippet.Score = 0.55*item.vector + 0.35*item.lexical + 0.10*recency
 		} else {
 			item.snippet.Score = 0.85*item.lexical + 0.15*recency
@@ -116,6 +153,15 @@ func (s *Service) Search(ctx context.Context, ownerID, query string, k int) ([]S
 		out = out[:k]
 	}
 	return out, nil
+}
+
+func historicalQuery(query string) bool {
+	for _, marker := range []string{"以前", "之前", "历史", "过去", "曾经", "原来"} {
+		if strings.Contains(query, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func episodeSnippet(e store.Episode, at time.Time) Snippet {

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -136,6 +137,222 @@ func TestChatEndpointCreatesSessionAndTask(t *testing.T) {
 	}
 	if len(msgs) < 2 {
 		t.Fatalf("want persisted messages, got %d", len(msgs))
+	}
+}
+
+func TestInternalChatDoesNotCreateHistory(t *testing.T) {
+	srv, _ := newTestServer(t, mock.TextResponse("内部总结"))
+	h := srv.Handler()
+
+	rec := postJSON(t, h, "/api/chat", `{"text":"内部协作提示词","internal":true}`)
+	if rec.Code != 200 {
+		t.Fatalf("internal chat status %d: %s", rec.Code, rec.Body)
+	}
+	var resp struct {
+		SessionID string `json:"session_id"`
+		Reply     string `json:"reply"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.SessionID != "" || resp.Reply != "内部总结" {
+		t.Errorf("internal chat response = %+v", resp)
+	}
+	list := httptest.NewRecorder()
+	h.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/sessions", nil))
+	var sessions struct {
+		Sessions []sessionDTO `json:"sessions"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions.Sessions) != 0 {
+		t.Errorf("internal chat must not create a history session, got %+v", sessions.Sessions)
+	}
+}
+
+func TestInternalChatWithSessionPersistsOnlyAssistant(t *testing.T) {
+	srv, _ := newTestServer(t,
+		mock.TextResponse("普通回复"),
+		mock.TextResponse("本轮协作总结"),
+	)
+	h := srv.Handler()
+	first := postJSON(t, h, "/api/chat", `{"text":"普通问题"}`)
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(first.Body.Bytes(), &created); err != nil || created.SessionID == "" {
+		t.Fatalf("create session failed: %s", first.Body)
+	}
+
+	internal := postJSON(t, h, "/api/chat", `{"session_id":"`+created.SessionID+`","text":"以下是用户授权协作模式采集到的页面标题","internal":true}`)
+	if internal.Code != 200 {
+		t.Fatalf("internal chat status %d: %s", internal.Code, internal.Body)
+	}
+	var internalResp struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(internal.Body.Bytes(), &internalResp); err != nil {
+		t.Fatal(err)
+	}
+	if internalResp.SessionID != created.SessionID {
+		t.Errorf("internal session = %q, want %q", internalResp.SessionID, created.SessionID)
+	}
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/sessions/"+created.SessionID+"/messages", nil))
+	var msgs []messageDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &msgs); err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("want user+assistant+summary, got %+v", msgs)
+	}
+	if strings.Contains(msgs[0].Content, "以下是用户授权协作模式") || strings.Contains(msgs[2].Content, "以下是用户授权协作模式") {
+		t.Errorf("internal prompt must not be persisted: %+v", msgs)
+	}
+	if msgs[2].Role != "assistant" || msgs[2].Content != "本轮协作总结" {
+		t.Errorf("summary message = %+v", msgs[2])
+	}
+}
+
+func TestUploadEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t)
+	srv.UploadDir = t.TempDir()
+	h := srv.Handler()
+
+	data := base64.StdEncoding.EncodeToString([]byte("fake-image-bytes"))
+	rec := postJSON(t, h, "/api/uploads", `{"name":"photo.png","mime":"image/png","kind":"image","data":"`+data+`"}`)
+	if rec.Code != 200 {
+		t.Fatalf("upload status %d: %s", rec.Code, rec.Body)
+	}
+	var uploaded uploadResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &uploaded); err != nil {
+		t.Fatal(err)
+	}
+	if uploaded.Kind != "image" || uploaded.URL == "" || uploaded.Name != "photo.png" {
+		t.Errorf("bad upload response: %+v", uploaded)
+	}
+	getReq := httptest.NewRequest(http.MethodGet, uploaded.URL, nil)
+	getRec := httptest.NewRecorder()
+	h.ServeHTTP(getRec, getReq)
+	if getRec.Code != 200 || getRec.Body.String() != "fake-image-bytes" {
+		t.Errorf("uploaded file not served: %d %q", getRec.Code, getRec.Body.String())
+	}
+
+	bad := postJSON(t, h, "/api/uploads", `{"name":"x.exe","mime":"application/x-msdownload","kind":"file","data":"`+data+`"}`)
+	if bad.Code != 400 {
+		t.Errorf("non image/video upload should be rejected, got %d", bad.Code)
+	}
+}
+
+func TestChatStreamEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t, mock.TextResponse("好的，收到了。"))
+	h := srv.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/chat/stream", strings.NewReader(`{"text":"你好"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("stream status %d: %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: done") || !strings.Contains(body, "好的，收到了。") {
+		t.Fatalf("stream should emit done with reply, got %q", body)
+	}
+}
+
+func TestSessionListEndpoint(t *testing.T) {
+	srv, repos := newTestServer(t, mock.TextResponse("好的，记下了。"))
+	h := srv.Handler()
+
+	rec := postJSON(t, h, "/api/chat", `{"text":"帮我记一下张阿姨的电话是13800000000"}`)
+	if rec.Code != 200 {
+		t.Fatalf("chat status %d: %s", rec.Code, rec.Body)
+	}
+	var created struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+
+	// 协作总结是自动消息，不应出现在对话历史里。
+	users, err := repos.Users.ListAll(context.Background())
+	if err != nil || len(users) == 0 {
+		t.Fatal("user missing")
+	}
+	summarySession := &store.ChatSession{OwnerUserID: users[0].ID}
+	if err := repos.Sessions.Create(context.Background(), summarySession); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []store.ChatMessage{
+		{SessionID: summarySession.ID, Role: "user", Content: "以下是用户授权协作模式采集到的页面标题、去重后的页面正文和有效操作。"},
+		{SessionID: summarySession.ID, Role: "assistant", Content: "本阶段没有实质变化。"},
+	} {
+		msg := message
+		if err := repos.Sessions.AppendMessage(context.Background(), &msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	get := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec = get("/api/sessions")
+	if rec.Code != 200 {
+		t.Fatalf("sessions status %d: %s", rec.Code, rec.Body)
+	}
+	var list struct {
+		Sessions []sessionDTO `json:"sessions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Sessions) != 1 {
+		t.Fatalf("want 1 session, got %d: %s", len(list.Sessions), rec.Body)
+	}
+	item := list.Sessions[0]
+	if item.ID != created.SessionID || item.Messages < 2 || !strings.Contains(item.Preview, "张阿姨") {
+		t.Errorf("bad session summary: %+v", item)
+	}
+	if item.CreatedAt.IsZero() {
+		t.Error("created_at must be present for date grouping")
+	}
+
+	today := time.Now().Format("2006-01-02")
+	if rec = get("/api/sessions?date=" + today); rec.Code != 200 {
+		t.Fatalf("date filter status %d: %s", rec.Code, rec.Body)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list.Sessions) != 1 {
+		t.Fatalf("today filter should find the session: %s", rec.Body)
+	}
+	if rec = get("/api/sessions?date=2000-01-01"); rec.Code != 200 {
+		t.Fatalf("old date status %d: %s", rec.Code, rec.Body)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list.Sessions) != 0 {
+		t.Fatalf("old date must be empty: %s", rec.Body)
+	}
+	if rec = get("/api/sessions?date=2026-99-99"); rec.Code != 400 {
+		t.Errorf("invalid date should be 400, got %d", rec.Code)
+	}
+
+	rec = get("/api/sessions/" + created.SessionID + "/messages")
+	if rec.Code != 200 {
+		t.Fatalf("messages status %d: %s", rec.Code, rec.Body)
+	}
+	var msgs []messageDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &msgs); err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) < 2 || msgs[0].Role != "user" || msgs[1].Role != "assistant" {
+		t.Errorf("want user+assistant messages, got %+v", msgs)
 	}
 }
 

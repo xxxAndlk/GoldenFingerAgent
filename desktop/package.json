@@ -9,7 +9,7 @@
     "dev": "electron .",
     "postinstall": "node node_modules/electron/install.js",
     "test": "node --test",
-    "check": "node --check main.js && node --check preload.js && node --check renderer.js && node --check collaboration.js && node --check assistant-api.js && node --check active-window.js",
+    "check": "node --check main.js && node --check preload.js && node --check renderer.js && node --check activity-renderer.js && node --check activity-format.js && node --check window-dock.js && node --check settings-renderer.js && node --check management.js && node --check ccswitch.js && node --check markdown.js && node --check agent-panel.js && node --check collaboration.js && node --check assistant-api.js && node --check active-window.js && node --check activity-trail.js && node --check input-monitor.js && node --check observation.js && node --check native-activity-source.js && node --check screenpipe-source.js && node --check screenpipe-shadow.js && node --check ui-context.js && node --check page-content.js && node --check content-dedup.js && node --check screen-ocr.js && node --check visual-change.js && node --check desktop-content.js && node --check window-capture.js && node --check git-connector.js && node --check server-manager.js",
     "dist": "node scripts/pack-win.js"
   },
   "devDependencies": {

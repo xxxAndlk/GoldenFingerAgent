@@ -16,18 +16,22 @@ import (
 	"unicode/utf8"
 
 	"goldenfinger/agent/internal/agent"
+	"goldenfinger/agent/internal/agenthub"
 	"goldenfinger/agent/internal/device"
 	"goldenfinger/agent/internal/inbox"
 	"goldenfinger/agent/internal/settings"
+	"goldenfinger/agent/internal/skill"
 	"goldenfinger/agent/internal/store"
+	"goldenfinger/agent/internal/voice"
 )
 
 // Server 在运行时之上装配 HTTP 路由（无框架——标准库 mux）。
 type Server struct {
-	Repos   *store.Repos
-	Runtime *agent.Runtime
-	WebDir  string
-	Now     func() time.Time
+	Repos     *store.Repos
+	Runtime   *agent.Runtime
+	WebDir    string
+	UploadDir string
+	Now       func() time.Time
 	// Settings 保存可运行时编辑的模型设置（JSON 文件）；nil 表示禁用。
 	Settings *settings.Store
 	// FallbackLLM 描述 config.yaml 的对话模型，在没有运行时覆盖时
@@ -39,6 +43,22 @@ type Server struct {
 	Device *device.Hub
 	// Inbox 是通知中心服务；nil 时 /api/inbox* 端点返回 503。
 	Inbox *inbox.Service
+	// Agents 是本机与 A2A Agent 的统一调度层。
+	Agents *agenthub.Manager
+	// AgentDispatcher 持久化执行异步 Agent 任务。
+	AgentDispatcher *agenthub.Dispatcher
+	// Relay 是手机→电脑的中继连接；nil 表示未启用（单机模式）。
+	Relay RelayControl
+	// DeviceGuard 是设备操作安全闸；nil 时急停端点返回 503。
+	DeviceGuard *device.Guard
+	// PhoneRelay 是手机 → 电脑的中继通道；nil 时手机远程端点返回 503。
+	PhoneRelay PhoneRelay
+	// Jobs 是持久化异步任务队列；nil 时 /api/jobs* 返回 503。
+	Jobs JobService
+	// Voice 是语音口令判定状态机；nil 时 /api/voice/text 返回 503。
+	Voice *voice.Service
+	// Skills 是本机 Markdown 技能池；nil 时 /api/skills 返回空列表。
+	Skills *skill.Pool
 }
 
 // Outbox 是已投递提醒文本的小型内存队列（开发 MVP）。
@@ -75,7 +95,13 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /api/chat", s.handleChat)
+	mux.HandleFunc("POST /api/uploads", s.handleUpload)
+	if s.UploadDir != "" {
+		mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.UploadDir))))
+	}
+	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /api/sessions/{id}/messages", s.handleSessionMessages)
+	mux.HandleFunc("GET /api/skills", s.handleListSkills)
 	mux.HandleFunc("GET /api/persons", s.handleListPersons)
 	mux.HandleFunc("GET /api/persons/{id}", s.handleGetPerson)
 	mux.HandleFunc("PUT /api/persons/{id}", s.handleUpdatePerson)
@@ -87,17 +113,59 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/intents/{id}", s.handleCancelIntent)
 	mux.HandleFunc("GET /api/memory/export.md", s.handleMemoryExport)
 	mux.HandleFunc("POST /api/memory/capture", s.handleCaptureEpisode)
+	// 语音口令判定：唤醒词/指令窗口/片段合并都在 Go，手机只执行动作。
+	mux.HandleFunc("POST /api/voice/text", s.handleVoiceText)
 	mux.HandleFunc("GET /api/memory/search", s.handleSearchEpisodes)
 	mux.HandleFunc("GET /api/reminders", s.handleReminders)
 	mux.HandleFunc("GET /api/outbox", s.handleOutbox)
 	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("POST /api/me/consent", s.handleConsent)
 	mux.HandleFunc("GET /api/settings/llm", s.handleGetLLMSettings)
+	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings/llm", s.handlePutLLMSettings)
+	mux.HandleFunc("POST /api/settings/models", s.handleSaveModel)
+	mux.HandleFunc("POST /api/settings/models/{id}/activate", s.handleActivateModel)
+	mux.HandleFunc("DELETE /api/settings/models/{id}", s.handleDeleteModel)
+	mux.HandleFunc("PUT /api/settings/search", s.handlePutSearch)
+	mux.HandleFunc("PUT /api/settings/relay", s.handlePutRelay)
+	mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
+	mux.HandleFunc("GET /api/agents", s.handleListAgents)
+	mux.HandleFunc("POST /api/agents/open", s.handleOpenAgent)
+	mux.HandleFunc("POST /api/agents/delegate", s.handleDelegateAgent)
+	mux.HandleFunc("GET /api/agent-jobs", s.handleListAgentJobs)
+	mux.HandleFunc("GET /api/agent-jobs/{id}", s.handleGetAgentJob)
+	mux.HandleFunc("POST /api/agent-jobs/{id}/cancel", s.handleCancelAgentJob)
+	mux.HandleFunc("GET /api/agent-notifications", s.handleAgentNotifications)
+	mux.HandleFunc("POST /api/agent-notifications/ack", s.handleAckAgentNotifications)
+	mux.HandleFunc("POST /api/agents/a2a", s.handleRegisterA2A)
+	mux.HandleFunc("GET /api/agents/providers", s.handleAgentProviders)
+	mux.HandleFunc("POST /api/agents/switch", s.handleSwitchAgentProvider)
 	mux.HandleFunc("POST /api/voice/transcribe", s.handleTranscribe)
 	mux.HandleFunc("POST /api/voice/speak", s.handleSpeak)
 	mux.HandleFunc("GET /ws/device", s.handleDeviceWS)
 	mux.HandleFunc("POST /api/screen", s.handleScreen)
+	mux.HandleFunc("POST /api/device/emergency", s.handleDeviceEmergency)
+
+	// 手机连接：中继配对与通道管理（仅本机可访问；未启用时 503）。
+	mux.HandleFunc("POST /api/relay/pair-code", s.handleRelayPairCode)
+	mux.HandleFunc("GET /api/relay/status", s.handleRelayStatus)
+	mux.HandleFunc("GET /api/relay/channels", s.handleRelayChannels)
+	mux.HandleFunc("DELETE /api/relay/channels/{id}", s.handleRelayRevokeChannel)
+
+	// 异步任务：提交/查询/取消（长任务不占用一次 HTTP 请求）。
+	mux.HandleFunc("POST /api/jobs", s.handleJobSubmit)
+	mux.HandleFunc("GET /api/jobs", s.handleJobList)
+	mux.HandleFunc("GET /api/jobs/{id}", s.handleJobGet)
+	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleJobCancel)
+
+	// 手机端：配对电脑、查看状态、发指令并取回结果（未启用时 503）。
+	mux.HandleFunc("POST /api/relay/phone/pair", s.handlePhonePair)
+	mux.HandleFunc("DELETE /api/relay/phone/pair", s.handlePhoneUnpair)
+	mux.HandleFunc("GET /api/relay/phone/status", s.handlePhoneStatus)
+	mux.HandleFunc("POST /api/relay/phone/send", s.handlePhoneSend)
+	mux.HandleFunc("POST /api/relay/phone/job", s.handlePhoneJobSubmit)
+	mux.HandleFunc("GET /api/relay/phone/job/{id}", s.handlePhoneJobStatus)
+	mux.HandleFunc("DELETE /api/relay/phone/job/{id}", s.handlePhoneJobCancel)
 
 	// 通知中心（Inbox nil 时端点 503）。
 	mux.HandleFunc("POST /api/inbox/events", s.handleInboxIngest)
@@ -135,6 +203,17 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
 }
+
+// Flush 让 SSE 处理器能通过 http.Flusher 实时推送；否则 /api/chat/stream
+// 会因类型断言失败直接返回 500。
+func (w *statusWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// Unwrap 让 http.ResponseController 能取到底层 ResponseWriter。
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // Hijack 支持 WebSocket 升级（把握手交给底层连接）。
 func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -195,22 +274,28 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // currentUser 从 X-User-Id 请求头解析演示用户，否则回退到第一个
 // （自动预置的）用户。MVP 中认证是桩。
 func (s *Server) currentUser(w http.ResponseWriter, r *http.Request) *store.User {
-	ctx := r.Context()
-	if id := r.Header.Get("X-User-Id"); id != "" {
-		u, err := s.Repos.Users.Get(ctx, id)
-		if err == nil {
-			return u
-		}
-	}
-	// 演示回退：自动预置一个普通用户。
-	users, err := s.Repos.Users.ListAll(ctx)
-	if err == nil && len(users) > 0 {
-		return &users[0]
-	}
-	u := &store.User{UserType: store.UserGeneral, Name: "演示用户", TZ: "Asia/Shanghai"}
-	if err := s.Repos.Users.Create(ctx, u); err != nil {
+	u, err := s.resolveUser(r.Context(), r.Header.Get("X-User-Id"))
+	if err != nil {
 		writeError(w, 500, err.Error())
 		return nil
 	}
 	return u
+}
+
+// resolveUser 是不写响应的用户解析，供流式接口等无法中途改状态码的路径使用。
+func (s *Server) resolveUser(ctx context.Context, headerUserID string) (*store.User, error) {
+	if headerUserID != "" {
+		if u, err := s.Repos.Users.Get(ctx, headerUserID); err == nil {
+			return u, nil
+		}
+	}
+	users, err := s.Repos.Users.ListAll(ctx)
+	if err == nil && len(users) > 0 {
+		return &users[0], nil
+	}
+	u := &store.User{UserType: store.UserGeneral, Name: "演示用户", TZ: "Asia/Shanghai"}
+	if err := s.Repos.Users.Create(ctx, u); err != nil {
+		return nil, err
+	}
+	return u, nil
 }

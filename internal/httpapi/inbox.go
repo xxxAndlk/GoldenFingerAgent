@@ -163,6 +163,10 @@ func (s *Server) handleInboxCreateSnooze(w http.ResponseWriter, r *http.Request)
 		EventID string `json:"event_id"`
 		Minutes int    `json:"minutes"`
 		FireAt  string `json:"fire_at"`
+		// 内容匹配：手机端可只上报通知字段，由服务端找到对应事件。
+		SourcePkg string `json:"source_pkg"`
+		Title     string `json:"title"`
+		Text      string `json:"text"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "bad json: "+err.Error())
@@ -177,7 +181,13 @@ func (s *Server) handleInboxCreateSnooze(w http.ResponseWriter, r *http.Request)
 		}
 		fireAt = &t
 	}
-	sn, err := svc.CreateSnooze(r.Context(), user.ID, req.EventID, req.Minutes, fireAt)
+	var sn *store.InboxSnooze
+	var err error
+	if req.EventID == "" {
+		sn, err = svc.CreateSnoozeByMatch(r.Context(), user.ID, req.SourcePkg, req.Title, req.Text, req.Minutes, fireAt)
+	} else {
+		sn, err = svc.CreateSnooze(r.Context(), user.ID, req.EventID, req.Minutes, fireAt)
+	}
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "event not found")

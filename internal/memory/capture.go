@@ -91,6 +91,7 @@ func (s *Service) CaptureEpisode(ctx context.Context, in CaptureInput) (*Capture
 	if err := s.eps.Create(ctx, e); err != nil {
 		return nil, err
 	}
+	s.mirrorEpisode(ctx, "episode:"+e.ID, e.OwnerUserID, e.Summary, source, at)
 	owner := in.OwnerUserID
 	detail, _ := json.Marshal(map[string]any{"source": source, "needs_context": needsContext})
 	_ = s.audit.Append(ctx, &owner, "device", "episode_capture", e.ID, detail)

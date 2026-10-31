@@ -45,19 +45,19 @@ func NewService(repo *store.TaskRepo, queue Queue, audit *store.AuditRepo, now f
 
 // CreateInput 是规范化的任务创建请求。
 type CreateInput struct {
-		OwnerUserID    string
-		Kind           string // intent|fact|alarm|note
-		Title          string
+	OwnerUserID    string
+	Kind           string // intent|fact|alarm|note
+	Title          string
 	TimeExprRaw    string
 	AbsTime        *time.Time
 	Deadline       *time.Time
 	Confidence     float64
 	SourceMsgID    *string
-		LinkedPersonID *string
-		EventTemplate  string
-		Recurrence     string // 周期表达式 daily@HH:MM / weekly@WnTHH:MM
-		AutoAccept     bool   // >= task_auto 阈值 → 直接排定（可撤销）
-	}
+	LinkedPersonID *string
+	EventTemplate  string
+	Recurrence     string // 周期表达式 daily@HH:MM / weekly@WnTHH:MM
+	AutoAccept     bool   // >= task_auto 阈值 → 直接排定（可撤销）
+}
 
 // Create 按门禁插入一条 draft/pending_confirm/scheduled 任务，然后
 // 为已接受的任务入队提醒。

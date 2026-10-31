@@ -22,26 +22,29 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import com.goldenfinger.butler.GoBridge
 import com.goldenfinger.butler.MainActivity
 import com.goldenfinger.butler.R
 import java.util.Locale
 
 /**
- * 持续听写服务：识别最终语句，附上最近上下文后写入本机情景记忆。
+ * 持续听写服务。
+ *
+ * 这里只做「能力」：系统语音识别、语音播报、前台通知与重连退避。
+ * 唤醒词、指令窗口、片段合并、上下文窗口等判定全部在 Go
+ * （`POST /api/voice/text`），本服务只执行 Go 返回的动作。
  * 原始音频只交给系统 SpeechRecognizer，不写入 App 文件，也不发送到 Go 服务。
  */
 class MemoryCaptureService : Service(), RecognitionListener {
     private val handler = Handler(Looper.getMainLooper())
     private var recognizer: SpeechRecognizer? = null
     private var destroyed = false
-    private var pending: PendingSegment? = null
-    private val recent = java.util.ArrayDeque<RecentSegment>()
     private var tts: TextToSpeech? = null
     private var speaking = false
-    private var awaitingCommandUntil = 0L
 
     private val restartRunnable = Runnable { startListening() }
-    private val flushRunnable = Runnable { flushPending("") }
+    /** 等待后文超时后请 Go 收尾当前片段（时长由 Go 的 next_flush_ms 决定）。 */
+    private val flushRunnable = Runnable { requestFlush() }
 
     override fun onCreate() {
         super.onCreate()
@@ -110,46 +113,50 @@ class MemoryCaptureService : Service(), RecognitionListener {
             ?.firstOrNull()
             ?.trim()
             .orEmpty()
-        if (text.isNotEmpty()) handleSpokenText(text)
+        if (text.isNotEmpty()) {
+            handler.removeCallbacks(flushRunnable)
+            MemoryCaptureApi.onText(deviceId(), text, flush = false) { verdict ->
+                handler.post { if (!destroyed) handleVerdict(verdict) }
+            }
+        }
         scheduleRestart(250)
     }
 
-    private fun handleSpokenText(text: String) {
-        val now = System.currentTimeMillis()
-        val compact = text.replace(" ", "")
-        val wakeAt = compact.indexOf(WAKE_WORD)
-        if (wakeAt >= 0) {
-            flushPending("")
-            val command = compact.substring(wakeAt + WAKE_WORD.length)
-                .trimStart('，', ',', '。', '.', '：', ':')
-            if (command.isEmpty()) {
-                awaitingCommandUntil = now + COMMAND_WINDOW_MS
-                speak("我在")
-            } else {
-                awaitingCommandUntil = 0
-                acceptFinal(command)
-                askAssistant(command)
+    /** 执行 Go 判定出的动作；capture 已由 Go 落库，这里无需处理。 */
+    private fun handleVerdict(verdict: MemoryCaptureApi.Verdict) {
+        var spoken = false
+        for (action in verdict.actions) {
+            when (action.type) {
+                ACTION_SPEAK -> if (action.text.isNotEmpty()) {
+                    speak(action.text)
+                    spoken = true
+                }
+                ACTION_CHAT -> if (action.text.isNotEmpty()) {
+                    MemoryCaptureApi.chat(action.text) { reply ->
+                        handler.post { if (!destroyed) speak(reply) }
+                    }
+                    spoken = true
+                }
             }
-            return
         }
-        if (now < awaitingCommandUntil) {
-            awaitingCommandUntil = 0
-            acceptFinal(text)
-            askAssistant(text)
-            return
+        // 没有需要播报的动作时，等 Go 给的合并时限后再请它收尾当前片段。
+        if (!spoken && !destroyed) {
+            handler.removeCallbacks(flushRunnable)
+            handler.postDelayed(flushRunnable, verdict.nextFlushMs)
         }
-        acceptFinal(text)
     }
 
-    private fun askAssistant(command: String) {
-        MemoryCaptureApi.chat(command) { reply ->
-            handler.post { if (!destroyed) speak(reply) }
+    private fun requestFlush() {
+        if (destroyed) return
+        MemoryCaptureApi.onText(deviceId(), text = "", flush = true) { verdict ->
+            handler.post { if (!destroyed) handleVerdict(verdict) }
         }
     }
 
     private fun speak(text: String) {
         speaking = true
         handler.removeCallbacks(restartRunnable)
+        handler.removeCallbacks(flushRunnable)
         recognizer?.stopListening()
         val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "assistant-reply")
         if (result != TextToSpeech.SUCCESS) finishSpeaking()
@@ -160,28 +167,6 @@ class MemoryCaptureService : Service(), RecognitionListener {
             speaking = false
             scheduleRestart(250)
         }
-    }
-
-    private fun acceptFinal(text: String) {
-        // 下一句很快到来时，它同时是上一句的后文；否则 4 秒后保存上一句。
-        flushPending(text)
-        val now = System.currentTimeMillis()
-        while (recent.isNotEmpty() && now - recent.first.atMillis > CONTEXT_WINDOW_MS) {
-            recent.removeFirst()
-        }
-        val before = recent.toList().takeLast(4).joinToString("。") { it.text }
-        pending = PendingSegment(text, before, now)
-        handler.removeCallbacks(flushRunnable)
-        handler.postDelayed(flushRunnable, CONTEXT_WAIT_MS)
-    }
-
-    private fun flushPending(after: String) {
-        val segment = pending ?: return
-        handler.removeCallbacks(flushRunnable)
-        pending = null
-        MemoryCaptureApi.capture(segment.text, segment.before, after, segment.atMillis)
-        recent.addLast(RecentSegment(segment.text, segment.atMillis))
-        while (recent.size > 6) recent.removeFirst()
     }
 
     override fun onError(error: Int) {
@@ -203,7 +188,9 @@ class MemoryCaptureService : Service(), RecognitionListener {
     override fun onDestroy() {
         destroyed = true
         handler.removeCallbacks(restartRunnable)
-        flushPending("")
+        // 退出前把暂存片段交给 Go 收尾，避免丢掉最后一句。
+        MemoryCaptureApi.onText(deviceId(), text = "", flush = true) { }
+        handler.removeCallbacks(flushRunnable)
         recognizer?.stopListening()
         recognizer?.destroy()
         recognizer = null
@@ -212,6 +199,8 @@ class MemoryCaptureService : Service(), RecognitionListener {
         tts = null
         super.onDestroy()
     }
+
+    private fun deviceId(): String = GoBridge.deviceId().orEmpty()
 
     private fun startForegroundCompat() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -255,20 +244,17 @@ class MemoryCaptureService : Service(), RecognitionListener {
     override fun onPartialResults(partialResults: Bundle?) = Unit
     override fun onEvent(eventType: Int, params: Bundle?) = Unit
 
-    private data class PendingSegment(val text: String, val before: String, val atMillis: Long)
-    private data class RecentSegment(val text: String, val atMillis: Long)
-
     companion object {
         private const val TAG = "MemoryCaptureService"
         private const val CHANNEL_ID = "memory_capture"
         private const val NOTIFICATION_ID = 1003
-        private const val CONTEXT_WAIT_MS = 4000L
-        private const val CONTEXT_WINDOW_MS = 30_000L
-        private const val COMMAND_WINDOW_MS = 10_000L
-        private const val WAKE_WORD = "小金小金"
         private const val PREF_NAME = "memory_capture"
         private const val KEY_ENABLED = "enabled"
         private const val ACTION_STOP = "com.goldenfinger.butler.memory.STOP"
+
+        // 动作类型与 Go 侧 internal/voice 保持一致。
+        private const val ACTION_SPEAK = "speak"
+        private const val ACTION_CHAT = "chat"
 
         /** 用户授权麦克风后调用，表示明确开启持续记录。 */
         fun enableAndStart(context: Context) {

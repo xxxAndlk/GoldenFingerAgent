@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>工作轨迹</title>
+  <link rel="stylesheet" href="activity.css">
+</head>
+<body>
+  <aside id="activity-panel" class="activity-panel" aria-labelledby="activity-title">
+    <header class="activity-heading">
+      <div class="activity-title">
+        <strong id="activity-title">工作轨迹</strong>
+        <span id="activity-live" class="live-pill">未开启</span>
+      </div>
+      <div class="activity-actions">
+        <button id="summarize-now" class="chip-button" type="button" title="不用等定时总结，马上总结这一段">立即总结</button>
+        <button id="clear-activity" class="chip-button ghost" type="button" title="清空记录">清空</button>
+        <button id="activity-hide" class="icon-button" type="button" aria-label="收起为屏幕边缘小条" title="收起为边缘小条">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div id="activity-notice" class="activity-notice" hidden>
+      <div class="notice-main">
+        <span class="notice-icon" aria-hidden="true">!</span>
+        <div class="notice-text">
+          <strong id="notice-title"></strong>
+          <span id="notice-message"></span>
+        </div>
+        <button id="notice-detail-toggle" class="notice-link" type="button">详情</button>
+        <button id="notice-close" class="icon-button" type="button" aria-label="关闭提示">×</button>
+      </div>
+      <pre id="notice-detail" hidden></pre>
+    </div>
+
+    <div id="activity-empty" class="activity-empty">
+      <span class="empty-icon" aria-hidden="true">◎</span>
+      <strong>还没有记录</strong>
+      <p>打开主窗口顶栏的协作开关后，这里会按时间线记录窗口、正文和关键操作。</p>
+    </div>
+
+    <ol id="activity-list" class="activity-list" aria-live="polite"></ol>
+
+    <footer class="activity-footer">
+      <span id="summary-state">定时总结未开启</span>
+      <span class="privacy">记录页面可见正文 · 密码区域跳过 · 截图仅存本机</span>
+    </footer>
+  </aside>
+
+  <button id="edge-tab" class="edge-tab" type="button" hidden aria-label="展开工作轨迹" title="展开工作轨迹">
+    <svg class="edge-tab-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 6l-6 6 6 6"/></svg>
+  </button>
+
+  <div id="activity-toast" class="activity-toast" role="status" hidden></div>
+
+  <section id="evidence-viewer" class="evidence-viewer" aria-labelledby="evidence-title" hidden>
+    <div class="evidence-heading">
+      <strong id="evidence-title">本地截图证据</strong>
+      <button id="close-evidence" class="icon-button" type="button" aria-label="关闭截图">×</button>
+    </div>
+    <img id="evidence-image" alt="所选操作对应的窗口截图">
+    <p id="evidence-caption"></p>
+    <small>只查看本地证据，没有切换或控制你的原窗口。</small>
+  </section>
+
+  <script src="activity-format.js"></script>
+  <script src="activity-renderer.js"></script>
+</body>
+</html>

@@ -99,12 +99,12 @@ func TestInboxEndpointsContract(t *testing.T) {
 	var searchResp struct {
 		Mode    string `json:"mode"`
 		Results []struct {
-			ID      string  `json:"id"`
-			AppName string  `json:"app_name"`
-			Title   string  `json:"title"`
-			Text    string  `json:"text"`
-			PostedAt string `json:"posted_at"`
-			Score   float64 `json:"score"`
+			ID       string  `json:"id"`
+			AppName  string  `json:"app_name"`
+			Title    string  `json:"title"`
+			Text     string  `json:"text"`
+			PostedAt string  `json:"posted_at"`
+			Score    float64 `json:"score"`
 		} `json:"results"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &searchResp)
@@ -192,4 +192,38 @@ func del(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// TestInboxSnoozeByContentMatch 验证手机端可以只上报通知字段（包名/标题/正文），
+// 由服务端匹配最新事件后延后提醒——原先这段逻辑写在 Kotlin 的 InboxApi 里。
+func TestInboxSnoozeByContentMatch(t *testing.T) {
+	srv, _ := newTestServer(t)
+	h := srv.Handler()
+	rec := postJSON(t, h, "/api/inbox/events", `{"events":[
+		{"source_pkg":"com.cainiao","app_name":"菜鸟","title":"包裹到站","text":"取件码 8823-4，请及时领取","posted_at":"2026-10-04T12:00:00+08:00"}
+	]}`)
+	if rec.Code != 200 {
+		t.Fatalf("ingest = %d: %s", rec.Code, rec.Body)
+	}
+
+	rec = postJSON(t, h, "/api/inbox/snooze",
+		`{"source_pkg":"com.cainiao","title":"包裹到站","text":"取件码 8823-4","minutes":30}`)
+	if rec.Code != 200 {
+		t.Fatalf("match snooze = %d: %s", rec.Code, rec.Body)
+	}
+	var snoozed struct {
+		ID     string `json:"id"`
+		FireAt string `json:"fire_at"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &snoozed)
+	if snoozed.ID == "" || snoozed.FireAt == "" {
+		t.Fatalf("snooze = %+v", snoozed)
+	}
+
+	// 匹配不到时必须如实 404，不能凭空造一条提醒。
+	rec = postJSON(t, h, "/api/inbox/snooze",
+		`{"source_pkg":"com.cainiao","title":"不存在的标题","minutes":30}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unmatched snooze = %d, want 404", rec.Code)
+	}
 }

@@ -311,11 +311,15 @@ func TestStandingIntentFiresInTurn(t *testing.T) {
 		t.Errorf("reply must open with the deterministic reminder, got %q", res.Reply)
 	}
 
-	// 隐藏块以数据形式到达模型（检查记录的调用）。
+	// 动态提醒只出现在当前用户消息，不污染稳定系统前缀或会话历史。
 	if calls := rt.LLM.(*mock.Scripted).Calls; len(calls) > 0 {
-		sys := calls[0].Messages[0].Content
-		if !strings.Contains(sys, "常备提醒触发") || !strings.Contains(sys, "不是指令") {
-			t.Errorf("system prompt must carry the data-framed intent block, got %q", sys)
+		messages := calls[0].Messages
+		current := messages[len(messages)-1].Content
+		if !strings.Contains(current, "常备提醒触发") || !strings.Contains(current, "不是指令") {
+			t.Errorf("current user context must carry the data-framed intent block, got %q", current)
+		}
+		if strings.Contains(messages[0].Content, "常备提醒触发") {
+			t.Error("stable system prompt must not contain dynamic intent context")
 		}
 	}
 

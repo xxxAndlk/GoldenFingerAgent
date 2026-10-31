@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"goldenfinger/agent/internal/skill"
 )
 
 //go:embed prompts/butler.md
@@ -16,6 +18,7 @@ var butlerPrompt string
 type PromptBuilder struct {
 	Memory MemoryContext // 通常是 *memory.Service 适配器
 	UserFn func(ctx context.Context, userID string) UserContext
+	Skills *skill.Pool
 }
 
 // MemoryContext 构建受 token 预算约束的记忆块。
@@ -31,11 +34,13 @@ type UserContext struct {
 	TZ       string
 }
 
-// Build 渲染一轮对话的完整系统提示。
-func (b *PromptBuilder) Build(ctx context.Context, s *Session, now time.Time) (string, error) {
-	var sb strings.Builder
-	sb.WriteString(butlerPrompt)
+// Stable 返回跨轮次逐字节不变的系统前缀。时间、记忆和澄清状态不能放进
+// 这里，否则 DeepSeek 从第 0 个 token 开始的前缀缓存会在系统消息处中断。
+func (b *PromptBuilder) Stable() string { return butlerPrompt }
 
+// BuildDynamic 构建只附加到本轮用户消息末尾的动态上下文，不写回会话历史。
+func (b *PromptBuilder) BuildDynamic(ctx context.Context, s *Session, now time.Time) (string, error) {
+	var sb strings.Builder
 	user := UserContext{UserID: s.UserID, TZ: "Asia/Shanghai"}
 	if b.UserFn != nil {
 		user = b.UserFn(ctx, s.UserID)
@@ -52,11 +57,24 @@ func (b *PromptBuilder) Build(ctx context.Context, s *Session, now time.Time) (s
 		}
 	}
 
+	if b.Skills != nil {
+		sb.WriteString(b.Skills.MetadataBlock())
+	}
+
 	if s.Pending != nil {
 		fmt.Fprintf(&sb, "\n## 正在澄清中\n问题: %s\n请优先完成这个澄清，不要开启新话题。\n", s.Pending.Question)
 	}
-
 	return sb.String(), nil
+}
+
+// Build 保留完整提示词契约供其他调用方使用；对话循环使用 Stable 与
+// BuildDynamic 分离静态前缀和本轮动态内容，以提高缓存复用率。
+func (b *PromptBuilder) Build(ctx context.Context, s *Session, now time.Time) (string, error) {
+	dynamic, err := b.BuildDynamic(ctx, s, now)
+	if err != nil {
+		return "", err
+	}
+	return b.Stable() + dynamic, nil
 }
 
 func loadLocation(tz string) *time.Location {

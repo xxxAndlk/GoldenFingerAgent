@@ -41,8 +41,20 @@ type ToolSpec struct {
 }
 
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+	PromptTokens          int  `json:"prompt_tokens"`
+	CompletionTokens      int  `json:"completion_tokens"`
+	PromptCacheHitTokens  int  `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens int  `json:"prompt_cache_miss_tokens,omitempty"`
+	CacheReported         bool `json:"cache_reported"`
+}
+
+// CacheHitRate 返回真实服务端缓存命中率；未上报或输入为零时第二个返回值为 false。
+func (u Usage) CacheHitRate() (float64, bool) {
+	total := u.PromptCacheHitTokens + u.PromptCacheMissTokens
+	if !u.CacheReported || total <= 0 {
+		return 0, false
+	}
+	return float64(u.PromptCacheHitTokens) / float64(total), true
 }
 
 type ChatRequest struct {
@@ -52,6 +64,9 @@ type ChatRequest struct {
 	Temperature float64
 	MaxTokens   int
 	JSONMode    bool // 请求 JSON 对象输出（抽取回退）
+	// ReasoningEffort 是推理强度（low|high|max）；空表示不显式声明，
+	// 由服务端按模型默认值处理。
+	ReasoningEffort string
 }
 
 type ChatResponse struct {

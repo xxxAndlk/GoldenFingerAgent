@@ -12,6 +12,27 @@ import (
 	"goldenfinger/agent/internal/llm"
 )
 
+func TestNormalizeProtocolPreservesDeepSeekResponses(t *testing.T) {
+	if got := NormalizeProtocol(ProtocolResponses, "https://api.deepseek.com"); got != ProtocolResponses {
+		t.Fatalf("DeepSeek protocol = %q, want %q", got, ProtocolResponses)
+	}
+	if got := NormalizeProtocol(ProtocolResponses, "https://one.example"); got != ProtocolResponses {
+		t.Fatalf("other gateway protocol = %q, want %q", got, ProtocolResponses)
+	}
+}
+
+func TestResponsesReportsCacheUsage(t *testing.T) {
+	var raw responsesResponse
+	if err := json.Unmarshal([]byte(`{"status":"completed","usage":{"input_tokens":10,"output_tokens":5,"input_tokens_details":{"cached_tokens":6}}}`), &raw); err != nil {
+		t.Fatal(err)
+	}
+	usage := convertResponse(&raw).Usage
+	rate, ok := usage.CacheHitRate()
+	if !usage.CacheReported || usage.PromptCacheHitTokens != 6 || usage.PromptCacheMissTokens != 4 || !ok || rate != 0.6 {
+		t.Fatalf("cache usage = %+v, hit rate = %v, reported = %v", usage, rate, ok)
+	}
+}
+
 func TestChatBuildsRequestAndParsesToolCalls(t *testing.T) {
 	var gotBody responsesRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

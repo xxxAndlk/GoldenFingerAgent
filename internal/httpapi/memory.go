@@ -17,7 +17,7 @@ func (s *Server) handleListPersons(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 500, err.Error())
 		return
 	}
-		// 为记忆面板包含每个人物的当前事实。
+	// 为记忆面板包含每个人物的当前事实。
 	type personWithFacts struct {
 		store.Person
 		Aliases []string     `json:"aliases"`

@@ -102,10 +102,10 @@ func TestStoreAndLatestScreen(t *testing.T) {
 	hub := NewHub()
 	defer hub.Close()
 	s := &Screen{
-		DeviceID: "d1",
-		Nodes:    []ScreenNode{{Text: "微信", Index: 0, Clickable: true}},
+		DeviceID:      "d1",
+		Nodes:         []ScreenNode{{Text: "微信", Index: 0, Clickable: true}},
 		ScreenshotB64: "aW1n",
-		At:       time.Now(),
+		At:            time.Now(),
 	}
 	hub.StoreScreen(s)
 	got := hub.LatestScreen()

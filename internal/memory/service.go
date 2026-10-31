@@ -37,6 +37,7 @@ type Service struct {
 	eps             *store.EpisodeRepo
 	audit           *store.AuditRepo
 	embed           llm.Embedder
+	longTerm        LongTermMemory
 	th              nlu.Thresholds
 	recencyHalfLife time.Duration
 	now             func() time.Time
@@ -202,6 +203,8 @@ func (s *Service) SaveFact(ctx context.Context, in SaveFactInput) (Outcome, *sto
 	if err := s.facts.Insert(ctx, f); err != nil {
 		return "", nil, err
 	}
+	s.mirrorEpisode(ctx, "fact:"+f.ID, in.OwnerUserID,
+		fmt.Sprintf("%s 的 %s：%s", in.PersonName, in.FactType, in.ValueText), "person_fact", now)
 	owner := in.OwnerUserID
 	detail, _ := json.Marshal(map[string]any{"fact_id": f.ID, "status": status})
 	_ = s.audit.Append(ctx, &owner, in.Actor, "fact_write", f.ID, detail)
@@ -227,6 +230,12 @@ func (s *Service) ForgetPerson(ctx context.Context, ownerID, personID string) er
 		return err
 	}
 	_ = s.eps.ClearPersonRefs(ctx, ownerID, p.CanonicalName)
+	// 长期记忆里由该人物派生的事实也要真删，否则“忘了它”只是半途。
+	if facts, err := s.facts.ListByPerson(ctx, personID); err == nil {
+		for _, f := range facts {
+			s.forgetLongTerm(ctx, ForgetRequest{OwnerID: ownerID, FactID: f.ID})
+		}
+	}
 	log.Printf("[memory] forget person: %q (%s) — cascade: aliases+facts hard-deleted, episode refs scrubbed", p.CanonicalName, personID)
 	owner := ownerID
 	// 审计只保留删除动作本身，不保留内容（PIPL）。
@@ -250,6 +259,7 @@ func (s *Service) ForgetFact(ctx context.Context, ownerID, factID string) error 
 	if err := s.facts.HardDelete(ctx, factID); err != nil {
 		return err
 	}
+	s.forgetLongTerm(ctx, ForgetRequest{OwnerID: ownerID, FactID: factID})
 	log.Printf("[memory] forget fact: %s (%q)", factID, f.ValueText)
 	owner := ownerID
 	return s.audit.Append(ctx, &owner, "user", "fact_forget", factID, nil)
@@ -316,6 +326,7 @@ func (s *Service) SaveNote(ctx context.Context, ownerID, text, rawRef string, so
 	if err := s.eps.Create(ctx, e); err != nil {
 		return nil, err
 	}
+	s.mirrorEpisode(ctx, "episode:"+e.ID, ownerID, e.Summary, "note", e.CreatedAt)
 	owner := ownerID
 	_ = s.audit.Append(ctx, &owner, "agent", "note_save", e.ID, nil)
 	return e, nil
@@ -324,4 +335,16 @@ func (s *Service) SaveNote(ctx context.Context, ownerID, text, rawRef string, so
 // FactLine 把一条事实渲染为一行提示文本。
 func FactLine(f *store.Fact) string {
 	return fmt.Sprintf("%s: %s", f.FactType, f.ValueText)
+}
+
+// forgetLongTerm 把遗忘请求同步到可替换长期记忆后端。
+// 后端不支持删除时只记录日志：SQLite 侧的删除已经生效，
+// 但不能对用户谎称“全部忘掉”。
+func (s *Service) forgetLongTerm(ctx context.Context, request ForgetRequest) {
+	if s.longTerm == nil {
+		return
+	}
+	if err := s.longTerm.Forget(ctx, request); err != nil && !errors.Is(err, ErrUnsupported) {
+		log.Printf("[memory] long-term forget deferred (%+v): %v", request, err)
+	}
 }

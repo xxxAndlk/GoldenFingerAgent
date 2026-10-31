@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>金手指设置</title>
+  <link rel="stylesheet" href="windows.css">
+</head>
+<body>
+  <main class="aux-shell settings-shell">
+    <header class="aux-header">
+      <div><h1>设置</h1><p>模型、协作记录与工作轨迹</p></div>
+    </header>
+
+    <section class="window-section">
+      <div class="section-heading"><h2>模型设置</h2><span>JSON 持久化与热更新</span></div>
+      <form id="settings-form" class="settings-form">
+        <label for="base-url">Base URL</label>
+        <input id="base-url" type="url" required placeholder="https://…/v1">
+        <label for="model-name">模型名</label>
+        <input id="model-name" type="text" required placeholder="服务支持的模型名称">
+        <label for="protocol">接口协议</label>
+        <select id="protocol">
+          <option value="chat_completions">Chat Completions（兼容接口）</option>
+          <option value="responses">Responses（DeepSeek / OpenAI）</option>
+        </select>
+        <label for="api-key">API Key</label>
+        <input id="api-key" type="password" autocomplete="off" placeholder="留空或保留掩码则不修改">
+        <div class="form-footer">
+          <span id="settings-status" class="status-text" role="status">正在读取…</span>
+          <button id="save-settings" class="primary-button" type="submit">保存</button>
+        </div>
+      </form>
+      <code id="settings-path" class="path-text"></code>
+    </section>
+
+    <section class="window-section">
+      <div class="section-heading"><h2>工作轨迹</h2><span>独立于聊天窗口</span></div>
+      <div class="setting-row">
+        <label for="activity-opacity">轨迹浮窗不透明度</label>
+        <input id="activity-opacity" type="range" min="20" max="95" step="1" value="76">
+        <output id="activity-opacity-value" for="activity-opacity">76%</output>
+      </div>
+      <div class="setting-row">
+        <span>展示工作轨迹</span>
+        <label class="switch"><input id="activity-visible-toggle" type="checkbox" checked><span></span></label>
+      </div>
+    </section>
+
+    <section class="window-section">
+      <div class="section-heading"><h2>协作模式</h2><span>授权后才开始观察</span></div>
+      <p class="section-description">记录页面标题和可见正文；内容变化时保存本地截图，密码区域会跳过。</p>
+      <div class="setting-row">
+        <span>启用协作记录</span>
+        <label class="switch"><input id="collab-toggle" type="checkbox"><span></span></label>
+      </div>
+      <div class="form-footer">
+        <span id="collab-status" class="status-text">未授权，不会观察</span>
+        <button id="summarize" class="secondary-button" disabled>立即总结</button>
+      </div>
+    </section>
+  </main>
+  <script src="settings-renderer.js"></script>
+</body>
+</html>

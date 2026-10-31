@@ -9,7 +9,7 @@
 > - [API 手册](./docs/API手册.md)
 > - [通知通道专题](./docs/通知通道专题.md)
 >
-> 需求与技术方案见 [陪伴型AI管家_需求与技术方案 .md](./陪伴型AI管家_需求与技术方案%20.md)；竞品分析见 [竞品深调报告.md](./竞品深调报告.md)；开发任务清单见 [TODO.md](./TODO.md)。
+> 需求与技术方案见 [docs/archive/需求与技术方案.md](docs/archive/需求与技术方案.md)；竞品分析见 [docs/archive/竞品深调报告.md](docs/archive/竞品深调报告.md)；开发任务清单见 [docs/TODO.md](docs/TODO.md)。
 
 ## 功能
 

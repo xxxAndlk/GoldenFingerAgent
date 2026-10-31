@@ -17,7 +17,8 @@ import java.util.concurrent.TimeUnit
 
 /**
  * ScreenReporter：界面变化去抖 500ms 后，POST /api/screen 上报
- * {device_id, nodes, screenshot_b64}（HTTP 带 X-Token）。
+ * {device_id, package, nodes, screenshot_b64}（HTTP 带 X-Token）。
+ * package 供服务端判定支付/银行类页面（安全判定在 Go 侧）。
  * device_id 用 ANDROID_ID 派生（稳定、无需额外权限）。
  */
 class ScreenReporter(
@@ -50,6 +51,7 @@ class ScreenReporter(
 
         val body = JSONObject()
             .put("device_id", deviceId())
+            .put("package", root.packageName?.toString() ?: "")
             .put("nodes", nodes)
             .put("screenshot_b64", screenshot)
             .toString()

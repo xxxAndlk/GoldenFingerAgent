@@ -21,16 +21,34 @@ type Client struct {
 	BaseURL    string
 	APIKey     string
 	Model      string
+	Protocol   string
 	EmbedModel string
 	HTTP       *http.Client
 }
 
+const (
+	ProtocolResponses       = "responses"
+	ProtocolChatCompletions = "chat_completions"
+)
+
+func NormalizeProtocol(protocol, baseURL string) string {
+	if protocol == ProtocolChatCompletions || protocol == ProtocolResponses {
+		return protocol
+	}
+	return ProtocolResponses
+}
+
 func New(baseURL, apiKey, model string) *Client {
+	return NewWithProtocol(baseURL, apiKey, model, ProtocolResponses)
+}
+
+func NewWithProtocol(baseURL, apiKey, model, protocol string) *Client {
 	return &Client{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		APIKey:  apiKey,
-		Model:   model,
-		HTTP:    &http.Client{Timeout: 120 * time.Second},
+		BaseURL:  strings.TrimRight(baseURL, "/"),
+		APIKey:   apiKey,
+		Model:    model,
+		Protocol: NormalizeProtocol(protocol, baseURL),
+		HTTP:     &http.Client{Timeout: 120 * time.Second},
 	}
 }
 
@@ -67,6 +85,12 @@ type responsesRequest struct {
 	MaxOutputTokens int         `json:"max_output_tokens,omitempty"`
 	Stream          bool        `json:"stream,omitempty"`
 	Text            *textSpec   `json:"text,omitempty"`
+	Reasoning       *reasoning  `json:"reasoning,omitempty"`
+}
+
+// reasoning 是 Responses 协议的推理强度声明（low/medium/high）。
+type reasoning struct {
+	Effort string `json:"effort"`
 }
 
 type textSpec struct {
@@ -92,8 +116,11 @@ type responsesResponse struct {
 	Status string       `json:"status"` // "completed" | "incomplete" | "failed" | ...
 	Output []outputItem `json:"output"`
 	Usage  *struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+		InputTokens       int `json:"input_tokens"`
+		OutputTokens      int `json:"output_tokens"`
+		InputTokenDetails *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"input_tokens_details"`
 	} `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
@@ -117,6 +144,9 @@ func (c *Client) buildRequest(req llm.ChatRequest, stream bool) *responsesReques
 	}
 	if req.MaxTokens > 0 {
 		out.MaxOutputTokens = req.MaxTokens
+	}
+	if effort := normalizeEffort(req.ReasoningEffort); effort != "" {
+		out.Reasoning = &reasoning{Effort: effort}
 	}
 	var instructions []string
 	for _, m := range req.Messages {
@@ -201,11 +231,19 @@ func convertResponse(rr *responsesResponse) *llm.ChatResponse {
 	resp := &llm.ChatResponse{Message: msg, FinishReason: finish}
 	if rr.Usage != nil {
 		resp.Usage = llm.Usage{PromptTokens: rr.Usage.InputTokens, CompletionTokens: rr.Usage.OutputTokens}
+		if rr.Usage.InputTokenDetails != nil {
+			resp.Usage.PromptCacheHitTokens = rr.Usage.InputTokenDetails.CachedTokens
+			resp.Usage.PromptCacheMissTokens = rr.Usage.InputTokens - rr.Usage.InputTokenDetails.CachedTokens
+			resp.Usage.CacheReported = true
+		}
 	}
 	return resp
 }
 
 func (c *Client) Chat(ctx context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	if c.Protocol == ProtocolChatCompletions {
+		return c.chatCompletions(ctx, req)
+	}
 	raw, err := c.doJSON(ctx, "/responses", c.buildRequest(req, false))
 	if err != nil {
 		return nil, err
@@ -225,6 +263,13 @@ func (c *Client) Chat(ctx context.Context, req llm.ChatRequest) (*llm.ChatRespon
 
 // Stream 发送 SSE 文本增量并返回组装后的最终消息。
 func (c *Client) Stream(ctx context.Context, req llm.ChatRequest, onDelta func(string)) (*llm.ChatResponse, error) {
+	if c.Protocol == ProtocolChatCompletions {
+		resp, err := c.chatCompletions(ctx, req)
+		if err == nil && resp.Message.Content != "" && onDelta != nil {
+			onDelta(resp.Message.Content)
+		}
+		return resp, err
+	}
 	payload, err := json.Marshal(c.buildRequest(req, true))
 	if err != nil {
 		return nil, err

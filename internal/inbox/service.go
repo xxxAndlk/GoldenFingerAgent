@@ -224,6 +224,35 @@ func (s *Service) CreateSnooze(ctx context.Context, ownerID, eventID string, min
 	return sn, nil
 }
 
+// CreateSnoozeByMatch 按“包名 + 标题 + 正文”匹配最近一条通知再延后提醒。
+// 手机端只需要把通知里的字段原样上报，不必自己拉列表做匹配
+// （原先 Kotlin 的 InboxApi 就是这么做的，把它搬回后端）。
+func (s *Service) CreateSnoozeByMatch(ctx context.Context, ownerID, pkg, title, text string, minutes int, fireAt *time.Time) (*store.InboxSnooze, error) {
+	pkg = strings.TrimSpace(pkg)
+	title = strings.TrimSpace(title)
+	text = strings.TrimSpace(text)
+	if pkg == "" && title == "" && text == "" {
+		return nil, errors.New("pkg/title/text 至少要有一项")
+	}
+	events, err := s.Repos.InboxEvents.List(ctx, ownerID, "all", 50)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range events {
+		if pkg != "" && !strings.EqualFold(e.SourcePkg, pkg) {
+			continue
+		}
+		if title != "" && !strings.Contains(e.Title, title) {
+			continue
+		}
+		if text != "" && !strings.Contains(e.Text, text) {
+			continue
+		}
+		return s.CreateSnooze(ctx, ownerID, e.ID, minutes, fireAt)
+	}
+	return nil, store.ErrNotFound
+}
+
 // CreateWatch 新增关注规则；title 与 keyword 至少一个非空。
 func (s *Service) CreateWatch(ctx context.Context, ownerID, title, keyword, sourcePkg string) (*store.InboxWatch, error) {
 	title, keyword, sourcePkg = strings.TrimSpace(title), strings.TrimSpace(keyword), strings.TrimSpace(sourcePkg)

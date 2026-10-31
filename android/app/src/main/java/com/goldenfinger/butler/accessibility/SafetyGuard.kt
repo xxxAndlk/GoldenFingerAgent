@@ -1,31 +1,34 @@
 package com.goldenfinger.butler.accessibility
 
-import android.app.AlertDialog
 import android.content.Context
 import android.os.SystemClock
 import org.json.JSONObject
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
- * SafetyGuard：安全闸（阶段2 红线）。
- * 1) 敏感动作拦截：节点/待输入文本命中 支付|转账|付款|确认支付|删除|下单，
- *    或前台包名属支付/银行类 → 本地确认对话框；未确认 ok=false error="需人工确认"。
- * 2) FLAG_SECURE 页面：截图黑屏/失败 → 停手 error="这一步请您自己点"。
- * 3) 全局 emergency 标志：音量键/悬浮条急停后 10 秒内拒绝一切动作。
+ * SafetyGuard（能力层，不再承载业务规则）。
+ *
+ * 业务判定已经搬到 Go 侧（internal/device/guard.go）：敏感词、敏感包名、
+ * 是否需要人工确认，都由服务端决定并通过 `confirm` 动作下发。
+ *
+ * 这里只保留两件必须在设备本地完成的事：
+ *  1) 急停计时：音量键/悬浮条触发后，10 秒内本地直接拒绝一切动作。
+ *     这一层必须独立于网络——断网、服务端卡死时也要能立刻停下。
+ *  2) 确认 UI：把服务端给的提示显示出来，并把「允许/拒绝」原样回传。
+ *
+ * 不要在 Kotlin 里增加敏感词表或“这是不是支付页”的判断：
+ * 那会让红线逻辑分裂在两处，无法用 Go 测试覆盖。
  */
-class SafetyGuard(private val ctx: Context) {
+class SafetyGuard(@Suppress("UNUSED_PARAMETER") ctx: Context) {
 
-    private val sensitiveKeywords = listOf("支付", "转账", "付款", "确认支付", "删除", "下单")
-    private val sensitivePackages = listOf(
-        "com.tencent.mm", "com.alipay", "com.unionpay", "com.tencent.mobileqq",
-        "com.android.bank", "com.cmbchina", "com.icbc", "com.ccb", "com.abchina"
-    )
+    /** 急停时间戳（elapsedRealtime ms）；0 表示未急停。 */
+    @Volatile
+    private var emergencyUntil: Long = 0
 
-    /** 急停时间戳（epoch ms）；0 表示未急停。 */
-    @Volatile var emergencyUntil: Long = 0
-        private set
-
-    /** 最近一次拦截原因（供 result.error）。 */
-    @Volatile private var lastBlock: String? = null
+    /** 最近一次本地拦截原因（供 result.error）。 */
+    @Volatile
+    private var lastBlock: String? = null
 
     fun lastBlockReason(): String? = lastBlock
 
@@ -38,56 +41,46 @@ class SafetyGuard(private val ctx: Context) {
 
     fun isEmergency(): Boolean = SystemClock.elapsedRealtime() < emergencyUntil
 
-    /** 动作前闸门：急停中、敏感文本/包名需人工确认。 */
-    fun allowAction(action: String, params: JSONObject): Boolean {
+    /**
+     * 本地硬闸：只检查急停。真正的敏感判定在 Go 侧。
+     * 返回 false 时 [lastBlockReason] 给出原因。
+     */
+    fun allowLocal(): Boolean {
         lastBlock = null
         if (isEmergency()) {
             lastBlock = "急停中，请稍候（10 秒）"
             return false
         }
-        // 屏幕文本/前台包名敏感检查（不升级为指令——只作拦截依据）
-        val screenText = currentScreenText()
-        val pkg = currentPackage()
-        if (pkg in sensitivePackages || sensitiveKeywords.any { it in screenText }) {
-            lastBlock = "需人工确认"
-            return confirm("检测到敏感操作（支付/转账/删除/下单类），是否继续？\n\n当前页面：$pkg")
-        }
         return true
     }
 
-    /** FLAG_SECURE 页面停手：由 Executor 截图失败后调用本方法给出人话。 */
-    fun securePageError(): String = "这一步请您自己点（当前页面禁止自动操作）"
-
-    private fun currentScreenText(): String {
-        val root = ControlServiceHolder.service?.rootInActiveWindow ?: return ""
-        val sb = StringBuilder()
-        collectText(root, sb)
-        return sb.toString()
-    }
-
-    private fun collectText(node: android.view.accessibility.AccessibilityNodeInfo, sb: StringBuilder) {
-        node.text?.let { sb.append(it).append(' ') }
-        node.contentDescription?.let { sb.append(it).append(' ') }
-        for (i in 0 until node.childCount) {
-            node.getChild(i)?.let { collectText(it, sb) }
-        }
-    }
-
-    private fun currentPackage(): String =
-        ControlServiceHolder.service?.rootInActiveWindow?.packageName?.toString() ?: ""
-
-    private fun confirm(message: String): Boolean {
-        // 无 Activity 上下文，不能用 AlertDialog；改走悬浮确认条（需悬浮窗权限）。
-        // 无权限时按「未确认」处理（安全默认拒绝）。
-        val gate = java.util.concurrent.CountDownLatch(1)
-        val result = BooleanArray(1)
+    /**
+     * 请求人工确认：纯 UI 能力，把用户的选择如实返回。
+     * 无悬浮窗权限或超时 → 返回 false（安全默认拒绝）。
+     */
+    @Suppress("UNUSED_PARAMETER")
+    fun confirm(message: String, timeoutMillis: Long = 30_000): Boolean {
+        val gate = CountDownLatch(1)
+        val result = booleanArrayOf(false)
         OverlayManager.showConfirm(message) { yes ->
             result[0] = yes
             gate.countDown()
         }
-        try { gate.await(30, java.util.concurrent.TimeUnit.SECONDS) } catch (_: InterruptedException) {}
-        // 超时未确认 → 拒绝
-        if (gate.count > 0) result[0] = false
-        return result[0]
+        return try {
+            if (gate.await(timeoutMillis, TimeUnit.MILLISECONDS)) result[0] else false
+        } catch (_: InterruptedException) {
+            false
+        }
+    }
+
+    /** FLAG_SECURE 页面停手：由 Executor 截图失败后调用，给出人话。 */
+    fun securePageError(): String = "这一步请您自己点（当前页面禁止自动操作）"
+
+    /** 兼容旧调用点：只保留本地急停判定，敏感判定交给服务端。 */
+    @Deprecated("敏感判定已搬到 Go 侧；Executor 应使用 allowLocal()")
+    fun allowAction(action: String, params: JSONObject): Boolean {
+        @Suppress("UNUSED_EXPRESSION") action
+        @Suppress("UNUSED_EXPRESSION") params
+        return allowLocal()
     }
 }

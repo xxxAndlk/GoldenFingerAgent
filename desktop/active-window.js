@@ -5,28 +5,26 @@ const { execFile } = require('node:child_process');
 // 仅查询当前前台窗口的标题和进程名，不读取屏幕像素、文件或输入内容。
 const WINDOWS_SCRIPT = String.raw`
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Add-Type @"
-using System;
-using System.Text;
-using System.Runtime.InteropServices;
-public static class GoldenFingerForeground {
-  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
-  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+try {
+  Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
+  Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
+} catch { exit 0 }
+# 使用 UIAutomation 的焦点元素向上找顶层窗口。低完整性进程
+# （例如 --no-sandbox 启动）不允许 Add-Type 编译 C#，但可以加载 UIAutomation。
+$focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+if (-not $focused) { exit 0 }
+$walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+$window = $focused
+while ($window -and $window.Current.ControlType.ProgrammaticName -ne 'ControlType.Window') {
+  $window = $walker.GetParent($window)
 }
-"@
-$handle = [GoldenFingerForeground]::GetForegroundWindow()
-if ($handle -eq [IntPtr]::Zero) { exit 0 }
-$length = [GoldenFingerForeground]::GetWindowTextLength($handle)
-$builder = New-Object System.Text.StringBuilder ($length + 1)
-[void][GoldenFingerForeground]::GetWindowText($handle, $builder, $builder.Capacity)
-$processId = 0
-[void][GoldenFingerForeground]::GetWindowThreadProcessId($handle, [ref]$processId)
+$title = if ($window) { $window.Current.Name } else { $focused.Current.Name }
+$processId = $focused.Current.ProcessId
 $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
 [PSCustomObject]@{
-  title = $builder.ToString()
-  owner = @{ name = $(if ($process) { $process.ProcessName } else { '未知应用' }) }
+  title = $title
+  processId = $processId
+  owner = @{ name = $(if ($process) { $process.ProcessName } else { '' }) }
 } | ConvertTo-Json -Compress
 `;
 
@@ -51,14 +49,23 @@ function readActiveWindow(execFileImpl = execFile) {
   });
 }
 
+// 高权限应用的进程名读不到时，从窗口标题尾部推断应用名。
+function appFromTitle(title) {
+  const cleanTitle = String(title || '').replace(/\s*\[[^\]]*\]\s*$/, '').trim();
+  const parts = cleanTitle.split(/\s+-\s+/);
+  return parts.length > 1 ? parts[parts.length - 1].trim() : '';
+}
+
 function parseActiveWindowOutput(stdout) {
   const text = String(stdout || '').trim();
   if (!text) return null;
   const value = JSON.parse(text);
+  const title = String(value.title || '');
+  const ownerName = String((value.owner && value.owner.name) || '').trim();
   return {
-    title: String(value.title || ''),
-    owner: { name: String(value.owner && value.owner.name || '未知应用') },
+    title,
+    owner: { name: ownerName || appFromTitle(title) || '未知应用' },
   };
 }
 
-module.exports = { readActiveWindow, parseActiveWindowOutput };
+module.exports = { readActiveWindow, parseActiveWindowOutput, appFromTitle };

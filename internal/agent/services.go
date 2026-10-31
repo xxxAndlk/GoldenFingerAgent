@@ -16,16 +16,21 @@ import (
 // ToolServices 打包工具执行器共享的领域服务。
 // （这里不含业务规则——规则在领域包中。）
 type ToolServices struct {
-	Memory  *memory.Service
-	Tasks   *task.Service
-	Intents *intent.Service
-	Weather extsvc.WeatherService
-	Search  extsvc.SearchService
-	Guard   *compliance.Guard
-	Repos   *store.Repos
-	Now     func() time.Time
-	LocOf   func(tz string) *time.Location
-	Th      nlu.Thresholds
+	Memory    *memory.Service
+	Tasks     *task.Service
+	Intents   *intent.Service
+	Weather   extsvc.WeatherService
+	Search    extsvc.SearchService
+	Fetch     extsvc.FetchService
+	Workspace string
+	Guard     *compliance.Guard
+	Repos     *store.Repos
+	Now       func() time.Time
+	LocOf     func(tz string) *time.Location
+	Th        nlu.Thresholds
 	// Device 是设备操控通道；nil 表示未装配（设备工具返回"设备未连接"）。
 	Device *device.Hub
+	// DeviceGuard 是设备操作安全闸（敏感确认/急停）；nil 时退化为无闸门，
+	// 仅用于测试，生产装配必须提供。
+	DeviceGuard *device.Guard
 }

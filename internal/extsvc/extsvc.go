@@ -31,7 +31,7 @@ type WeatherService interface {
 	Forecast(ctx context.Context, city string, days int) ([]DailyWeather, error)
 }
 
-// SearchResult 是一次网页搜索的命中（Bocha Web Search API）。
+// SearchResult 是一次网页搜索的命中。
 type SearchResult struct {
 	Name          string `json:"name"`
 	URL           string `json:"url"`
@@ -41,9 +41,21 @@ type SearchResult struct {
 	DatePublished string `json:"datePublished"`
 }
 
-// SearchService 封装网页搜索 API（博查 Bocha Web Search）。
+// SearchService 封装网页搜索 API。
 type SearchService interface {
 	Search(ctx context.Context, query string, count int) ([]SearchResult, error)
+}
+
+// WebPage 是网页抓取后的 Markdown 正文。
+type WebPage struct {
+	URL     string `json:"url"`
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+// FetchService 将单个网页抓取为 Markdown。
+type FetchService interface {
+	Fetch(ctx context.Context, url string) (*WebPage, error)
 }
 
 // ASRService 把音频转成文本（讯飞/阿里云语音）。

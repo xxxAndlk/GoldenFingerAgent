@@ -49,11 +49,11 @@ func (p Policy) DNDWindowEnd(t time.Time, loc *time.Location) time.Time {
 	switch {
 	case p.DNDStartHour > p.DNDEndHour:
 		if h >= p.DNDStartHour {
-				// 处于晚间段 → 明天早上
+			// 处于晚间段 → 明天早上
 			return time.Date(local.Year(), local.Month(), local.Day(), p.DNDEndHour, 0, 0, 0, loc).AddDate(0, 0, 1)
 		}
 		if h < p.DNDEndHour {
-				// 处于早晨段 → 今天
+			// 处于早晨段 → 今天
 			return time.Date(local.Year(), local.Month(), local.Day(), p.DNDEndHour, 0, 0, 0, loc)
 		}
 	default:

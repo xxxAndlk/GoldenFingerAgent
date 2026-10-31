@@ -15,7 +15,10 @@ type ScreenNode struct {
 
 // Screen 是最近一帧屏幕快照（节点树 + 截图 + 上报时间）。
 type Screen struct {
-	DeviceID      string       `json:"device_id"`
+	DeviceID string `json:"device_id"`
+	// Package 是当前前台应用包名；安全闸用它判断支付/银行类页面。
+	// 老版本设备不上报时为空，判定退回文本匹配。
+	Package       string       `json:"package,omitempty"`
 	Nodes         []ScreenNode `json:"nodes"`
 	ScreenshotB64 string       `json:"screenshot_b64,omitempty"`
 	At            time.Time    `json:"at"`

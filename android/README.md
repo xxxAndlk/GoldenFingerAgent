@@ -5,9 +5,19 @@
 并内置**无障碍服务**（查看屏幕 / 执行操作 / 截图）把手机变成可操控设备，由
 后台服务轮询 outbox 下发提醒通知。
 
-> **重要声明：本机无 Android SDK / JDK / NDK，本工程未在本机实编。**
-> 以下构建步骤需在**已安装 Android Studio 的机器**上执行；Go 侧代码（`gosvc/`）
-> 不依赖 Android 工具链，`go build ./android/gosvc` 可在仓库根直接编译验证。
+> **构建方式（2026-10-30 更新）**
+> 宿主 Windows 不需要安装 Android 工具链：仓库自带 `docker/android/Dockerfile`
+> （JDK17 + SDK34 + NDK r26b + gomobile + Gradle 8.9），一条命令即可出包：
+>
+> ```bash
+> docker build -t gfa-android-build -f docker/android/Dockerfile docker/android
+> docker run --rm -v "$PWD:/work" gfa-android-build:latest bash /work/docker/android/build.sh
+> ```
+>
+> 产物：`android/app/libs/gosvc.aar`（约 11MB）、`android/app/build/outputs/apk/debug/app-debug.apk`（约 33MB）。
+> 体积控制：只打 arm64+armv7，并给 Go 侧加 `-ldflags="-s -w" -trimpath`。
+> Go 侧代码（`gosvc/`）不依赖 Android 工具链：`go build ./android/gosvc` 与
+> `go test ./android/gosvc` 可在仓库根直接跑（含真实起服务的 HTTP 自检）。
 
 ## 一、环境准备
 
@@ -18,31 +28,23 @@
 
 ## 二、构建步骤
 
-在**仓库根目录**（`D:\WebData\github\GoldenFingerAgent`）执行：
+**推荐（Docker，一条命令）**：见上方构建方式。
+
+**手工构建（已装 Android Studio 的机器）**：
 
 ```bash
-# 1) 安装 gomobile 工具链（一次即可）
-go install golang.org/x/mobile/cmd/gomobile@latest
-go get golang.org/x/mobile/bind
-# （在 golang.org/x/mobile 模块中）首次需要
-cd $(go env GOPATH)/pkg/mod/golang.org/x/mobile@*/ 2>/dev/null || true
+# 1) 同步手机端页面（必须：手机加载的就是 web/ 的同一份 SPA）
+bash scripts/sync-webassets.sh
 
-# 2) 编译 Go 服务为 Android AAR，放入 app/libs/
-mkdir -p android/app/libs
-cd android
-# gomobile 需要 go.mod 位于 android/（或仓库根），这里推荐在仓库根执行：
-cd ..
-gomobile bind -target=android -o android/app/libs/gosvc.aar ./android/gosvc
+# 2) Go 服务 → AAR
+gomobile init
+gomobile bind -target=android/arm64,android/arm -androidapi 26 -ldflags="-s -w" -trimpath   -o android/app/libs/gosvc.aar ./android/gosvc
 
-# 3) 用 Android Studio 打开 android/ 目录，或命令行：
-cd android
-./gradlew :app:assembleDebug
+# 3) 打 APK（Gradle Wrapper 已入库，首次会从腾讯镜像下载 Gradle 8.9）
+cd android && ./gradlew :app:assembleDebug
 ```
 
 产物：`android/app/build/outputs/apk/debug/app-debug.apk`
-
-> `gomobile bind` 会生成 `gosvc.aar`（内含 Go 服务与导出类 `gosvc.Gosvc`，
-> 由 `app/libs/` 下的 `fileTree("libs")` 依赖引入）。
 
 ## 三、安装与首次引导
 
@@ -72,7 +74,7 @@ cd android
 android/
   settings.gradle.kts / build.gradle.kts / gradle.properties / local.properties.example
   gosvc/gosvc.go            # gomobile bind 包：StartServer/StopServer
-  gosvc/webassets/          # 内嵌精简 Web 首页（首次启动写入 dataDir/web/）
+  gosvc/webassets/          # 由 scripts/sync-webassets.sh 从 web/ 同步（勿手改）
   app/
     build.gradle.kts        # minSdk26 targetSdk34 compileSdk34
     src/main/AndroidManifest.xml

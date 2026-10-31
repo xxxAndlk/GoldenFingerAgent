@@ -58,12 +58,12 @@ var upgrader = websocket.Upgrader{
 
 // Hub 管理全部设备连接（按 device id），缓存最近一帧屏幕。
 type Hub struct {
-	mu      sync.RWMutex
-	conns   map[string]*conn
+	mu       sync.RWMutex
+	conns    map[string]*conn
 	lastSeen map[string]time.Time
-	screen  *Screen
-	closed  chan struct{}
-	once    sync.Once
+	screen   *Screen
+	closed   chan struct{}
+	once     sync.Once
 }
 
 // NewHub 创建 Hub 并启动后台清理 goroutine。

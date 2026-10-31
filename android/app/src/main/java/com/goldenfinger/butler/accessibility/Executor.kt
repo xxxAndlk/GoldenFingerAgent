@@ -22,8 +22,12 @@ data class ActionResult(val ok: Boolean, val error: String = "", val data: JSONO
  * Executor：执行器，把 WS command 的 action 落到系统能力上。
  * action 固定取值（device-ws-contract）：
  * click/longClick/setText/scrollForward/scrollBackward/gestureTap/gestureSwipe/
- * globalBack/globalHome/globalRecents/openApp/screenshot。
- * 每个动作执行前过 SafetyGuard（敏感拦截/FLAG_SECURE 停手/急停 10s）。
+ * globalBack/globalHome/globalRecents/openApp/screenshot/confirm。
+ *
+ * 职责划分：
+ *  - 敏感判定（支付/转账/删除/下单）在 Go 侧完成，需要确认时下发 confirm；
+ *    本类只负责把确认 UI 的结果如实回传。
+ *  - 本地只保留急停硬闸（断网也必须立即停手）与 FLAG_SECURE 停手。
  */
 class Executor(
     private val service: AccessibilityService,
@@ -39,9 +43,9 @@ class Executor(
 
     /** 执行一条 command；返回 result 帧内容。 */
     fun execute(action: String, params: JSONObject): ActionResult {
-        // 急停窗口 / 敏感动作：统一在 SafetyGuard 前闸
-        if (!guard.allowAction(action, params)) {
-            return ActionResult(false, guard.lastBlockReason() ?: "需人工确认")
+        // 本地硬闸只含急停；敏感判定由服务端经 confirm 动作表达。
+        if (!guard.allowLocal()) {
+            return ActionResult(false, guard.lastBlockReason() ?: "已急停")
         }
         // 悬浮条显示当前动作（阶段2 可视化）
         OverlayManager.showAction(service, action)
@@ -58,11 +62,27 @@ class Executor(
             "globalRecents" -> global(AccessibilityService.GLOBAL_ACTION_RECENTS)
             "openApp" -> openApp(params)
             "screenshot" -> screenshot()
+            "confirm" -> confirm(params)
             else -> ActionResult(false, "未知动作: $action")
         }
         // 动作后清空节点缓存，强制下次重新 dump
         dumper.clearCache()
         return result
+    }
+
+    /**
+     * confirm：展示服务端下发的确认提示，把用户选择回传。
+     * data.approved=false 表示用户拒绝，服务端必须据此放弃原动作。
+     */
+    private fun confirm(params: JSONObject): ActionResult {
+        val message = params.optString("message", "需要您确认是否继续")
+        val approved = guard.confirm(message)
+        val data = JSONObject().put("approved", approved)
+        return if (approved) {
+            ActionResult(true, "", data)
+        } else {
+            ActionResult(false, "用户未确认，已取消", data)
+        }
     }
 
     // ---- 节点操作（performAction，按 node_index 或坐标） ----

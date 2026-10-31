@@ -65,7 +65,7 @@ func resolveTaskConfirm(ctx context.Context, s *Session, rt *Runtime, p *nlu.Pen
 			}
 		}
 		if absTime == nil {
-				at := now.Add(time.Hour) // 冻结载荷曾有过时间；安全回退
+			at := now.Add(time.Hour) // 冻结载荷曾有过时间；安全回退
 			absTime = &at
 		}
 		res, err := scheduleTask(ctx, &ToolContext{Session: s, Runtime: rt}, u, tp, tp.PersonID, absTime, tp.Confidence, nil, true)

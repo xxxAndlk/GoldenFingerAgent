@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent 与设置</title>
+  <link rel="stylesheet" href="windows.css">
+</head>
+<body>
+  <main class="aux-shell agents-shell">
+    <header class="aux-header">
+      <div><h1>Agent 与设置</h1><p>调度其他 Agent，管理模型和工作轨迹</p></div>
+      <div class="header-actions">
+        <button id="ccswitch-open" class="secondary-button">CC Switch 代理与额度</button>
+        <button id="agents-refresh" class="secondary-button">重新扫描</button>
+      </div>
+    </header>
+
+    <nav class="management-tabs" aria-label="管理页面">
+      <button class="active" data-view="agents">Agent 调度</button>
+      <button data-view="settings">设置</button>
+    </nav>
+
+    <div id="agents-view">
+      <nav class="agent-tabs" aria-label="Agent 类型">
+        <button class="active" data-filter="desktop">桌面软件</button>
+        <button data-filter="cli">命令行工具</button>
+        <button data-filter="service">A2A / BMA</button>
+      </nav>
+
+      <section class="window-section delegation-section">
+        <div class="section-heading"><h2>任务与项目目录</h2><span>CLI 在目录内执行，BMA 使用原生项目会话</span></div>
+        <textarea id="agent-task" rows="3" maxlength="12000" placeholder="写清楚要做什么、涉及哪些文件，以及怎样算完成…"></textarea>
+        <div class="directory-row">
+          <input id="agent-workdir" type="text" placeholder="默认：金手指当前项目目录" aria-label="工作目录">
+          <button id="workdir-choose" class="secondary-button">选择文件夹</button>
+        </div>
+      </section>
+
+      <div id="agent-status" class="status-text list-status" role="status">尚未扫描</div>
+      <section id="agent-list" class="agent-list"></section>
+      <section id="agent-result-section" class="window-section result-section" hidden>
+        <div class="section-heading"><h2 id="agent-result-title">执行结果</h2></div>
+        <pre id="agent-result"></pre>
+      </section>
+
+      <details id="a2a-config" class="window-section" hidden>
+        <summary>添加 A2A / BMA 端点</summary>
+        <div class="a2a-grid">
+          <input id="a2a-id" type="text" placeholder="ID，BMA 填 bma" autocomplete="off">
+          <input id="a2a-name" type="text" placeholder="显示名称">
+          <input id="a2a-url" type="url" placeholder="http://127.0.0.1:端口">
+          <input id="a2a-token" type="password" placeholder="Token（可留空）" autocomplete="off">
+          <button id="a2a-add" class="primary-button">保存并探测</button>
+        </div>
+      </details>
+    </div>
+
+    <div id="settings-view" hidden>
+      <details class="config-card" id="model-config" open>
+        <summary class="config-summary">
+          <span class="config-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 3.4 20 7.6v8.8L12 20.6 4 16.4V7.6z"/><path d="M12 11.8 20 7.6M12 11.8 4 7.6M12 11.8v8.8"/></svg>
+          </span>
+          <span class="config-head">
+            <strong>模型配置</strong>
+            <small id="model-summary">正在读取…</small>
+          </span>
+          <span class="config-chevron" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M7.5 10.2 12 14.6l4.5-4.4"/></svg>
+          </span>
+        </summary>
+        <div class="config-body">
+          <ul id="model-list" class="model-list"></ul>
+          <button id="model-new" class="add-row" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5.6v12.8M5.6 12h12.8"/></svg>
+            新增模型
+          </button>
+
+          <form id="settings-form" class="settings-form model-editor" hidden>
+            <div class="model-editor-head">
+              <strong id="model-editor-title">新增模型</strong>
+              <button id="model-editor-cancel" class="link-button" type="button">取消</button>
+            </div>
+            <label for="model-name-display">方案名称</label>
+            <input id="model-name-display" type="text" placeholder="如：DeepSeek 主力" autocomplete="off">
+            <label for="base-url">Base URL</label>
+            <input id="base-url" type="url" required placeholder="https://api.deepseek.com">
+            <label for="model-name">模型名</label>
+            <input id="model-name" type="text" required placeholder="deepseek-flash">
+            <label for="protocol">接口协议</label>
+            <select id="protocol">
+              <option value="chat_completions">Chat Completions（兼容接口）</option>
+              <option value="responses">Responses（DeepSeek / OpenAI）</option>
+            </select>
+            <label for="api-key">API Key</label>
+            <input id="api-key" type="password" autocomplete="off" placeholder="留空或保留掩码则不修改">
+            <label for="reasoning-effort">推理强度</label>
+            <select id="reasoning-effort">
+              <option value="low">low · 快速</option>
+              <option value="high">high · 标准</option>
+              <option value="max">max · 最深入</option>
+            </select>
+            <label for="max-context">最大上下文</label>
+            <input id="max-context" type="number" min="0" max="2000000" step="1000" placeholder="如 128000（0 = 默认）">
+            <label for="max-output">最大输出</label>
+            <input id="max-output" type="number" min="0" max="200000" step="256" placeholder="如 8192（0 = 默认）">
+            <div class="form-footer">
+              <span id="settings-status" class="status-text" role="status"></span>
+              <button id="save-settings" class="primary-button" type="submit">保存并应用</button>
+            </div>
+          </form>
+          <code id="settings-path" class="path-text"></code>
+        </div>
+      </details>
+
+      <details class="config-card" id="search-config">
+        <summary class="config-summary">
+          <span class="config-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.4"/><path d="M15.8 15.8 20.4 20.4"/></svg>
+          </span>
+          <span class="config-head">
+            <strong>联网搜索配置</strong>
+            <small id="search-summary">正在读取…</small>
+          </span>
+          <span class="config-chevron" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M7.5 10.2 12 14.6l4.5-4.4"/></svg>
+          </span>
+        </summary>
+        <div class="config-body">
+          <p class="section-description">单独填写用于联网检索的 DeepSeek 密钥；留空则复用当前模型的 Key。</p>
+          <form id="search-form" class="settings-form">
+            <label for="search-base">Base URL</label>
+            <input id="search-base" type="url" placeholder="https://api.deepseek.com">
+            <label for="search-key">API Key</label>
+            <input id="search-key" type="password" autocomplete="off" placeholder="留空则复用模型 Key">
+            <div class="form-footer">
+              <span id="search-status" class="status-text" role="status"></span>
+              <button id="save-search" class="primary-button" type="submit">保存</button>
+            </div>
+          </form>
+        </div>
+      </details>
+
+      <section class="window-section">
+        <div class="section-heading"><h2>手机生活管家</h2><span>手机发指令，电脑执行</span></div>
+        <p class="section-description">手机上输入下方配对码即可与本机绑定。电脑只执行手机发来的指令，不会主动向手机推送。</p>
+        <form id="relay-form" class="settings-form">
+          <label for="relay-url">中继地址</label>
+          <input id="relay-url" type="url" placeholder="https://relay.example.com">
+          <div class="form-footer">
+            <span id="relay-saved" class="status-text" role="status"></span>
+            <button id="save-relay" class="secondary-button" type="submit">保存地址</button>
+          </div>
+        </form>
+        <div class="form-footer">
+          <button id="relay-pair-code" class="primary-button" type="button">生成配对码</button>
+          <span id="relay-status" class="status-text" role="status">正在读取…</span>
+        </div>
+        <p id="relay-code" class="pair-code" hidden></p>
+        <ul id="relay-channels" class="channel-list"></ul>
+      </section>
+
+      <section class="window-section">
+        <div class="section-heading"><h2>技能</h2><span>按需加载的本地指南</span></div>
+        <p class="section-description">技能清单会进入助手上下文；需要完整说明时由助手调用 load_skill（例如 BMA 的开发、部署与调度）。</p>
+        <ul id="skill-list" class="skill-list"></ul>
+      </section>
+
+      <section class="window-section">
+        <div class="section-heading"><h2>工作轨迹</h2><span>独立于聊天窗口</span></div>
+        <div class="setting-row">
+          <label for="activity-opacity">轨迹浮窗不透明度</label>
+          <input id="activity-opacity" type="range" min="20" max="95" step="1" value="76">
+          <output id="activity-opacity-value" for="activity-opacity">76%</output>
+        </div>
+        <div class="setting-row">
+          <span>记录并展示工作轨迹</span>
+          <label class="switch"><input id="activity-visible-toggle" type="checkbox" checked><span></span></label>
+        </div>
+        <div class="setting-row">
+          <span>立即总结一次</span>
+          <button id="summarize-now-settings" class="secondary-button" type="button">立即总结</button>
+        </div>
+        <p id="summarize-status" class="status-text" role="status"></p>
+        <p class="section-description">工作轨迹开启后独立记录，不需要先开协作模式；协作模式只负责定时总结。轨迹窗口拖到屏幕边缘会吸附，收起后留一个贴边小条。</p>
+      </section>
+
+    </div>
+  </main>
+  <script src="management.js"></script>
+  <script src="agent-panel.js"></script>
+  <script src="settings-renderer.js"></script>
+</body>
+</html>

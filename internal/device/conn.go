@@ -26,8 +26,8 @@ type conn struct {
 	waitMu sync.Mutex
 	waits  map[string]chan *Result
 
-		// onHeartbeat 在收到心跳帧时回调（Hub 刷新 lastSeen）。
-		onHeartbeat func(deviceID string, ts int64)
+	// onHeartbeat 在收到心跳帧时回调（Hub 刷新 lastSeen）。
+	onHeartbeat func(deviceID string, ts int64)
 
 	closeOnce sync.Once
 	closed    chan struct{}
@@ -106,28 +106,28 @@ func (c *conn) readPump() {
 			continue
 		}
 		switch f.Type {
-			case "register":
-				var m struct {
-					DeviceID string `json:"device_id"`
-				}
-				if json.Unmarshal(data, &m) == nil && m.DeviceID != "" {
-					c.device = m.DeviceID
-					// registered 帧由 Hub 在注册入表后回发（避免竞态）。
-				}
-			case "heartbeat":
-				// 心跳由 Hub 刷新 lastSeen，这里仅确认帧格式合法后转发。
-				var hb struct {
-					DeviceID string `json:"device_id"`
-					TS       int64  `json:"ts"`
-				}
-				if json.Unmarshal(data, &hb) != nil || c.onHeartbeat == nil {
-					continue
-				}
-				id := hb.DeviceID
-				if id == "" {
-					id = c.deviceID()
-				}
-				c.onHeartbeat(id, hb.TS)
+		case "register":
+			var m struct {
+				DeviceID string `json:"device_id"`
+			}
+			if json.Unmarshal(data, &m) == nil && m.DeviceID != "" {
+				c.device = m.DeviceID
+				// registered 帧由 Hub 在注册入表后回发（避免竞态）。
+			}
+		case "heartbeat":
+			// 心跳由 Hub 刷新 lastSeen，这里仅确认帧格式合法后转发。
+			var hb struct {
+				DeviceID string `json:"device_id"`
+				TS       int64  `json:"ts"`
+			}
+			if json.Unmarshal(data, &hb) != nil || c.onHeartbeat == nil {
+				continue
+			}
+			id := hb.DeviceID
+			if id == "" {
+				id = c.deviceID()
+			}
+			c.onHeartbeat(id, hb.TS)
 		case "result":
 			var r Result
 			if json.Unmarshal(data, &r) != nil {

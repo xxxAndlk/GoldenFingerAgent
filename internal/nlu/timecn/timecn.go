@@ -286,14 +286,14 @@ func parseCalendar(raw string, now time.Time, loc *time.Location) (time.Time, bo
 			if !hasDay {
 				return time.Time{}, false
 			}
-				// 无时钟的裸日期关键词（"后天"）默认 9:00。
+			// 无时钟的裸日期关键词（"后天"）默认 9:00。
 			tod.hour, tod.min = 9, 0
 		}
 		d := now.AddDate(0, 0, dayOffset)
 		t := time.Date(d.Year(), d.Month(), d.Day(), tod.hour, tod.min, 0, 0, loc)
 		if !hasDay && t.Before(now) {
-				// 无日期关键词的裸时钟：已过去的时间顺延到明天。
-				// 显式 "今天/今晚" 保留已过去的时间（用户明确要今天）。
+			// 无日期关键词的裸时钟：已过去的时间顺延到明天。
+			// 显式 "今天/今晚" 保留已过去的时间（用户明确要今天）。
 			t = t.AddDate(0, 0, 1)
 		}
 		return t, true
@@ -312,7 +312,7 @@ func nextWeekday(now time.Time, wd time.Weekday, prefix string) time.Time {
 	case strings.HasPrefix(prefix, "下下"):
 		days += 7
 	case strings.HasPrefix(prefix, "下"):
-			// "下周三" = 下下周的周三（ISO 风格：跳到下一个以周一为起点的一周）。
+		// "下周三" = 下下周的周三（ISO 风格：跳到下一个以周一为起点的一周）。
 		daysToNextMon := (8 - int(now.Weekday())) % 7
 		if daysToNextMon == 0 {
 			daysToNextMon = 7

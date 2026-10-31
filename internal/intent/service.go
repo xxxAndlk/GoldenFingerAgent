@@ -149,7 +149,7 @@ func (s *Service) Check(ctx context.Context, ownerID, userText string) ([]store.
 		}
 		// 冷却期内不重复触发（SQLite 不做 SQL 侧 cooldown 运算，故在此过滤）。
 		if c.Status == store.IntentFired && c.LastFiredAt != nil &&
-			now.Before(c.LastFiredAt.Add(time.Duration(c.CooldownSeconds) * time.Second)) {
+			now.Before(c.LastFiredAt.Add(time.Duration(c.CooldownSeconds)*time.Second)) {
 			continue
 		}
 		hit, err := s.repo.Fire(ctx, c.ID, now)

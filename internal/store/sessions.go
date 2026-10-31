@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -12,6 +13,16 @@ import (
 type SessionRepo struct{ q Querier }
 
 func NewSessionRepo(q Querier) *SessionRepo { return &SessionRepo{q: q} }
+
+// SessionSummary 是会话列表项：会话名由创建时间生成，预览取第一条用户消息。
+type SessionSummary struct {
+	ID          string    `json:"id"`
+	OwnerUserID string    `json:"owner_user_id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Messages    int       `json:"messages"`
+	Preview     string    `json:"preview"`
+}
 
 func (r *SessionRepo) Create(ctx context.Context, s *ChatSession) error {
 	s.ID = uuid.NewString()
@@ -61,6 +72,36 @@ func (r *SessionRepo) AppendMessage(ctx context.Context, m *ChatMessage) error {
 		RETURNING created_at`,
 		m.ID, m.SessionID, m.Role, m.Content, m.ToolCalls, m.ToolCallID, m.Name, nowForDB(),
 	).Scan(&m.CreatedAt)
+}
+
+// ListByOwner 返回该用户最近的会话，附带首条用户消息预览与消息数。
+func (r *SessionRepo) ListByOwner(ctx context.Context, ownerUserID string, limit int) ([]SessionSummary, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.q.QueryContext(ctx, `
+		SELECT s.id, s.owner_user_id, s.created_at, s.updated_at,
+			(SELECT COUNT(*) FROM chat_message m WHERE m.session_id = s.id) AS messages,
+			COALESCE((SELECT m.content FROM chat_message m
+				WHERE m.session_id = s.id AND m.role = 'user'
+				ORDER BY m.created_at ASC LIMIT 1), '') AS preview
+		FROM chat_session s
+		WHERE s.owner_user_id = ?
+		ORDER BY s.created_at DESC
+		LIMIT ?`, ownerUserID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionSummary
+	for rows.Next() {
+		var item SessionSummary
+		if err := rows.Scan(&item.ID, &item.OwnerUserID, &item.CreatedAt, &item.UpdatedAt, &item.Messages, &item.Preview); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 // RecentMessages 按时间顺序返回最新的 n 条消息。

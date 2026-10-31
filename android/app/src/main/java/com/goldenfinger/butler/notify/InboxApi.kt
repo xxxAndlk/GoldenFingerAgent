@@ -52,12 +52,15 @@ object InboxApi {
     }
 
     /**
-     * 稍后处理：先回查 event_id（/api/inbox/events 上报响应不含 id），再 POST /api/inbox/snooze。
+     * 稍后处理：只上报通知字段，由服务端匹配事件并建立延后提醒。
+     * 客户端不再拉列表做 pkg+title+text 匹配（那是业务逻辑，已搬到 Go）。
      * minutes>=0 按分钟；否则用 fire_at（RFC3339，如今晚 20:00）。
      */
     fun snoozeByContent(sourcePkg: String, title: String, text: String, minutes: Long, fireAt: String?): Boolean {
-        val eventId = findEventId(sourcePkg, title, text) ?: return false
-        val payload = JSONObject().put("event_id", eventId)
+        val payload = JSONObject()
+            .put("source_pkg", sourcePkg)
+            .put("title", title)
+            .put("text", text)
         if (minutes >= 0) {
             payload.put("minutes", minutes)
         } else if (!fireAt.isNullOrBlank()) {
@@ -66,33 +69,6 @@ object InboxApi {
             return false
         }
         return post("/api/inbox/snooze", payload.toString()) != null
-    }
-
-    /** GET /api/inbox/events 里按 pkg+title+text 匹配最新一条，取 event_id。 */
-    private fun findEventId(sourcePkg: String, title: String, text: String): String? {
-        val addr = GoBridge.baseUrl() ?: return null
-        val token = GoBridge.token() ?: return null
-        val req = Request.Builder()
-            .url("http://$addr/api/inbox/events?kind=all&limit=50")
-            .header("X-Token", token)
-            .header("X-User-Id", userHeader())
-            .get()
-            .build()
-        client.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return null
-            val body = resp.body?.string() ?: return null
-            val arr = JSONObject(body).optJSONArray("events") ?: return null
-            for (i in 0 until arr.length()) {
-                val e = arr.getJSONObject(i)
-                if (e.optString("source_pkg") == sourcePkg &&
-                    e.optString("title") == title &&
-                    e.optString("text") == text
-                ) {
-                    return e.optString("id")
-                }
-            }
-        }
-        return null
     }
 
     private fun post(path: String, json: String): String? {

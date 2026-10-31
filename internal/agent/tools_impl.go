@@ -916,7 +916,7 @@ func (weatherTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolCo
 	return ToolResult{Status: StatusOK, Data: w}, nil
 }
 
-// ---- web_search ----
+// ---- web_search / web_fetch（DeepSeek 官方工具 API） ----
 
 type webSearchArgs struct {
 	Query string `json:"query"`
@@ -926,9 +926,9 @@ type webSearchArgs struct {
 type webSearchTool struct{}
 
 func (webSearchTool) Spec() llm.ToolSpec {
-	return toolSpec("web_search", "联网搜索。用自然语言关键词查询最新信息（新闻、知识、实时数据）。query 为搜索词，count 为返回条数（1~10，缺省 8）。",
+	return toolSpec("web_search", "使用 DeepSeek 官方搜索查询互联网最新信息。query 为 1~128 字符的搜索词，count 为返回条数（1~10，缺省 8）。需要阅读某个网页全文时再调用 web_fetch。",
 		map[string]any{
-			"query": map[string]any{"type": "string", "description": "搜索关键词"},
+			"query": map[string]any{"type": "string", "description": "搜索关键词，支持 DeepSeek 查询语法"},
 			"count": map[string]any{"type": "integer", "description": "可选：返回条数 1~10，缺省 8"},
 		}, "query")
 }
@@ -942,8 +942,8 @@ func (webSearchTool) Execute(ctx context.Context, args json.RawMessage, tc *Tool
 	if q == "" {
 		return ToolResult{Status: StatusError, Data: map[string]string{"error": "web_search: query 不能为空"}}, nil
 	}
-	if len(q) > 500 {
-		return ToolResult{Status: StatusError, Data: map[string]string{"error": "web_search: query 超过 500 字符上限"}}, nil
+	if len([]rune(q)) > 128 {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": "web_search: query 超过 128 字符上限"}}, nil
 	}
 	count := a.Count
 	if count <= 0 {
@@ -954,13 +954,47 @@ func (webSearchTool) Execute(ctx context.Context, args json.RawMessage, tc *Tool
 	}
 	svcs := tc.Runtime.Tools
 	if svcs.Search == nil {
-		return ToolResult{Status: StatusError, Data: map[string]string{"error": "web_search: 搜索服务未装配"}}, nil
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": "web_search: DeepSeek 搜索服务未装配"}}, nil
 	}
 	results, err := svcs.Search.Search(ctx, q, count)
 	if err != nil {
 		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
 	}
-	return ToolResult{Status: StatusOK, Data: map[string]any{"query": q, "results": results}}, nil
+	return ToolResult{Status: StatusOK, Data: map[string]any{"provider": "deepseek", "query": q, "results": results}}, nil
+}
+
+type webFetchArgs struct {
+	URL string `json:"url"`
+}
+
+type webFetchTool struct{}
+
+func (webFetchTool) Spec() llm.ToolSpec {
+	return toolSpec("web_fetch", "使用 DeepSeek 官方网页抓取读取一个 http/https 页面，返回标题和 Markdown 正文。适用于阅读搜索结果或用户给出的网页链接。",
+		map[string]any{"url": map[string]any{"type": "string", "description": "不含用户名密码的完整网页 URL"}}, "url")
+}
+
+func (webFetchTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolContext) (ToolResult, error) {
+	var a webFetchArgs
+	if err := decodeArgs(args, &a); err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	if tc.Runtime == nil || tc.Runtime.Tools == nil || tc.Runtime.Tools.Fetch == nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": "web_fetch: DeepSeek 抓取服务未装配"}}, nil
+	}
+	page, err := tc.Runtime.Tools.Fetch.Fetch(ctx, strings.TrimSpace(a.URL))
+	if err != nil {
+		return ToolResult{Status: StatusError, Data: map[string]string{"error": err.Error()}}, nil
+	}
+	content := page.Content
+	truncated := false
+	if len(content) > 50000 {
+		content = truncate(content, 50000)
+		truncated = true
+	}
+	return ToolResult{Status: StatusOK, Data: map[string]any{
+		"provider": "deepseek", "url": page.URL, "title": page.Title, "content": content, "truncated": truncated,
+	}}, nil
 }
 
 // ---- 设备操控工具（经 ToolServices.Device 可选注入） ----
@@ -997,6 +1031,17 @@ func sendDevice(ctx context.Context, tc *ToolContext, action string, params map[
 	if hub == nil {
 		return ToolResult{Status: StatusError, Data: map[string]string{"error": "设备未连接"}}, nil
 	}
+	// 安全闸：敏感页面/内容要求设备弹确认；急停期间一律拒绝。
+	// 判定在 Go 侧完成，安卓端只负责确认 UI 与本地急停计时。
+	if tc.Runtime.Tools.DeviceGuard != nil {
+		if err := tc.Runtime.Tools.DeviceGuard.Check(ctx, hub, action, params); err != nil {
+			log.Printf("[phone] action=%s target=%v blocked=%v", action, target, err)
+			return ToolResult{Status: StatusError, Data: map[string]string{
+				"error":   device.HumanMessage(err),
+				"blocked": err.Error(),
+			}}, nil
+		}
+	}
 	start := time.Now()
 	res, err := hub.Send(ctx, action, params)
 	cost := time.Since(start).Round(time.Millisecond).String()
@@ -1011,7 +1056,7 @@ func sendDevice(ctx context.Context, tc *ToolContext, action string, params map[
 	data := map[string]any{"reply": "已执行 " + action}
 	if len(res.Data) > 0 {
 		var extra map[string]any
-		if json.Unmarshal(res.Data, &extra) == nil && len(extra) > 0 {
+		if device.DecodeResultData(res.Data, &extra) == nil && len(extra) > 0 {
 			data = extra
 		}
 	}
@@ -1224,15 +1269,15 @@ func (backTool) Execute(ctx context.Context, args json.RawMessage, tc *ToolConte
 
 // appNameToPackage 最小内置中文应用名→包名映射（未知应用不猜包名）。
 var appNameToPackage = map[string]string{
-	"微信":   "com.tencent.mm",
-	"设置":   "com.android.settings",
-	"电话":   "com.android.dialer",
-	"相机":   "com.android.camera",
-	"短信":   "com.android.messaging",
+	"微信":  "com.tencent.mm",
+	"设置":  "com.android.settings",
+	"电话":  "com.android.dialer",
+	"相机":  "com.android.camera",
+	"短信":  "com.android.messaging",
 	"浏览器": "com.android.browser",
-	"相册":   "com.android.gallery3d",
-	"时钟":   "com.android.deskclock",
-	"日历":   "com.android.calendar",
+	"相册":  "com.android.gallery3d",
+	"时钟":  "com.android.deskclock",
+	"日历":  "com.android.calendar",
 }
 
 type openAppArgs struct {
@@ -1330,6 +1375,7 @@ func DefaultTools() []Tool {
 		cancelIntentTool{},
 		weatherTool{},
 		webSearchTool{},
+		webFetchTool{},
 		screenObserveTool{},
 		tapTool{},
 		inputTextTool{},
