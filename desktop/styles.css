@@ -104,7 +104,8 @@ button:disabled { cursor: default; opacity: .45; }
   box-shadow:
     0 10px 24px rgba(0, 0, 0, .34),
     0 2px 6px rgba(0, 0, 0, .24);
-  -webkit-app-region: drag;
+  cursor: grab;
+  user-select: none;
   transition: transform .3s var(--ease-spring), box-shadow .3s var(--ease-out), filter .3s;
 }
 .orb:hover {
@@ -114,7 +115,7 @@ button:disabled { cursor: default; opacity: .45; }
     0 14px 30px rgba(0, 0, 0, .38),
     0 3px 8px rgba(0, 0, 0, .26);
 }
-.orb:active { transform: scale(.94); }
+.orb:active { cursor: grabbing; transform: scale(.94); }
 .orb:focus-visible { outline: 2.5px solid var(--blue); outline-offset: 3px; }
 .orb-dot {
   position: absolute;
@@ -129,13 +130,12 @@ button:disabled { cursor: default; opacity: .45; }
   animation: dotPulse 2.4s var(--ease-out) infinite;
 }
 
-/* drag 区域会吞掉点击：球心留一块 no-drag 热区，点一下展开对话，外圈仍可拖动 */
+/* 整颗球由 pointer 事件区分点击和拖动，不再使用 app-region。 */
 .orb-hit {
   position: absolute;
   inset: 20%;
   border-radius: 26%;
-  -webkit-app-region: no-drag;
-  cursor: pointer;
+  pointer-events: none;
 }
 
 /* 贴边滑轨：只在贴住屏幕边缘时出现，像滑块停在轨道上 */
@@ -438,7 +438,7 @@ body[data-expanded="1"][data-dock="bottom"] .panel { border-bottom-left-radius: 
 .workspace-grid { grid-row: 2; display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; }
 .chat-column {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto auto auto;
+  grid-template-rows: minmax(0, 1fr) auto auto auto auto;
   min-width: 0;
   min-height: 0;
 }
@@ -457,6 +457,91 @@ body[data-expanded="1"][data-dock="bottom"] .panel { border-bottom-left-radius: 
   background-clip: content-box;
   background-color: var(--label-4);
 }
+
+/* 消息时间：像聊天流一样居中显示在消息上方 */
+.message-time {
+  margin: 3px 0 5px;
+  color: var(--label-3);
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: center;
+  letter-spacing: .02em;
+}
+
+/* 总结单行入口：作为对话流节点插入 */
+.summary-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 14px;
+  border: 0;
+  border-top: .5px solid var(--separator);
+  border-bottom: .5px solid var(--separator);
+  background: var(--fill-2);
+  color: var(--label-2);
+  font-size: 11.5px;
+  text-align: left;
+  transition: background-color .16s, color .16s;
+}
+.summary-line:hover { background: var(--fill); color: var(--label); }
+.summary-line strong { color: var(--label); font-weight: 650; }
+.summary-line.summary-flow {
+  margin: 5px 0 9px;
+  border: .5px solid var(--separator);
+  border-radius: 9px;
+  background: var(--fill-2);
+}
+.summary-line.summary-flow:hover { border-color: var(--separator-strong); }
+.summary-line-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--blue);
+  box-shadow: 0 0 0 3px rgba(10, 132, 255, .14);
+}
+.summary-line-arrow { margin-left: auto; color: var(--label-3); font-size: 16px; line-height: 1; }
+
+.summary-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, .42);
+  backdrop-filter: blur(3px);
+}
+.summary-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 100%);
+  max-height: 72vh;
+  overflow: hidden;
+  border: .5px solid var(--separator);
+  border-radius: 16px;
+  background: var(--panel-solid);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .34);
+}
+.summary-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-bottom: .5px solid var(--separator);
+}
+.summary-dialog-head strong { display: block; font-size: 14px; font-weight: 650; }
+.summary-dialog-head small { display: block; margin-top: 2px; color: var(--label-2); font-size: 11px; }
+.summary-list { overflow-y: auto; padding: 4px 16px 16px; scrollbar-width: thin; }
+.summary-item { padding: 12px 0; border-bottom: .5px solid var(--separator); }
+.summary-item:last-child { border-bottom: 0; }
+.summary-time { margin-bottom: 5px; color: var(--label-3); font-size: 10.5px; }
+.summary-body { color: var(--label); font-size: 12.5px; line-height: 1.62; overflow-wrap: anywhere; }
+.summary-body p { margin: 0 0 6px; }
+.summary-body p:last-child { margin-bottom: 0; }
+.summary-empty { padding: 28px 0; color: var(--label-2); font-size: 12px; text-align: center; }
 
 .message {
   max-width: 88%;

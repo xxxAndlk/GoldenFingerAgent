@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { CollaborationMode, summarizeObservations } = require('../collaboration');
+const { CollaborationMode, summarizeObservations, stripTrailingQuestion } = require('../collaboration');
 
 test('summarizeObservations groups apps, durations and recent window titles', () => {
   const summary = summarizeObservations([
@@ -24,6 +24,24 @@ test('summary input removes repeated and OCR-varied paragraphs', () => {
   ]);
   assert.equal((summary.match(/个人管家/g) || []).length, 1);
   assert.match(summary, /真正不同的结论/);
+});
+
+test('summary strips a trailing question so it stays a summary', () => {
+  assert.equal(stripTrailingQuestion('本阶段完成。\n\n要不要我继续？'), '本阶段完成。');
+  assert.equal(stripTrailingQuestion('本阶段完成。要不要我继续？'), '本阶段完成。');
+  assert.equal(stripTrailingQuestion('要不要我继续？'), '');
+});
+
+test('summary input keeps details beyond the old 60-item window', () => {
+  const observations = Array.from({ length: 70 }, (_, index) => ({
+    app: 'Code',
+    title: `文件${index}`,
+    content: `第${index}条不同内容`,
+    at: index * 30_000,
+  }));
+  const summary = summarizeObservations(observations);
+  assert.match(summary, /第0条不同内容/);
+  assert.match(summary, /第69条不同内容/);
 });
 
 test('disabled collaboration never reads the active window', async () => {
@@ -105,6 +123,67 @@ test('successful summary releases exactly the summarized observation ids', async
   assert.equal(result.reply, '总结完成');
   assert.deepEqual(summarized, [['old']]);
   assert.deepEqual(mode.observations.map(item => item.id), ['new']);
+});
+
+test('summary reply and phase do not retain a final question', async () => {
+  const phases = [];
+  const chats = [];
+  const mode = new CollaborationMode({
+    readActiveWindow: async () => null,
+    api: {
+      capture: async () => {},
+      chat: async text => {
+        chats.push(text);
+        return { reply: '本阶段完成。\n\n要不要我继续？' };
+      },
+    },
+    onPhase: phase => phases.push(phase),
+  });
+  mode.enabled = true;
+  mode.addObservation({ id: 'a', app: 'Code', title: 'main.js', content: '这是本阶段正文，包含足够的内容用于摘要。', at: 1 });
+  const result = await mode.summarizeNow();
+  assert.equal(result.reply, '本阶段完成。');
+  assert.equal(phases[0].summary, '本阶段完成。');
+  assert.doesNotMatch(chats[0], /最后问一个帮助用户继续工作的问题/);
+});
+
+test('summary writes a traceable phase record and carries the previous summary', async () => {
+  const phases = [];
+  const chats = [];
+  const mode = new CollaborationMode({
+    readActiveWindow: async () => null,
+    api: {
+      capture: async () => {},
+      chat: async text => { chats.push(text); return { reply: '本阶段结论' }; },
+    },
+    loadLastSummary: () => '上一阶段结论',
+    sessionId: () => 'chat-1',
+    onPhase: phase => phases.push(phase),
+  });
+  mode.enabled = true;
+  mode.addObservation({ id: 'a', app: 'Code', title: 'main.js', content: '这是本阶段正文 A，包含足够的内容用于摘要。', at: 1 });
+  mode.addObservation({ id: 'b', app: 'Chrome', title: '文档', content: '这是本阶段正文 B，包含足够的内容用于摘要。', at: 2 });
+  const result = await mode.summarizeNow();
+  assert.equal(result.phase_id, phases[0].id);
+  assert.deepEqual(phases[0].eventIds, ['a', 'b']);
+  assert.equal(phases[0].sessionId, 'chat-1');
+  assert.equal(phases[0].summary, '本阶段结论');
+  assert.match(chats[0], /上一阶段结论/);
+  assert.match(chats[0], /正文 A/);
+});
+
+test('clear removes pending observations and previous summary', () => {
+  const mode = new CollaborationMode({
+    readActiveWindow: async () => null,
+    api: {},
+    loadLastSummary: () => '旧结论',
+  });
+  mode.enabled = true;
+  mode.lastSummary = '旧结论';
+  mode.addObservation({ id: 'a', app: 'Code', title: 'main.js', at: 1 });
+  mode.clear();
+  assert.equal(mode.observations.length, 0);
+  assert.equal(mode.lastSummary, '');
 });
 
 test('summary reuses the active chat session instead of creating one per summary', async () => {

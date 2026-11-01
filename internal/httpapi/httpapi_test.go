@@ -91,6 +91,65 @@ func postJSON(t *testing.T, h http.Handler, path, body string) *httptest.Respons
 	return rec
 }
 
+func TestSummarizeEndpointUsesNoToolsAndSeparateContext(t *testing.T) {
+	srv, _ := newTestServer(t, mock.TextResponse("今天主要修改了 settings.json，并检查了工作轨迹。"))
+	h := srv.Handler()
+	rec := postJSON(t, h, "/api/summarize", `{"context":"09:00 修改 settings.json；10:00 检查工作轨迹","focus":"今天做了什么"}`)
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	var resp summarizeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(resp.Reply, "settings.json") {
+		t.Fatalf("summary reply = %q", resp.Reply)
+	}
+	scripted := srv.Runtime.LLM.(*mock.Scripted)
+	if len(scripted.Calls) != 1 {
+		t.Fatalf("llm calls = %d", len(scripted.Calls))
+	}
+	call := scripted.Calls[0]
+	if len(call.Tools) != 0 {
+		t.Fatalf("summary sub-agent must not expose tools: %+v", call.Tools)
+	}
+	if call.Messages[0].Role != llm.RoleSystem || !strings.Contains(call.Messages[1].Content, "修改 settings.json") {
+		t.Fatalf("unexpected summary prompt: %+v", call.Messages)
+	}
+}
+
+func TestChatContextIsInjectedButNotPersisted(t *testing.T) {
+	srv, _ := newTestServer(t, mock.TextResponse("好的"))
+	h := srv.Handler()
+	rec := postJSON(t, h, "/api/chat", `{"text":"今天做了什么","context":"今天的工作阶段总结：09:00 修改了设置"}`)
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	scripted := srv.Runtime.LLM.(*mock.Scripted)
+	if len(scripted.Calls) != 1 {
+		t.Fatalf("llm calls = %d", len(scripted.Calls))
+	}
+	last := scripted.Calls[0].Messages[len(scripted.Calls[0].Messages)-1]
+	if !strings.Contains(last.Content, "修改了设置") || !strings.Contains(last.Content, "只读数据") {
+		t.Fatalf("work context missing from llm request: %q", last.Content)
+	}
+	var resp struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := srv.Repos.Sessions.RecentMessages(context.Background(), resp.SessionID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range messages {
+		if strings.Contains(message.Content, "修改了设置") {
+			t.Fatalf("work context leaked into persisted messages: %q", message.Content)
+		}
+	}
+}
+
 func TestChatEndpointCreatesSessionAndTask(t *testing.T) {
 	srv, repos := newTestServer(t,
 		mock.ToolResponse("c1", "create_task",
@@ -171,7 +230,7 @@ func TestInternalChatDoesNotCreateHistory(t *testing.T) {
 	}
 }
 
-func TestInternalChatWithSessionPersistsOnlyAssistant(t *testing.T) {
+func TestInternalChatWithSessionDoesNotPersistSummary(t *testing.T) {
 	srv, _ := newTestServer(t,
 		mock.TextResponse("普通回复"),
 		mock.TextResponse("本轮协作总结"),
@@ -195,8 +254,8 @@ func TestInternalChatWithSessionPersistsOnlyAssistant(t *testing.T) {
 	if err := json.Unmarshal(internal.Body.Bytes(), &internalResp); err != nil {
 		t.Fatal(err)
 	}
-	if internalResp.SessionID != created.SessionID {
-		t.Errorf("internal session = %q, want %q", internalResp.SessionID, created.SessionID)
+	if internalResp.SessionID != "" {
+		t.Errorf("internal summary must not claim a persisted session, got %q", internalResp.SessionID)
 	}
 
 	rec := httptest.NewRecorder()
@@ -205,14 +264,13 @@ func TestInternalChatWithSessionPersistsOnlyAssistant(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &msgs); err != nil {
 		t.Fatal(err)
 	}
-	if len(msgs) != 3 {
-		t.Fatalf("want user+assistant+summary, got %+v", msgs)
+	if len(msgs) != 2 {
+		t.Fatalf("want original user+assistant only, got %+v", msgs)
 	}
-	if strings.Contains(msgs[0].Content, "以下是用户授权协作模式") || strings.Contains(msgs[2].Content, "以下是用户授权协作模式") {
-		t.Errorf("internal prompt must not be persisted: %+v", msgs)
-	}
-	if msgs[2].Role != "assistant" || msgs[2].Content != "本轮协作总结" {
-		t.Errorf("summary message = %+v", msgs[2])
+	for _, msg := range msgs {
+		if strings.Contains(msg.Content, "以下是用户授权协作模式") || msg.Content == "本轮协作总结" {
+			t.Errorf("internal summary must not be persisted: %+v", msgs)
+		}
 	}
 }
 
@@ -353,6 +411,17 @@ func TestSessionListEndpoint(t *testing.T) {
 	}
 	if len(msgs) < 2 || msgs[0].Role != "user" || msgs[1].Role != "assistant" {
 		t.Errorf("want user+assistant messages, got %+v", msgs)
+	}
+
+	rec = get("/api/sessions/" + created.SessionID + "/messages?limit=1")
+	var page []messageDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil || len(page) != 1 || page[0].ID == "" {
+		t.Fatalf("latest page = %+v err=%v", page, err)
+	}
+	rec = get("/api/sessions/" + created.SessionID + "/messages?limit=1&before=" + page[0].ID)
+	var older []messageDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &older); err != nil || len(older) != 1 || older[0].ID == page[0].ID {
+		t.Fatalf("older page = %+v err=%v", older, err)
 	}
 }
 

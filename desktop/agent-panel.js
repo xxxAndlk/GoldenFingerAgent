@@ -39,14 +39,82 @@
     const resultSection = document.querySelector('#agent-result-section');
     const resultTitle = document.querySelector('#agent-result-title');
     const resultOutput = document.querySelector('#agent-result');
+    const clarifyBox = document.querySelector('#agent-clarify');
+    const clarifyQuestion = document.querySelector('#agent-clarify-question');
+    const clarifyOptions = document.querySelector('#agent-clarify-options');
+    const clarifyAnswer = document.querySelector('#agent-clarify-answer');
+    const clarifySend = document.querySelector('#agent-clarify-send');
+    const clarifyStatus = document.querySelector('#agent-clarify-status');
     const a2aConfig = document.querySelector('#a2a-config');
     let agents = [];
     let filter = 'desktop';
+    let clarify = { sessionId: '', questionId: '', name: '', busy: false };
+
+    function setClarifyBusy(value) {
+      for (const button of clarifyOptions.querySelectorAll('button')) button.disabled = value;
+      clarifyAnswer.disabled = value;
+      clarifySend.disabled = value;
+    }
+
+    // BMA 遇到计划确认/ask_user 时不再让 GFA 等到超时：把问题和选项直接交给用户。
+    function renderClarify(name, result) {
+      const pending = result && result.state === 'awaiting_clarify' && result.task_id;
+      if (!pending) {
+        clarifyBox.hidden = true;
+        clarify = { sessionId: '', questionId: '', name: '', busy: false };
+        return;
+      }
+      clarify = {
+        sessionId: result.task_id,
+        questionId: result.question_id || '',
+        name,
+        busy: false,
+      };
+      clarifyBox.hidden = false;
+      clarifyQuestion.textContent = result.question || result.output || 'BMA 正在等待你的答复。';
+      clarifyOptions.replaceChildren();
+      for (const option of result.options || []) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'secondary-button';
+        button.textContent = option.label || option.id;
+        if (option.description) button.title = option.description;
+        button.addEventListener('click', () => sendClarify(option.id));
+        clarifyOptions.append(button);
+      }
+      clarifyAnswer.value = '';
+      clarifyStatus.textContent = '';
+      clarifyAnswer.focus();
+    }
+
+    async function sendClarify(answer) {
+      const value = String(answer || '').trim();
+      if (!value) {
+        clarifyStatus.textContent = '先填写答复内容';
+        clarifyAnswer.focus();
+        return;
+      }
+      if (clarify.busy || !clarify.sessionId) return;
+      const name = clarify.name || 'BMA';
+      const sessionId = clarify.sessionId;
+      clarify.busy = true;
+      setClarifyBusy(true);
+      clarifyStatus.textContent = '正在发送答复，等待 BMA 处理…';
+      try {
+        showResult(name, await api.answerAgent(sessionId, value, clarify.questionId));
+      } catch (error) {
+        clarifyStatus.textContent = `答复失败：${error.message}`;
+      } finally {
+        clarify.busy = false;
+        setClarifyBusy(false);
+      }
+    }
 
     function showResult(name, result) {
       resultTitle.textContent = `${name} · ${result.state || '已返回'}`;
       resultOutput.textContent = result.output || '任务已提交，等待执行结果。';
       resultSection.hidden = false;
+      renderClarify(name, result);
       resultSection.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
     }
 
@@ -114,14 +182,16 @@
       a2aConfig.hidden = filter !== 'service';
     }
 
-    async function refresh() {
-      status.textContent = '正在扫描 A2A、本机命令、桌面软件和 BMA…';
+    async function refresh(force = false) {
+      status.textContent = force
+        ? '正在重新扫描 A2A、本机命令、桌面软件和 BMA…'
+        : '正在读取已保存的 Agent 配置…';
       try {
-        const result = await api.listAgents();
+        const result = await api.listAgents(force);
         agents = (result.agents || []).filter(agent => agent.id !== 'ccswitch');
         render();
       } catch (error) {
-        status.textContent = `扫描失败：${error.message}`;
+        status.textContent = `读取失败：${error.message}`;
       }
     }
 
@@ -186,6 +256,13 @@
       }
     }
 
+    clarifySend.addEventListener('click', () => sendClarify(clarifyAnswer.value));
+    clarifyAnswer.addEventListener('keydown', event => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      sendClarify(clarifyAnswer.value);
+    });
+
     for (const tab of document.querySelectorAll('[data-filter]')) {
       tab.addEventListener('click', () => {
         filter = tab.dataset.filter;
@@ -193,7 +270,7 @@
         render();
       });
     }
-    document.querySelector('#agents-refresh').addEventListener('click', refresh);
+    document.querySelector('#agents-refresh').addEventListener('click', () => refresh(true));
     document.querySelector('#workdir-choose').addEventListener('click', chooseDirectory);
     document.querySelector('#ccswitch-open').addEventListener('click', () => api.openWindow('ccswitch'));
     document.querySelector('#a2a-add').addEventListener('click', register);

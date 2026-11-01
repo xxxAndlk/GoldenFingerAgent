@@ -51,6 +51,8 @@ class NativeActivitySource extends ActivitySource {
       url: clean(page.url, 1000),
       at: this.now(),
       evidenceRef: page.evidencePath || '',
+      skipEvidence: Boolean(page.skipEvidence),
+      captureNote: page.captureNote || '',
     };
     if (content) {
       return normalizeObservation({

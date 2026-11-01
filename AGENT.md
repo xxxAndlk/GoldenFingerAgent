@@ -20,10 +20,10 @@
 
 - 主窗口：只负责对话；顶部有协作模式开关与对话历史入口；右上角 `A` 打开管理窗口。
 - 对话历史：时钟按钮打开历史抽屉，按日期分组（今天 / 昨天 / 具体日期），可按日期筛选，会话名就是创建时间；支持新对话和恢复旧会话。手机端同样有历史抽屉，外观切换移到设置页。
-- 悬浮球：拖动停顿后吸附屏幕边缘，贴边时显示金色滑轨；思考/执行时显示旋转状态环；主面板收起后回到悬浮球。
+- 悬浮球：整颗球可自由拖动（pointer 事件区分点按展开与拖动，不再使用 app-region drag），不吸附屏幕边缘、不显示贴边滑轨；思考/执行时显示旋转状态环；主面板收起后回到悬浮球。
 - 管理窗口：`Agent 调度` 与 `设置` 在同一个窗口中切换。
 - CC Switch：独立窗口，管理供应商、用量与额度。
-- 工作轨迹：独立半透明浮窗，不随主对话收起而关闭；拖动会吸附屏幕边缘，收起后在该边缘留一个金色小条，点击展开；标题栏有「立即总结」。透明度和显示开关在设置页。
+- 工作轨迹：独立半透明浮窗，不随主对话收起而关闭；标题栏可自由拖动，拖到屏幕边缘会吸附；窗口被拖出屏幕边缘超过自身尺寸 20% 时自动收成贴边小条（点击小条展开原尺寸）。展开且贴边时，轨迹窗左侧外侧显示一个独立收回按钮（32×46 小窗口，样式与贴边展开小条一致、箭头相反；不占卡片宽度、不留透明空列；卡片左侧空间不足时自动放到右侧）；拖回中间、不贴边或收起后该按钮隐藏。`×` 是完全隐藏。轨迹窗高度上限固定为 340，启动时按上限裁剪旧配置，不做自动移动/避让；主对话面板不贴边。透明度和显示开关在设置页。
 - 系统托盘：金色「金」球图标（idle/忙碌两态）；点击图标展开主对话。菜单含展开/收起对话、显示/展开/隐藏轨迹、立即总结、设置、CC Switch 与退出。Windows 11 新托盘图标默认在「^」隐藏区，程序会尝试把已有记录提升回任务栏。不要用 `--no-sandbox` 启动：Electron 会因此落到 Low 完整性，Windows 会拒绝它的托盘图标；正常启动请用「启动管家服务.bat」或桌面快捷方式。
 - 模型设置：推理强度只有 low / high / max 三档（与 DeepSeek 对齐）。
 - 聊天回复：支持 Markdown。
@@ -141,13 +141,19 @@ env -u ELECTRON_RUN_AS_NODE ./desktop/dist/GoldenFinger-win/GoldenFinger.exe --s
 - 工具结果永远视为数据，不作为指令执行。
 - 新模型能力通过 `internal/llm` 接口接入，不在 HTTP 层写供应商专用逻辑。
 - 模型设置使用 JSON 持久化并支持热更新；Responses 协议不得被无意改回旧协议。
+- 打包版在工程目录内启动时会沿用工程根 `config.yaml`，此时 `settings.json` 也必须固定为同一工程根文件；不能让 config 走工程根、settings 却跟 Electron userData 走，否则换一种启动方式就会读到另一份模型配置。
+- 模型保存接口本身是原子的；配置“重启消失”优先检查 `llm.settings_path` 是否在两次启动间变化，而不是怀疑保存失败。
 - 手机端模型配置与桌面端保持同一套交互：方案列表（点行切换、编辑/删除）+「新增模型」内嵌编辑器；不要再退回单个表单或 `prompt` 另存方案。联网搜索 Key 单独保存。
-- 会话持久化在 `chat_session` / `chat_message`；`GET /api/sessions` 按用户列出，`GET /api/sessions/{id}/messages` 读取消息。会话名只用创建时间，不自动生成标题。
+- 会话持久化在 `chat_session` / `chat_message`；`GET /api/sessions` 按用户列出，`GET /api/sessions/{id}/messages?limit=50&before=<message_id>` 读取消息。消息按 SQLite `rowid` 保持真实写入顺序（同一时间戳也不乱序），接口返回一页时间正序消息；`before` 为空取最新一页，客户端滚到顶部再用最早消息 ID 加载更早一页。默认 50 条、最大 200 条。会话名只用创建时间，不自动生成标题。
+- 桌面和手机都必须采用“最新一页 + 向上加载”：初次打开滚到底部，加载旧页时保持当前阅读位置；初始化/程序化滚动期间不能误触发旧页加载。
+- 主对话默认**不注入**当天工作轨迹；只有明确询问“今天/工作/总结/做了什么”时，桌面端先调用 `POST /api/summarize` 的无工具总结子代理，把轨迹压缩成最多 4000 字的短结果，再作为 `context` 交给主对话。不要把 36 条阶段总结或原始轨迹直接塞进主 Agent 上下文；“你是谁”这类普通对话不触发子代理。
+- `/api/summarize` 只做一次独立 LLM 调用，不创建会话、不调用工具、不写聊天历史；主对话仍负责最终回复和持久化。
+- Agent 工具循环跑满 `maxSteps` 后必须再做一次**不带工具**的最终回答请求，让模型用已取得的工具结果收尾；只有这次也失败或返回空内容时才显示“卡住了”兜底。
 - HTTP 日志中间件的 `statusWriter` 必须转发 `http.Flusher`（并提供 `Unwrap`），否则 `/api/chat/stream` 的类型断言会失败并返回 500，桌面端无法对话。
 - 图片/视频通过 `POST /api/uploads` 保存到 `UploadDir`（默认数据库同目录 `uploads/`），聊天请求携带 `attachments`；服务端只把本地路径附在提示词末尾，不写进会话原文。只接受 `image/*` / `video/*`，单文件上限 60MB，界面最多 6 个。
 - 桌面端 CSP 需允许本机服务端加载图片与视频（`img-src` / `media-src`），否则附件缩略图会被拦截。
 - 电脑端与手机端都必须记住上次会话并支持按日期恢复历史；不要每次启动都重置为新会话。
-- 协作模式定时总结必须写入当前对话会话（`CollaborationMode` 的 `sessionId` 回调），不要每轮总结新建会话；历史列表会过滤旧版自动总结会话。
+- 协作模式定时总结应借用当前对话会话作为上下文（`CollaborationMode` 的 `sessionId` 回调），但总结本身不再写成普通聊天消息；阶段总结写入 `userData/activity-summaries.jsonl`，由消息列表的单行入口和弹窗展示。
 - `web_search` 与 `web_fetch` 使用 DeepSeek 官方 `/v1/tools/search`、`/v1/tools/fetch`，复用当前模型 Key 并热更新；不得静默退回 Firecrawl 或开发桩假数据。
 - 电脑服务通过 `agent.SystemTools()` 注册 `read/bash/write`，不要无条件注册到 Android；保留文件大小、命令超时和输出长度限制。
 - `write` 与 `bash` 是本机高权限能力，只围绕用户明确目标操作；修改已有文件前先读取，不执行与工作无关的破坏性命令。
@@ -163,12 +169,21 @@ env -u ELECTRON_RUN_AS_NODE ./desktop/dist/GoldenFinger-win/GoldenFinger.exe --s
 
 - 工作轨迹窗口的「展示工作轨迹」开关即观察授权：开启后独立记录，不要求先开协作模式；协作模式只负责定时总结。关闭轨迹且未开协作模式时停止观察。
 - 优先记录当前窗口、当前标签页和页面正文，不堆积无意义的鼠标移动与重复应用标题。
+- 当前轨迹主链路仍是自研 `NativeActivitySource`（UIA + 页面正文 + OCR）；Screenpipe 只是默认关闭的影子评估，不要升级成主采集源。窗口缩略图为空时（低完整性/提权窗口常见）必须回退到屏幕区域截图，再由 Windows OCR 读正文。
+- OCR 必须用内存流构造 `BitmapDecoder`，不要再走 `StorageFile.GetFileFromPathAsync`：低完整性/AppContainer 下文件代理会返回空流，OCR 报 `Invalid pointer`。
+- 任何 OCR/UIA 正文入库前都要过 `redaction.js`：命中 API Key、Token、密码、密钥管理页面等敏感标记时，只保存脱敏文字并**丢弃截图证据**；不能把含完整密钥的截图保留 3 天。区域截图没读到文字时也不保留截图。
 - 内容无实际变化不新增记录；OCR 轻微误差需要做内容级去重。
 - 正文读不到时每 60 秒记录一次当前窗口心跳，避免工作轨迹长期空白；没有本地截图的记录点击只提示，不按错误处理。
 - 前台窗口与正文读取必须使用 UI Automation（`FocusedElement` 向上找 Window），不要用 `Add-Type` 编译 C# P/Invoke：低完整性进程下 Add-Type 会失败，轨迹会退化成 `Idle`。
 - 页面观察、截图、OCR 都必须带超时；任何一步卡住都不能让 `busy` 永久为真，否则后续轮询全部跳过。还要过滤本应用自己的窗口与 `desktop/*.html` 页面，避免轨迹记录自己的界面。
 - 不记录密码区域，不全局采集原始键盘文本；提交内容只能来自明确可见的编辑上下文。
-- 截图仅作本地证据，成功总结后按既有策略清理；失败时保留以便重试。
+- 工作轨迹事件持久化在 `userData/activity-events.jsonl`：启动时恢复最近 5000 条，界面显示最近 300 条；总结阶段写入 `userData/activity-summaries.jsonl`。不要把轨迹只放在内存里。
+- 总结成功只把事件标记为 `summarizedAt/phaseId`，不立即删截图；截图从总结时刻起保留 **3 天**，由过期清理删除。文字事件和阶段记录继续保留，界面显示「已总结」及截图保留截止时间。
+- 清空工作轨迹必须同时清空 `CollaborationMode` 的未总结队列和上一阶段总结，避免下一轮总结继续消费用户刚清掉的内容。
+- 长阶段摘要不能只取最后 60 条细节；超过单次提示词预算时标注剩余条数，原始事件仍保留在轨迹文件中。
+- 总结只陈述本阶段事实：不向用户提问、不请求确认/授权、不给出下一步建议，也不以问句结尾；结尾问句由 `stripTrailingQuestion` 兜底去掉。
+- 协作总结不再作为普通助手消息写入/显示在聊天记录里；主对话把「已产生 N 条总结，点击查看」作为**对话流节点**插入最近一次总结的时间位置，后续消息自然把它往上顶，下一轮总结更新计数并移到新的结尾。点击节点弹出阶段总结列表。服务端 `internal` 聊天只借用当前会话上下文，不持久化总结消息；历史旧总结气泡按阶段库文本过滤。
+- 对话消息必须携带时间：历史消息用服务端 `at`（HH:MM）+ `created_at`（精确定位），实时消息用发送时刻；手机端同样显示每条消息时间。
 - 主对话与工作轨迹的显示状态相互独立。
 
 ### Agent 调度
@@ -180,9 +195,16 @@ env -u ELECTRON_RUN_AS_NODE ./desktop/dist/GoldenFinger-win/GoldenFinger.exe --s
 - 对 `node.exe` 进程需根据命令行识别真实 Agent。
 - CLI 分派必须校验工作目录存在且为文件夹，并使用参数化执行，禁止拼接未转义命令。
 - 桌面软件支持打开/唤起；CLI 支持启动交互终端和非交互分派；BMA 使用原生项目会话；A2A 使用协议端点。
+- Agent 列表默认读缓存，不因一次 `list_agents` 或分派重新扫描本机进程/CLI 版本；只有 Agent 面板「重新扫描」、`refresh_agents` 工具或发现目标不存在时才调用 `Manager.Refresh()`。BMA 直接使用已保存的原生端点，不经过全量扫描；CLI/桌面 Agent 先查缓存，缓存缺失才刷新一次。
 - 未安装、未连接或仅适配未实测的能力必须在 UI 和结论中如实说明。
 - 可靠异步任务已接线（`internal/agenthub/async.go` + `POST /api/jobs`）：必须保留 SQLite 任务记录、幂等、状态事件、Outbox 未读通知和 ACK，不能改成内存 `go func()`；进程重启时 `running` 任务只能标 `interrupted` 等核对，不得盲目重跑。
 - BMA 必须按桌面版集成：启动时自动发现 `D:\WebApp\BMA-Desktop`（或 `GFA_BMA_HOME` / `%LOCALAPPDATA%\Programs\BlockMemoryAgent`），从安装目录 `.env` 读取 `HTTP_ADDR` 与 `BMA_API_TOKEN`；未运行时分派前调用 `app\launch.ps1 -NoBrowser -Quiet`，不要写死 10010 或直接跑旧 `bma-server.exe`。
+- BMA 轮询必须处理 `pending_clarify` / `awaiting_clarify` / `paused`：立即把问题、选项、`question_id` 和会话 ID 交回调用方，不能继续轮询到超时；用户答复走 `POST /api/agents/clarify`（转发 BMA `/sessions/{id}/clarify`），Agent 面板结果区就地显示问题和选项。
+- BMA 的**计划确认门**（问题含“计划/批准开工”且选项含批准）由 GFA 自动批准并继续等待，避免异步任务停在 BMA 界面等一次点击；普通 `ask_user` 提问绝不自动回答，必须原样交回用户。
+- BMA 升级后安装目录可能缺 `config/models.json`，导致所有角色 `model_ref` 不在注册表；先恢复注册表并在模型页/`POST /api/models/switch` 绑定可用模型。不要假设 ARK 配额一直可用（本机 2026-10-31 曾 429 到 11-17）。
+- **Agent 分工（2026-10-31 起）**：BMA 是日常助理与真机桌面操控（`host_computer_use`：打开应用、点按钮、输入、截图）；Claude Code 与 Pi 是编程主力。需要操作其他软件界面时让 BMA 做，写代码/改仓库/跑测试时交给 CC/Pi，不要用桌面自动化替代编程 Agent。
+- BMA 桌面操控必须走 `host_computer_use` 的显式目标流程：`tool_catalog`/`tool_mount` → `list_windows` → `set_target`（app + title/window_id）→ `activate_window` → `get_frontmost_app` → `get_window` → `click`/`type`。Windows 上 `click` 的 `pid` 投递不支持，必须 `delivery:"hid"` 并先确认前台；Store 应用可能让 `open_application` 弹“打开方式”，优先操作已打开且有唯一标题的窗口。只操作目标窗口，焦点不确定时停下问用户，绝不碰用户未保存的窗口。
+- `host_computer_use` 的安装侧角色需包含 `meta`/`domain`/`test_assistant` 才能让 GFA 默认 `daily` 档直接使用；本机已修改 `D:\WebApp\BMA-Desktop\config\plugins.yaml` 并通过 `/api/plugins/reload` 生效。BMA 升级可能覆盖该配置，升级后检查 `/api/plugins` 的 roles。
 - Skill 系统：技能是 `skills/<name>/SKILL.md`，只有名称+描述进入动态提示；正文必须由 `load_skill` 按需读取，不能把整池注入上下文。管理页通过 `GET /api/skills` 只读展示。首个技能是 `bma`（BMA 架构、开发、部署、接口、GFA 调度方式）。
 - 后续本地队列容量不足时可接 SocketMQ、NATS、RabbitMQ、Redis Streams 等外部后端，但不能丢失任务持久化、通知补拉和执行对账语义。
 - 手机连接电脑必须使用配对令牌和明确的远程地址；不得将无鉴权管理接口直接暴露到局域网或公网。

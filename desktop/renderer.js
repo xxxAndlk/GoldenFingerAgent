@@ -24,12 +24,25 @@ const historyClearDate = document.querySelector('#history-clear-date');
 const attachButton = document.querySelector('#attach');
 const attachInput = document.querySelector('#attach-input');
 const attachmentStrip = document.querySelector('#attachments');
+const summaryLine = document.querySelector('#summary-line');
+const summaryCount = document.querySelector('#summary-count');
+const summaryModal = document.querySelector('#summary-modal');
+const summaryList = document.querySelector('#summary-list');
+const summaryClose = document.querySelector('#summary-close');
 const UPLOAD_BASE = 'http://127.0.0.1:8080';
 const SESSION_KEY = 'gfa.chatSessionId';
 const WELCOME = '我是金手指管家，可以对话、记录和调度其他 Agent。右上角是设置与 Agent 管理，顶栏开关控制协作模式。';
 let expanded = false;
 let historySessions = [];
 let pendingAttachments = [];
+let summaryPhases = [];
+let summaryTexts = new Set();
+const MESSAGE_PAGE_SIZE = 50;
+let conversationSession = '';
+let oldestMessageId = '';
+let messageHasMore = false;
+let loadingOlderMessages = false;
+let allowOlderLoad = false;
 
 // ---- 对话状态：思考中 / 调用工具 / 等待 Agent ----
 const TOOL_LABELS = {
@@ -39,7 +52,8 @@ const TOOL_LABELS = {
   write: '正在写入文件',
   bash: '正在执行命令',
   delegate_agent: '正在等待 Agent 完成',
-  list_agents: '正在扫描本机 Agent',
+  list_agents: '正在读取 Agent 配置',
+  refresh_agents: '正在重新扫描 Agent',
   open_agent: '正在唤起 Agent',
   memory_search: '正在检索长期记忆',
   remember: '正在写入长期记忆'
@@ -104,7 +118,95 @@ function setExpanded(next) {
   api.toggle(next);
 }
 
-function addMessage(text, role = 'assistant', attachments = []) {
+// ---- 总结：单行入口 + 弹窗，不把总结混进普通消息气泡 ----
+function currentSessionId() { return localStorage.getItem(SESSION_KEY) || ''; }
+
+function createSummaryMarker(count) {
+  const marker = document.createElement('button');
+  marker.type = 'button';
+  marker.className = 'summary-line summary-flow';
+  marker.innerHTML = '<span class="summary-line-dot" aria-hidden="true"></span><span>已产生 <strong></strong> 条总结，点击查看</span><span class="summary-line-arrow" aria-hidden="true">›</span>';
+  marker.querySelector('strong').textContent = String(count);
+  marker.title = `查看 ${count} 条阶段总结`;
+  marker.addEventListener('click', openSummaryModal);
+  return marker;
+}
+
+// 总结入口是对话流里的节点：放在最近一次总结的时间位置；后续消息自然把它往上顶。
+function renderSummaryMarker() {
+  const existing = messages.querySelector('.summary-flow');
+  if (existing) existing.remove();
+  if (!summaryPhases.length) {
+    summaryLine.hidden = true;
+    return;
+  }
+  const latest = summaryPhases[summaryPhases.length - 1];
+  const latestAt = Number(latest.completedAt || latest.endedAt || 0);
+  const label = latestAt ? clockLabel(new Date(latestAt)) : '';
+  const fragment = document.createDocumentFragment();
+  if (label) fragment.appendChild(buildTimeLabel(label));
+  fragment.appendChild(createSummaryMarker(summaryPhases.length));
+  let before = null;
+  for (const child of messages.children) {
+    if (!child.classList || !child.classList.contains('message')) continue;
+    const at = Date.parse(child.dataset.createdAt || '');
+    if (latestAt && Number.isFinite(at) && at > latestAt) {
+      before = child.previousElementSibling?.classList.contains('message-time')
+        ? child.previousElementSibling
+        : child;
+      break;
+    }
+  }
+  const atBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 60;
+  messages.insertBefore(fragment, before);
+  if (atBottom) messages.scrollTop = messages.scrollHeight;
+  summaryLine.hidden = true;
+}
+
+async function openSummaryModal() {
+  await loadSummaries();
+  renderSummaryModal();
+  summaryModal.hidden = false;
+}
+
+function renderSummaryModal() {
+  summaryList.replaceChildren();
+  if (!summaryPhases.length) {
+    const empty = document.createElement('p');
+    empty.className = 'summary-empty';
+    empty.textContent = '这个会话还没有阶段总结。';
+    summaryList.append(empty);
+    return;
+  }
+  for (const phase of summaryPhases.slice().reverse()) {
+    const item = document.createElement('article');
+    item.className = 'summary-item';
+    const time = document.createElement('div');
+    time.className = 'summary-time';
+    const at = new Date(phase.completedAt || phase.endedAt || Date.now());
+    const when = Number.isNaN(at.getTime()) ? '' : at.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const records = Array.isArray(phase.eventIds) ? phase.eventIds.length : 0;
+    time.textContent = [when, records ? `${records} 条记录` : ''].filter(Boolean).join(' · ');
+    const body = document.createElement('div');
+    body.className = 'summary-body';
+    body.innerHTML = window.MarkdownLite.render(phase.summary || phase.record || '');
+    item.append(time, body);
+    summaryList.append(item);
+  }
+}
+
+async function loadSummaries() {
+  try {
+    summaryPhases = await api.activitySummaries(currentSessionId());
+  } catch {
+    summaryPhases = [];
+  }
+  summaryTexts = new Set(summaryPhases.map(phase => String(phase.summary || '').trim()).filter(Boolean));
+  renderSummaryMarker();
+  if (!summaryModal.hidden) renderSummaryModal();
+}
+
+function buildMessage(text, role = 'assistant', attachments = []) {
   const element = document.createElement('article');
   element.className = `message ${role}`;
   if (role === 'assistant') element.innerHTML = window.MarkdownLite.render(text);
@@ -130,9 +232,34 @@ function addMessage(text, role = 'assistant', attachments = []) {
     }
     element.appendChild(box);
   }
-  messages.appendChild(element);
-  messages.scrollTop = messages.scrollHeight;
   return element;
+}
+
+function clockLabel(date = new Date()) {
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+}
+
+function buildTimeLabel(at) {
+  const label = document.createElement('div');
+  label.className = 'message-time';
+  label.textContent = at;
+  return label;
+}
+
+function buildMessageEntry(text, role = 'assistant', attachments = [], at = '', createdAt = '') {
+  const fragment = document.createDocumentFragment();
+  if (at) fragment.appendChild(buildTimeLabel(at));
+  const element = buildMessage(text, role, attachments);
+  if (createdAt) element.dataset.createdAt = createdAt;
+  fragment.appendChild(element);
+  return { fragment, element };
+}
+
+function addMessage(text, role = 'assistant', attachments = [], at = '', createdAt = '') {
+  const entry = buildMessageEntry(text, role, attachments, at, createdAt);
+  messages.appendChild(entry.fragment);
+  messages.scrollTop = messages.scrollHeight;
+  return entry.element;
 }
 
 function renderAttachments() {
@@ -183,7 +310,7 @@ function fileToDataUrl(file) {
 async function addAttachmentFiles(files) {
   for (const file of Array.from(files || [])) {
     if (pendingAttachments.length >= 6) {
-      addMessage('最多同时添加 6 个附件', 'system');
+      addMessage('最多同时添加 6 个附件', 'system', [], clockLabel(), new Date().toISOString());
       break;
     }
     const kind = file.type.startsWith('image/') ? 'image' : (file.type.startsWith('video/') ? 'video' : '');
@@ -196,7 +323,7 @@ async function addAttachmentFiles(files) {
       pendingAttachments.push(uploaded);
       renderAttachments();
     } catch (error) {
-      addMessage(`附件上传失败：${error.message}`, 'error');
+      addMessage(`附件上传失败：${error.message}`, 'error', [], clockLabel(), new Date().toISOString());
     } finally {
       attachButton.disabled = false;
     }
@@ -236,14 +363,14 @@ collabToggle.addEventListener('change', async () => {
 api.onExpanded(renderExpanded);
 api.onWidgetDock?.(renderDock);
 api.onSummary(summary => {
-  if (summary.error) addMessage(summary.error, 'error');
+  if (summary.error) addMessage(summary.error, 'error', [], clockLabel(), new Date().toISOString());
   if (summary.reply) {
-    addMessage(summary.reply, 'assistant');
+    loadSummaries();
     if (!expanded) orbDot.hidden = false;
   }
 });
 api.onAgentResult(({ name, result }) => {
-  addMessage(`**${name} 执行结果**\n\n${result.output || '任务已提交。'}`, 'assistant');
+  addMessage(`**${name} 执行结果**\n\n${result.output || '任务已提交。'}`, 'assistant', [], clockLabel(), new Date().toISOString());
   if (!expanded) orbDot.hidden = false;
 });
 
@@ -267,15 +394,69 @@ function sessionDate(value) {
   return Number.isNaN(date.getTime()) ? new Date() : date;
 }
 
-function renderConversation(list) {
+function conversationItems(list) {
+  return (list || []).filter(item => {
+    if (item.role !== 'user' && item.role !== 'assistant') return false;
+    // 旧版本曾把总结写成普通助手消息；阶段库里的总结文本在这里过滤掉。
+    return !(item.role === 'assistant' && summaryTexts.has(String(item.content || '').trim()));
+  });
+}
+
+function renderConversation(list, { hasMore = false } = {}) {
+  const raw = Array.isArray(list) ? list : [];
+  oldestMessageId = raw.length ? String(raw[0].id || '') : '';
+  messageHasMore = hasMore;
   messages.replaceChildren();
-  const items = (list || []).filter(item => item.role === 'user' || item.role === 'assistant');
+  allowOlderLoad = false;
+  const items = conversationItems(raw);
   if (!items.length) {
     addMessage(WELCOME, 'assistant');
-    return;
+  } else {
+    for (const item of items) {
+      addMessage(item.content || '', item.role, [], item.at || '', item.created_at || '');
+    }
   }
-  for (const item of items) addMessage(item.content || '', item.role);
+  renderSummaryMarker();
+  requestAnimationFrame(() => { allowOlderLoad = true; });
 }
+
+// 滚到顶部时加载更早一页；只插入旧消息，不重绘已有 DOM，保留当前滚动位置。
+async function loadOlderMessages() {
+  if (!conversationSession || !messageHasMore || loadingOlderMessages || !oldestMessageId) return;
+  loadingOlderMessages = true;
+  allowOlderLoad = false;
+  try {
+    const previousHeight = messages.scrollHeight;
+    const previousTop = messages.scrollTop;
+    const page = await api.sessionMessages(conversationSession, oldestMessageId, MESSAGE_PAGE_SIZE);
+    if (!Array.isArray(page) || !page.length) {
+      messageHasMore = false;
+      return;
+    }
+    oldestMessageId = String(page[0].id || oldestMessageId);
+    messageHasMore = page.length >= MESSAGE_PAGE_SIZE;
+    const fragment = document.createDocumentFragment();
+    for (const item of conversationItems(page)) {
+      fragment.appendChild(buildMessageEntry(item.content || '', item.role, [], item.at || '', item.created_at || '').fragment);
+    }
+    messages.insertBefore(fragment, messages.firstChild);
+    renderSummaryMarker();
+    // 加载更早消息时必须瞬时锚定；CSS 的 smooth 会把 scrollTop 变成动画，旧内容会跳到顶部。
+    const previousBehavior = messages.style.scrollBehavior;
+    messages.style.scrollBehavior = 'auto';
+    messages.scrollTop = messages.scrollHeight - previousHeight + previousTop;
+    requestAnimationFrame(() => { messages.style.scrollBehavior = previousBehavior; });
+  } catch {
+    // 网络失败保持当前位置，下次滚动再试。
+  } finally {
+    loadingOlderMessages = false;
+    allowOlderLoad = true;
+  }
+}
+
+messages.addEventListener('scroll', () => {
+  if (allowOlderLoad && messages.scrollTop <= 24) loadOlderMessages();
+});
 
 function setHistoryMessage(text) {
   historyList.replaceChildren();
@@ -351,9 +532,11 @@ async function openSession(id) {
   setHistoryMessage('正在打开…');
   try {
     await api.useSession(id);
-    const list = await api.sessionMessages(id);
-    renderConversation(list);
     localStorage.setItem(SESSION_KEY, id);
+    conversationSession = id;
+    await loadSummaries();
+    const page = await api.sessionMessages(id, '', MESSAGE_PAGE_SIZE);
+    renderConversation(page, { hasMore: page.length >= MESSAGE_PAGE_SIZE });
     closeHistory();
     if (!expanded) setExpanded(true);
     input.focus();
@@ -365,6 +548,10 @@ async function openSession(id) {
 async function startNewChat() {
   await api.useSession('');
   localStorage.removeItem(SESSION_KEY);
+  conversationSession = '';
+  oldestMessageId = '';
+  messageHasMore = false;
+  await loadSummaries();
   renderConversation([]);
   closeHistory();
   input.focus();
@@ -372,14 +559,21 @@ async function startNewChat() {
 
 async function restoreLastSession() {
   const saved = localStorage.getItem(SESSION_KEY);
-  if (!saved) return;
+  if (!saved) {
+    await loadSummaries();
+    return;
+  }
   try {
     await api.useSession(saved);
-    const list = await api.sessionMessages(saved);
-    renderConversation(list);
+    conversationSession = saved;
+    await loadSummaries();
+    const page = await api.sessionMessages(saved, '', MESSAGE_PAGE_SIZE);
+    renderConversation(page, { hasMore: page.length >= MESSAGE_PAGE_SIZE });
   } catch (error) {
     localStorage.removeItem(SESSION_KEY);
     await api.useSession('');
+    conversationSession = '';
+    await loadSummaries();
   }
 }
 
@@ -391,11 +585,55 @@ historyClearDate.addEventListener('click', () => {
   loadHistory();
 });
 historyDate.addEventListener('change', loadHistory);
+summaryLine.addEventListener('click', openSummaryModal);
+summaryClose.addEventListener('click', () => { summaryModal.hidden = true; });
+summaryModal.addEventListener('click', event => {
+  if (event.target === summaryModal) summaryModal.hidden = true;
+});
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && !historyPanel.hidden) closeHistory();
+  if (event.key !== 'Escape') return;
+  if (!summaryModal.hidden) {
+    summaryModal.hidden = true;
+    return;
+  }
+  if (!historyPanel.hidden) closeHistory();
 });
 
-orb.addEventListener('click', () => setExpanded(true));
+let orbDrag = null;
+let suppressOrbClick = false;
+orb.addEventListener('pointerdown', event => {
+  if (event.button !== 0) return;
+  orbDrag = { x: event.screenX, y: event.screenY, pointerId: event.pointerId, moved: false };
+  suppressOrbClick = false;
+  if (orb.setPointerCapture) orb.setPointerCapture(event.pointerId);
+  api.dragStart?.(event.screenX, event.screenY);
+});
+orb.addEventListener('pointermove', event => {
+  if (!orbDrag || event.pointerId !== orbDrag.pointerId) return;
+  const dx = event.screenX - orbDrag.x;
+  const dy = event.screenY - orbDrag.y;
+  if (!orbDrag.moved && Math.hypot(dx, dy) >= 4) orbDrag.moved = true;
+  if (orbDrag.moved) {
+    suppressOrbClick = true;
+    api.dragMove?.(event.screenX, event.screenY);
+  }
+});
+function finishOrbDrag(event) {
+  if (!orbDrag || event.pointerId !== orbDrag.pointerId) return;
+  suppressOrbClick = orbDrag.moved;
+  orbDrag = null;
+  api.dragEnd?.();
+}
+orb.addEventListener('pointerup', finishOrbDrag);
+orb.addEventListener('pointercancel', finishOrbDrag);
+orb.addEventListener('click', event => {
+  if (suppressOrbClick) {
+    suppressOrbClick = false;
+    event.preventDefault();
+    return;
+  }
+  setExpanded(true);
+});
 document.querySelector('#collapse').addEventListener('click', () => setExpanded(false));
 document.querySelector('#agents-toggle').addEventListener('click', () => api.openSettings());
 
@@ -413,12 +651,21 @@ form.addEventListener('submit', async event => {
   if (!text && !files.length) return;
   input.value = '';
   send.disabled = true;
-  addMessage(text || '（附件）', 'user', files);
-  const loading = addMessage('正在思考…', 'assistant');
+  const sentAt = new Date();
+  addMessage(text || '（附件）', 'user', files, clockLabel(sentAt), sentAt.toISOString());
+  const loading = addMessage('正在思考…', 'assistant', [], clockLabel(sentAt), sentAt.toISOString());
   setChatStatus('thinking', '正在思考…');
   try {
     const response = await api.chat(text, files);
-    if (response.session_id) localStorage.setItem(SESSION_KEY, response.session_id);
+    if (response.session_id) {
+      if (!conversationSession) {
+        conversationSession = response.session_id;
+        oldestMessageId = '';
+        messageHasMore = false;
+      }
+      localStorage.setItem(SESSION_KEY, response.session_id);
+      loadSummaries();
+    }
     pendingAttachments = [];
     renderAttachments();
     loading.innerHTML = window.MarkdownLite.render(response.reply || '我没有收到回答。');
@@ -441,7 +688,10 @@ input.addEventListener('keydown', event => {
 
 refreshStatus();
 refreshCollaboration();
-restoreLastSession();
+(async () => {
+  await loadSummaries();
+  await restoreLastSession();
+})();
 setInterval(refreshCollaboration, 5000);
 
 // ---- 主题：读取持久化值，按钮在 light/dark 间切换 ----
@@ -477,5 +727,8 @@ api.onChatStatus(event => {
 
 // 协作总结若新建了会话，把它记为当前会话，下次启动可恢复。
 api.onChatSession?.(id => {
-  if (id) localStorage.setItem(SESSION_KEY, id);
+  if (id) {
+    localStorage.setItem(SESSION_KEY, id);
+    loadSummaries();
+  }
 });

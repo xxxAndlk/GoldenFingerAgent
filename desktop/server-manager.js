@@ -32,14 +32,15 @@ class ServerManager {
 
   prepare() {
     fs.mkdirSync(this.userData, { recursive: true });
-    const settings = path.join(this.userData, 'settings.json');
     const legacyRoot = path.resolve(this.appDir, '..', '..', '..', '..', '..');
     const legacyConfig = path.join(legacyRoot, 'config.yaml');
     const legacySettings = path.join(legacyRoot, 'settings.json');
-    if (!fs.existsSync(settings) && fs.existsSync(legacySettings)) fs.copyFileSync(legacySettings, settings);
+    // 打包目录仍在工程内时，配置和数据库都沿用工程根；settings 必须跟着 config
+    // 一起固定，否则换一种启动方式（userData 不同）会读到另一份模型配置。
     if (fs.existsSync(legacyConfig)) {
-      return { config: legacyConfig, settings, cwd: legacyRoot };
+      return { config: legacyConfig, settings: legacySettings, cwd: legacyRoot };
     }
+    const settings = path.join(this.userData, 'settings.json');
     const config = path.join(this.userData, 'server-config.yaml');
     const webDir = path.join(this.appDir, 'server', 'web');
     const content = `server:\n  addr: ${yamlPath(this.addr)}\n  web_dir: ${yamlPath(webDir)}\ndatabase:\n  path: ${yamlPath(path.join(this.userData, 'goldenfinger.db'))}\nllm:\n  base_url: ""\n  api_key: ""\n  model: ""\nembedder:\n  base_url: ""\n  api_key: ""\n  model: ""\n  dim: 3\n`;

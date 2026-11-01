@@ -170,7 +170,7 @@
 | 方法 路径 | 功能 |
 |---|---|
 | POST /api/chat | 发送对话，驱动 agent 循环 |
-| GET /api/sessions/{id}/messages | 取会话消息 |
+| GET /api/sessions/{id}/messages?limit=50&before=<message_id> | 游标分页取会话消息（默认 50，最大 200，返回时间正序一页） |
 | GET /api/persons | 人物列表 |
 | GET /api/persons/{id} | 人物详情 |
 | PUT /api/persons/{id} | 更新人物备注 |

@@ -19,9 +19,32 @@ function withTimeout(promise, ms, label) {
   ]).finally(() => clearTimeout(timer));
 }
 
+const EVIDENCE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+const MAX_PERSISTED_EVENTS = 5000;
+const LIST_LIMIT = 300;
+
 function publicEvent(event) {
   const { evidencePath, evidenceRef, ...safe } = event;
-  return { ...safe, hasEvidence: Boolean(evidencePath || evidenceRef) };
+  return {
+    ...safe,
+    hasEvidence: Boolean(evidencePath || evidenceRef),
+    summarized: Boolean(event.summarizedAt),
+  };
+}
+
+function readJSONL(file) {
+  try {
+    return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function appendJSONL(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, JSON.stringify(value) + '\n');
 }
 
 function isMeaningfulAction(context, label) {
@@ -30,11 +53,14 @@ function isMeaningfulAction(context, label) {
 }
 
 class ActivityTrail {
-  constructor({ readActiveWindow, readPageContent: readContent = readPageContent, readUiContext: readContext = readUiContext, captureWindow, evidenceDir, onEvent = () => {}, onError = () => {}, now = () => Date.now(), inputMonitor, inputMonitorEnabled = true, activitySource }) {
+  constructor({ readActiveWindow, readPageContent: readContent = readPageContent, readUiContext: readContext = readUiContext, captureWindow, evidenceDir, dataDir, eventsPath, summariesPath, onEvent = () => {}, onError = () => {}, now = () => Date.now(), inputMonitor, inputMonitorEnabled = true, activitySource }) {
     this.readActiveWindow = readActiveWindow;
     this.readUiContext = readContext;
     this.captureWindow = captureWindow;
     this.evidenceDir = evidenceDir;
+    this.dataDir = dataDir || evidenceDir;
+    this.eventsPath = eventsPath || path.join(this.dataDir, 'activity-events.jsonl');
+    this.summariesPath = summariesPath || path.join(this.dataDir, 'activity-summaries.jsonl');
     this.onEvent = onEvent;
     this.onError = onError;
     this.now = now;
@@ -44,12 +70,125 @@ class ActivityTrail {
     // 窗口与正文仍通过 UI Automation 轮询记录。
     this.inputMonitorEnabled = inputMonitorEnabled;
     this.enabled = false;
-    this.events = [];
+    this.events = this.loadEvents();
     this.timer = null;
     this.contentMemory = new ContentMemory();
     this.lastSubmission = null;
     this.counter = 0;
     this.busy = false;
+  }
+
+  // JSONL 追加式存储：事件一行；更新（总结标记/证据清理）也追加一行，启动时按 id 合并。
+  // 这样不需要每次事件都重写整个文件，旧事件也不会被 300 条 UI 上限清掉。
+  loadEvents() {
+    const byID = new Map();
+    const updates = [];
+    for (const record of readJSONL(this.eventsPath)) {
+      if (!record.id) continue;
+      if (record.updated) {
+        updates.push(record);
+        continue;
+      }
+      byID.set(record.id, record);
+    }
+    for (const update of updates) {
+      const event = byID.get(update.id);
+      if (!event) continue;
+      const { updated, ...fields } = update;
+      Object.assign(event, fields);
+    }
+    return [...byID.values()]
+      .sort((a, b) => Number(a.at || 0) - Number(b.at || 0))
+      .slice(-MAX_PERSISTED_EVENTS);
+  }
+
+  persistEvent(event) {
+    try { appendJSONL(this.eventsPath, event); } catch (error) { this.lastError = `轨迹持久化失败：${error.message}`; }
+  }
+
+  persistUpdate(fields) {
+    try { appendJSONL(this.eventsPath, { updated: true, ...fields }); } catch (error) { this.lastError = `轨迹更新失败：${error.message}`; }
+  }
+
+  saveSummaryPhase(phase) {
+    try { appendJSONL(this.summariesPath, phase); } catch (error) { this.lastError = `阶段总结持久化失败：${error.message}`; }
+  }
+
+  lastSummary() {
+    const phases = readJSONL(this.summariesPath);
+    for (let i = phases.length - 1; i >= 0; i -= 1) {
+      if (phases[i] && phases[i].summary) return phases[i].summary;
+    }
+    return '';
+  }
+
+  // 供主对话的“已产生 N 条总结”入口使用；按会话过滤，兼容旧记录没有 sessionId 的情况。
+  listSummaryPhases(sessionId = '', limit = 50) {
+    const id = String(sessionId || '').trim();
+    const phases = readJSONL(this.summariesPath).filter(phase => phase && phase.summary);
+    const filtered = id
+      ? phases.filter(phase => !phase.sessionId || phase.sessionId === id)
+      : phases.filter(phase => !phase.sessionId);
+    return filtered.slice(-limit).map(phase => ({ ...phase }));
+  }
+
+  // 主对话每轮携带当天轨迹摘要与最近活动，让模型不必用工具反复翻找。
+  // 只返回本机数据，由 Go 端作为“只读数据”附加到本轮请求，不写入会话原文。
+  chatContext({ now = this.now(), maxChars = 12000 } = {}) {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    const inToday = value => {
+      const at = Number(value || 0);
+      return at >= start.getTime() && at < end.getTime();
+    };
+    const clock = value => {
+      const date = new Date(Number(value));
+      return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+    };
+    const day = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+    const phases = readJSONL(this.summariesPath).filter(phase => phase && phase.summary && inToday(phase.completedAt || phase.endedAt));
+    const events = this.events.filter(event => event && inToday(event.at));
+    if (!phases.length && !events.length) return '';
+
+    const lines = [`日期：${day}；阶段总结 ${phases.length} 条，活动记录 ${events.length} 条。`];
+    if (phases.length) {
+      lines.push('【阶段总结】');
+      for (const phase of phases.slice(-8)) {
+        lines.push(`- ${clock(phase.completedAt || phase.endedAt)} ${clean(phase.summary, 1600)}`);
+      }
+    }
+    if (events.length) {
+      lines.push('【最近活动】');
+      let previous = '';
+      for (const event of events.slice(-80)) {
+        const app = clean(event.app, 60) || '未知应用';
+        const title = clean(event.title, 100);
+        const detail = clean(event.detail, 240);
+        const line = `- ${clock(event.at)} [${app}] ${title}${detail && detail !== title ? `：${detail}` : ''}`;
+        if (line === previous) continue;
+        previous = line;
+        lines.push(line);
+      }
+    }
+    let text = lines.join('\n');
+    if (text.length > maxChars) text = Array.from(text).slice(0, maxChars - 1).join('') + '…';
+    return text;
+  }
+
+  pendingObservations(limit = 2000) {
+    return this.events
+      .filter(event => !event.summarizedAt)
+      .slice(-limit)
+      .map(event => ({
+        id: event.id,
+        app: event.app,
+        title: event.title,
+        detail: event.detail,
+        content: event.content,
+        at: event.at,
+      }));
   }
 
   status() {
@@ -101,7 +240,7 @@ class ActivityTrail {
       // 否则后续 2 秒轮询都会直接返回，轨迹永久空白。
       const observation = await withTimeout(
         this.activitySource.observe({ force, outputDir: this.evidenceDir }),
-        20_000,
+        35_000,
         '页面观察超时',
       );
       if (!this.enabled || !observation || observation.privacyLevel === 'protected') return;
@@ -159,9 +298,9 @@ class ActivityTrail {
   }
 
   async record(event, withEvidence, existingEvidence = '') {
-    const entry = { ...normalizeObservation(event), id: `${Number(event.at).toString(36)}-${++this.counter}` };
+    const entry = { ...normalizeObservation(event), id: `${Number(event.at).toString(36)}-${this.now().toString(36)}-${++this.counter}` };
     if (existingEvidence) entry.evidencePath = existingEvidence;
-    else if (withEvidence) {
+    else if (withEvidence && !entry.skipEvidence) {
       try {
         entry.evidencePath = await withTimeout(
           this.captureWindow({ title: entry.title, outputDir: this.evidenceDir, at: entry.at }),
@@ -171,13 +310,14 @@ class ActivityTrail {
       } catch (error) { entry.captureNote = error.message; }
     }
     this.events.push(entry);
-    this.events = this.events.slice(-300);
+    this.events = this.events.slice(-MAX_PERSISTED_EVENTS);
+    this.persistEvent(entry);
     this.lastEventAt = this.now();
     this.onEvent(publicEvent(entry));
     return entry;
   }
 
-  list() { return this.events.map(publicEvent); }
+  list() { return this.events.slice(-LIST_LIMIT).map(publicEvent); }
 
   evidence(id) {
     const index = this.events.findIndex(event => event.id === id);
@@ -195,33 +335,77 @@ class ActivityTrail {
     return { event: publicEvent(event), dataUrl: asDataUrl(neighbor.evidencePath), approximate: true };
   }
 
-  deleteSummarizedEvidence(ids) {
-    const summarized = new Set(ids);
+  // 总结成功后只做标记，不删截图；截图从总结时刻起保留 3 天，由 removeExpiredEvidence 清理。
+  markSummarized(ids, phaseId = '', summarizedAt = this.now()) {
+    const summarized = new Set((ids || []).filter(Boolean));
+    let marked = 0;
     for (const event of this.events) {
-      if (!summarized.has(event.id) || !event.evidencePath) continue;
-      try { fs.rmSync(event.evidencePath, { force: true }); } catch { /* 删除失败时由过期清理重试 */ }
-      event.evidencePath = '';
+      if (!summarized.has(event.id)) continue;
+      event.summarizedAt = summarizedAt;
+      event.phaseId = phaseId;
+      event.evidenceExpiresAt = summarizedAt + EVIDENCE_TTL_MS;
+      this.persistUpdate({
+        id: event.id,
+        summarizedAt: event.summarizedAt,
+        phaseId: event.phaseId,
+        evidenceExpiresAt: event.evidenceExpiresAt,
+      });
+      marked += 1;
     }
+    return marked;
   }
 
   clear() {
-    for (const name of fs.readdirSync(this.evidenceDir)) {
-      const file = path.join(this.evidenceDir, name);
-      try { if (fs.statSync(file).isFile()) fs.rmSync(file, { force: true }); } catch { /* 下轮过期清理 */ }
-    }
+    try {
+      for (const name of fs.readdirSync(this.evidenceDir)) {
+        if (name.endsWith('.jsonl')) continue;
+        const file = path.join(this.evidenceDir, name);
+        try { if (fs.statSync(file).isFile()) fs.rmSync(file, { force: true }); } catch { /* 下轮过期清理 */ }
+      }
+    } catch { /* 目录尚不存在 */ }
     this.events = [];
+    this.counter = 0;
+    try { fs.mkdirSync(this.dataDir, { recursive: true }); fs.writeFileSync(this.eventsPath, ''); fs.writeFileSync(this.summariesPath, ''); } catch (error) { this.lastError = `清空轨迹存储失败：${error.message}`; }
     this.activitySource.reset();
     this.contentMemory = new ContentMemory();
     this.lastSubmission = null;
   }
 
   removeExpiredEvidence() {
-    const cutoff = this.now() - 24 * 60 * 60 * 1000;
-    for (const name of fs.readdirSync(this.evidenceDir)) {
-      const file = path.join(this.evidenceDir, name);
-      try { if (fs.statSync(file).isFile() && fs.statSync(file).mtimeMs < cutoff) fs.rmSync(file); } catch { /* 保留无法处理的文件 */ }
+    const now = this.now();
+    const keep = new Set();
+    for (const event of this.events) {
+      if (!event.evidencePath) continue;
+      const base = Number(event.summarizedAt || event.at || 0);
+      const expiresAt = Number(event.evidenceExpiresAt || base + EVIDENCE_TTL_MS);
+      if (now >= expiresAt) {
+        try { fs.rmSync(event.evidencePath, { force: true }); } catch { /* 下次再试 */ }
+        event.evidencePath = '';
+        this.persistUpdate({ id: event.id, evidencePath: '', evidenceDeletedAt: now });
+      } else {
+        keep.add(path.resolve(event.evidencePath));
+      }
     }
+    // 没有对应事件引用的孤儿截图也按 3 天清理；持久化 JSONL 不在此列。
+    try {
+      for (const name of fs.readdirSync(this.evidenceDir)) {
+        if (name.endsWith('.jsonl')) continue;
+        const file = path.join(this.evidenceDir, name);
+        try {
+          const info = fs.statSync(file);
+          if (info.isFile() && info.mtimeMs < now - EVIDENCE_TTL_MS && !keep.has(path.resolve(file))) fs.rmSync(file, { force: true });
+        } catch { /* 保留无法处理的文件 */ }
+      }
+    } catch { /* 目录尚不存在 */ }
   }
 }
 
-module.exports = { ActivityTrail, publicEvent, selectNovelContent, contentExcerpt, withTimeout };
+module.exports = {
+  ActivityTrail,
+  publicEvent,
+  selectNovelContent,
+  contentExcerpt,
+  withTimeout,
+  EVIDENCE_TTL_MS,
+  LIST_LIMIT,
+};

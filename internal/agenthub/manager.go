@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -52,6 +53,17 @@ type Invocation struct {
 	Output  string `json:"output"`
 	TaskID  string `json:"task_id,omitempty"`
 	State   string `json:"state,omitempty"`
+	// Question/QuestionID/Options 仅在目标 Agent 等待用户输入时返回（BMA awaiting_clarify），
+	// 让调度界面可以就地答复，而不是把整次派发耗到超时。
+	Question   string             `json:"question,omitempty"`
+	QuestionID string             `json:"question_id,omitempty"`
+	Options    []InvocationOption `json:"options,omitempty"`
+}
+
+type InvocationOption struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
 }
 
 type Manager struct {
@@ -73,6 +85,13 @@ type Manager struct {
 	OpenDesktop func(context.Context, Agent) (Invocation, error)
 	OpenCLI     func(context.Context, Agent, string) (Invocation, error)
 	CCSwitch    *CCSwitch
+
+	// Agent 扫描较重（进程、PATH、CLI 版本探测）。列表/调用默认读缓存，
+	// 只有“重新扫描”或发现目标不存在时才刷新。
+	cacheMu      sync.RWMutex
+	scanMu       sync.Mutex
+	cachedAgents []Agent
+	cacheReady   bool
 }
 
 type catalogEntry struct {
@@ -83,8 +102,8 @@ type catalogEntry struct {
 }
 
 var catalog = []catalogEntry{
-	{id: "claude-code", name: "Claude Code", kind: "cli", command: "claude", processNames: []string{"claude"}, args: []string{"--print", "--output-format", "json"}, output: "json", description: "命令行编程 Agent，使用 claude --print 非交互调用"},
-	{id: "pi", name: "Pi", kind: "cli", command: "pi", processNames: []string{"pi"}, args: []string{"--print"}, description: "Pi 编程 Agent，使用 pi --print 非交互调用"},
+	{id: "claude-code", name: "Claude Code", kind: "cli", command: "claude", processNames: []string{"claude"}, args: []string{"--print", "--output-format", "json"}, output: "json", description: "编程主力：用 claude --print 非交互改代码、跑测试、处理仓库任务"},
+	{id: "pi", name: "Pi", kind: "cli", command: "pi", processNames: []string{"pi"}, args: []string{"--print"}, description: "编程主力：用 pi --print 非交互改代码、跑测试、处理仓库任务"},
 	{id: "chatgpt", name: "ChatGPT", kind: "desktop", processNames: []string{"ChatGPT"}, description: "桌面 Agent，可启动、唤起并通过本机窗口提交任务"},
 	{id: "hermes", name: "Hermes", kind: "cli", command: "hermes", processNames: []string{"hermes"}, args: []string{"-p"}, description: "Hermes Agent 与 CC Switch 供应商配置"},
 	{id: "deepseek-harness", name: "DeepSeek Harness", kind: "desktop", command: "deepseek", processNames: []string{"DeepSeekHarness", "DeepSeek Harness", "deepseek-harness"}, description: "DeepSeek Harness 命令行或桌面 Agent"},
@@ -93,7 +112,7 @@ var catalog = []catalogEntry{
 	{id: "workbuddy", name: "WorkBuddy", kind: "desktop", processNames: []string{"WorkBuddy"}, description: "WorkBuddy 桌面 Agent，可启动、唤起并通过本机窗口提交任务"},
 	{id: "qoder", name: "Qoder", kind: "desktop", command: "qoder", processNames: []string{"Qoder", "Qoder Launcher"}, description: "Qoder 桌面编程 Agent，可启动、唤起并分派任务"},
 	{id: "ccswitch", name: "CC Switch", kind: "ccswitch", command: "ccswitch", processNames: []string{"CC Switch", "cc-switch", "ccswitch"}, description: "读取供应商、用量和额度；Claude Code 支持安全切换"},
-	{id: "bma", name: "BMA", kind: "bma", command: "bma-server", processNames: []string{"bma-server"}, description: "当前项目的专属 BMA Agent；优先使用原生 API，也可用 A2A 覆盖"},
+	{id: "bma", name: "BMA", kind: "bma", command: "bma-server", processNames: []string{"bma-server"}, description: "日常助理与真机桌面操控（打开/点击/输入/截图）；编程任务优先交给 Claude Code/Pi"},
 }
 
 func New(workspace, configPath string) *Manager {
@@ -270,10 +289,42 @@ func (m *Manager) RegisterA2A(endpoint Endpoint) (Agent, error) {
 	if err := os.Rename(tmp, m.ConfigPath); err != nil {
 		return Agent{}, err
 	}
+	m.InvalidateCache()
 	return m.discoverA2A(context.Background(), endpoint), nil
 }
 
+// Scan 返回缓存的 Agent 列表；首次或缓存失效时才真正扫描。
 func (m *Manager) Scan(ctx context.Context) []Agent {
+	m.cacheMu.RLock()
+	if m.cacheReady {
+		out := append([]Agent(nil), m.cachedAgents...)
+		m.cacheMu.RUnlock()
+		return out
+	}
+	m.cacheMu.RUnlock()
+	return m.Refresh(ctx)
+}
+
+// Refresh 强制重新扫描并替换缓存。只有显式“重新扫描”或目标不存在时调用。
+func (m *Manager) Refresh(ctx context.Context) []Agent {
+	m.scanMu.Lock()
+	defer m.scanMu.Unlock()
+	agents := m.scan(ctx)
+	m.cacheMu.Lock()
+	m.cachedAgents = agents
+	m.cacheReady = true
+	m.cacheMu.Unlock()
+	return append([]Agent(nil), agents...)
+}
+
+func (m *Manager) InvalidateCache() {
+	m.cacheMu.Lock()
+	m.cacheReady = false
+	m.cachedAgents = nil
+	m.cacheMu.Unlock()
+}
+
+func (m *Manager) scan(ctx context.Context) []Agent {
 	processes, processErr := m.Processes(ctx)
 	endpoints, endpointErr := m.endpoints()
 	agents := make([]Agent, 0, len(catalog)+len(endpoints))
@@ -402,20 +453,26 @@ func (m *Manager) Delegate(ctx context.Context, agentID, task string) (Invocatio
 // DelegateAuto 在调用方没有指定 agent_id 时，按权重挑选可派发的 Agent。
 // BMA 权重最高；同权重时按扫描顺序（稳定），并跳过不可派发的目标。
 func (m *Manager) DelegateAuto(ctx context.Context, task, workDir string) (Invocation, error) {
-	agents := m.Scan(ctx)
-	best := Agent{}
-	found := false
-	for _, candidate := range agents {
-		if !candidate.Running {
-			continue
+	pick := func(agents []Agent) (Agent, bool) {
+		best := Agent{}
+		found := false
+		for _, candidate := range agents {
+			if !candidate.Running {
+				continue
+			}
+			if !hasCapability(candidate, "delegate") && candidate.Kind != "bma" {
+				continue
+			}
+			// 显式要求未指定：按权重挑最大的。
+			if !found || candidate.Weight > best.Weight {
+				best, found = candidate, true
+			}
 		}
-		if !hasCapability(candidate, "delegate") && candidate.Kind != "bma" {
-			continue
-		}
-		// 显式要求未指定：按权重挑最大的。
-		if !found || candidate.Weight > best.Weight {
-			best, found = candidate, true
-		}
+		return best, found
+	}
+	best, found := pick(m.Scan(ctx))
+	if !found {
+		best, found = pick(m.Refresh(ctx))
 	}
 	if !found {
 		return Invocation{}, fmt.Errorf("没有可派发的 Agent（请先确认 BMA 等目标已安装并在运行）")
@@ -481,56 +538,92 @@ func (m *Manager) DelegateAt(ctx context.Context, agentID, task, requestedWorkDi
 		}
 		return m.invokeA2A(ctx, agent, taskWithWorkDir(task, workDir))
 	}
-	for _, agent := range m.Scan(ctx) {
-		if agent.ID != agentID {
-			continue
+	// BMA 是已保存的原生端点：直接调用，不再为一次分派重扫全部 Agent。
+	if agentID == "bma" {
+		base := strings.TrimRight(strings.TrimSpace(m.BMAURL), "/")
+		if base == "" {
+			return Invocation{}, errors.New("未配置 BMA 地址")
 		}
-		if agent.Kind == "a2a" {
-			return m.invokeA2A(ctx, agent, taskWithWorkDir(task, workDir))
+		agent := Agent{
+			ID: "bma", Name: "BMA", Kind: "bma", Installed: true,
+			Endpoint: base + "/api", Capabilities: []string{"delegate"},
 		}
-		if agent.Kind == "bma" && agent.Endpoint != "" {
-			return m.invokeBMA(ctx, agent, task, workDir)
+		inv, err := m.invokeBMA(ctx, agent, task, workDir)
+		if err != nil {
+			return inv, err
 		}
-		for _, entry := range catalog {
-			if entry.id != agentID {
+		// BMA 的计划确认是执行前的流程门；GFA 已获得用户的分派授权，
+		// 这里自动批准计划并继续等待，避免任务停在 BMA 界面等一次点击。
+		return m.autoApproveBMAPlan(ctx, inv)
+	}
+	invoke := func(agents []Agent) (Invocation, error, bool) {
+		for _, agent := range agents {
+			if agent.ID != agentID {
 				continue
 			}
-			if entry.kind == "cli" && agent.Executable != "" {
-				return m.invokeCLI(ctx, agent, entry, task, workDir)
+			if agent.Kind == "a2a" {
+				inv, err := m.invokeA2A(ctx, agent, taskWithWorkDir(task, workDir))
+				return inv, err, true
 			}
-			if entry.kind == "desktop" && agent.Running {
-				return m.invokeDesktop(ctx, agent, taskWithWorkDir(task, workDir))
+			for _, entry := range catalog {
+				if entry.id != agentID {
+					continue
+				}
+				if entry.kind == "cli" && agent.Executable != "" {
+					inv, err := m.invokeCLI(ctx, agent, entry, task, workDir)
+					return inv, err, true
+				}
+				if entry.kind == "desktop" && agent.Running {
+					inv, err := m.invokeDesktop(ctx, agent, taskWithWorkDir(task, workDir))
+					return inv, err, true
+				}
 			}
+			return Invocation{}, fmt.Errorf("%s 当前没有可用的任务调用通道", agent.Name), true
 		}
-		if agentID == "bma" {
-			return Invocation{}, errors.New("BMA 原生 API 不可用；请启动 BMA 服务，或在 Agent 面板配置 A2A 端点")
-		}
-		return Invocation{}, fmt.Errorf("%s 当前没有可用的任务调用通道", agent.Name)
+		return Invocation{}, nil, false
+	}
+	if inv, err, found := invoke(m.Scan(ctx)); found {
+		return inv, err
+	}
+	// 缓存里没有这个 Agent：可能是刚安装的，刷新一次后再找。
+	if inv, err, found := invoke(m.Refresh(ctx)); found {
+		return inv, err
 	}
 	return Invocation{}, errors.New("未找到该 Agent")
 }
 
 func (m *Manager) Open(ctx context.Context, agentID string) (Invocation, error) {
-	for _, agent := range m.Scan(ctx) {
-		if agent.ID != agentID || agent.Executable == "" {
-			continue
+	open := func(agents []Agent) (Invocation, error, bool) {
+		for _, agent := range agents {
+			if agent.ID != agentID || agent.Executable == "" {
+				continue
+			}
+			switch agent.Kind {
+			case "desktop":
+				if m.OpenDesktop == nil {
+					return Invocation{}, errors.New("当前系统不支持桌面启动"), true
+				}
+				inv, err := m.OpenDesktop(ctx, agent)
+				return inv, err, true
+			case "cli":
+				if m.OpenCLI == nil {
+					return Invocation{}, errors.New("当前系统不支持 CLI 终端启动"), true
+				}
+				workDir, err := m.resolveWorkDir("")
+				if err != nil {
+					return Invocation{}, err, true
+				}
+				inv, err := m.OpenCLI(ctx, agent, workDir)
+				return inv, err, true
+			}
 		}
-		switch agent.Kind {
-		case "desktop":
-			if m.OpenDesktop == nil {
-				return Invocation{}, errors.New("当前系统不支持桌面启动")
-			}
-			return m.OpenDesktop(ctx, agent)
-		case "cli":
-			if m.OpenCLI == nil {
-				return Invocation{}, errors.New("当前系统不支持 CLI 终端启动")
-			}
-			workDir, err := m.resolveWorkDir("")
-			if err != nil {
-				return Invocation{}, err
-			}
-			return m.OpenCLI(ctx, agent, workDir)
-		}
+		return Invocation{}, nil, false
+	}
+	if inv, err, found := open(m.Scan(ctx)); found {
+		return inv, err
+	}
+	if inv, err, found := open(m.Refresh(ctx)); found {
+		return inv, err
 	}
 	return Invocation{}, errors.New("未找到可启动的 Agent；请确认桌面软件或独立 CLI 已安装")
 }

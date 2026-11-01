@@ -17,15 +17,9 @@ type started struct {
 	token string
 }
 
-// startForTest 在临时目录启动真实服务并返回连接信息。
-func startForTest(t *testing.T) started {
+// parseStarted 解析 StartServer 返回的连接信息。
+func parseStarted(t *testing.T, info string) started {
 	t.Helper()
-	dir := t.TempDir()
-	info, err := StartServer(filepath.Join(dir, "data"))
-	if err != nil {
-		t.Fatalf("StartServer: %v", err)
-	}
-	t.Cleanup(func() { StopServer() })
 	var parsed struct {
 		Addr     string `json:"addr"`
 		Token    string `json:"token"`
@@ -41,6 +35,46 @@ func startForTest(t *testing.T) started {
 		t.Fatalf("must bind loopback only, got %s", parsed.Addr)
 	}
 	return started{addr: parsed.Addr, token: parsed.Token}
+}
+
+// startForTest 在临时目录启动真实服务并返回连接信息。
+func startForTest(t *testing.T) started {
+	t.Helper()
+	dir := t.TempDir()
+	info, err := StartServer(filepath.Join(dir, "data"))
+	if err != nil {
+		t.Fatalf("StartServer: %v", err)
+	}
+	t.Cleanup(func() { StopServer() })
+	return parseStarted(t, info)
+}
+
+// TestSettingsModelsPersistAcrossRestart 验证 Android filesDir 中的
+// settings.json 在进程重启后仍保留模型方案。
+func TestSettingsModelsPersistAcrossRestart(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	info, err := StartServer(dataDir)
+	if err != nil {
+		t.Fatalf("StartServer: %v", err)
+	}
+	t.Cleanup(func() { StopServer() })
+	first := parseStarted(t, info)
+	code, body := first.do(t, http.MethodPost, "/api/settings/models",
+		`{"name":"手机重启测试","base_url":"https://api.deepseek.com","model":"deepseek-chat","api_key":"test-key","active":false}`)
+	if code != http.StatusOK {
+		t.Fatalf("save model=%d body=%s", code, body)
+	}
+	StopServer()
+
+	info, err = StartServer(dataDir)
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	second := parseStarted(t, info)
+	code, body = second.do(t, http.MethodGet, "/api/settings", "")
+	if code != http.StatusOK || !strings.Contains(string(body), "手机重启测试") {
+		t.Fatalf("model lost after restart: %d %s", code, body)
+	}
 }
 
 func (s started) do(t *testing.T, method, path, body string) (int, []byte) {

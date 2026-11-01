@@ -7,6 +7,7 @@ const {
   snapBounds,
   dockEdge,
   nearestEdge,
+  overflowEdge,
   edgeTabBounds,
   anchorExpandedBounds,
 } = require('../window-dock');
@@ -34,6 +35,15 @@ test('snapBounds pulls a window to the nearest edge within threshold', () => {
   assert.deepEqual(snapBounds({ x: 1448, y: 300, width: 460, height: 300 }, AREA), { x: 1460, y: 300 });
   assert.deepEqual(snapBounds({ x: 1448, y: 728, width: 460, height: 300 }, AREA), { x: 1460, y: 740 });
   assert.deepEqual(snapBounds({ x: 1300, y: 300, width: 460, height: 300 }, AREA), { x: 1300, y: 300 });
+});
+
+test('overflowEdge triggers only beyond 20 percent outside the work area', () => {
+  assert.equal(overflowEdge({ x: -70, y: 300, width: 340, height: 340 }, AREA), 'left');
+  assert.equal(overflowEdge({ x: -60, y: 300, width: 340, height: 340 }, AREA), null);
+  assert.equal(overflowEdge({ x: 1650, y: 300, width: 340, height: 340 }, AREA), 'right');
+  assert.equal(overflowEdge({ x: 1000, y: -70, width: 340, height: 340 }, AREA), 'top');
+  assert.equal(overflowEdge({ x: 1000, y: 800, width: 340, height: 340 }, AREA), 'bottom');
+  assert.equal(overflowEdge({ x: 800, y: 300, width: 340, height: 340 }, AREA), null);
 });
 
 test('snapBounds clamps off-screen windows with oversized dimensions', () => {

@@ -97,6 +97,16 @@ while ($queue.Count -gt 0 -and $visited -lt 500) {
               if ($value.Length -gt $text.Length) { $text = $value }
             }
           } catch { }
+          # 浏览器与部分编辑器只暴露 TextPattern，不暴露 ValuePattern。
+          if ($text.Length -lt 4000) {
+            try {
+              $textPattern = $element.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+              if ($textPattern) {
+                $documentText = $textPattern.DocumentRange.GetText(4000)
+                if ($documentText.Length -gt $text.Length) { $text = $documentText }
+              }
+            } catch { }
+          }
         }
         if ($control -eq 'Edit' -and -not $url -and $value -match '^https?://') { $url = $value.Trim() }
         $text = ($text -replace '\s+', ' ').Trim()

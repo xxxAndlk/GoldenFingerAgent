@@ -113,8 +113,10 @@ class AssistantApi {
     return this.request(`/api/sessions${query}`, { method: 'GET' });
   }
 
-  sessionMessages(id) {
-    return this.request(`/api/sessions/${encodeURIComponent(id)}/messages`, { method: 'GET' });
+  sessionMessages(id, before = '', limit = 50) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (before) query.set('before', before);
+    return this.request(`/api/sessions/${encodeURIComponent(id)}/messages?${query.toString()}`, { method: 'GET' });
   }
 
   uploadAttachment(payload) {
@@ -126,12 +128,13 @@ class AssistantApi {
 
   // 流式对话：SSE 状态（思考/工具/澄清）+ 最终结果。
   // onStatus(ev) 收到每个 status 事件；返回解析后的最终响应。
-  async chatStream(text, sessionId, onStatus, signal, attachments = []) {
+  async chatStream(text, sessionId, onStatus, signal, attachments = [], context = '') {
     const headers = { 'Content-Type': 'application/json' };
     if (this.token) headers['X-Token'] = this.token;
     if (this.userId) headers['X-User-Id'] = this.userId;
     const body = { text, session_id: sessionId || '' };
     if (attachments.length) body.attachments = attachments;
+    if (context) body.context = context;
     const response = await this.fetch(`${this.baseUrl}/api/chat/stream`, {
       method: 'POST',
       headers,
@@ -198,10 +201,11 @@ class AssistantApi {
     return this.request(`/api/relay/channels/${encodeURIComponent(channelId)}`, { method: 'DELETE' });
   }
 
-  chat(text, sessionId = '', signal, internal = false, attachments = []) {
+  chat(text, sessionId = '', signal, internal = false, attachments = [], context = '') {
     const body = { text, session_id: sessionId };
     if (internal) body.internal = true;
     if (attachments.length) body.attachments = attachments;
+    if (context) body.context = context;
     return this.request('/api/chat', {
       method: 'POST',
       body: JSON.stringify(body),
@@ -210,8 +214,16 @@ class AssistantApi {
     });
   }
 
-  listAgents() {
-    return this.request('/api/agents', { method: 'GET' });
+  summarizeActivity(context, focus = '', signal) {
+    return this.request('/api/summarize', {
+      method: 'POST',
+      body: JSON.stringify({ context, focus }),
+      signal: signal || AbortSignal.timeout(60_000),
+    });
+  }
+
+  listAgents(refresh = false) {
+    return this.request(refresh ? '/api/agents?refresh=1' : '/api/agents', { method: 'GET' });
   }
 
   openAgent(agentId) {
@@ -225,6 +237,14 @@ class AssistantApi {
     return this.request('/api/agents/delegate', {
       method: 'POST',
       body: JSON.stringify({ agent_id: agentId, task, work_dir: workDir }),
+      signal: AbortSignal.timeout(30 * 60_000),
+    });
+  }
+
+  answerAgent(sessionId, answer, questionId = '') {
+    return this.request('/api/agents/clarify', {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId, answer, question_id: questionId }),
       signal: AbortSignal.timeout(30 * 60_000),
     });
   }

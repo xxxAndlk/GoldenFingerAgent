@@ -411,6 +411,21 @@ header .avatar { width: 40px; height: 40px; }
   scroll-behavior: smooth;
 }
 
+.msg-more {
+  padding: 2px 0 12px;
+  color: var(--label-3);
+  font-size: 12px;
+  text-align: center;
+}
+
+.msg-time {
+  margin: 2px 0 6px;
+  color: var(--label-3);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+}
+
 .msg {
   display: flex;
   gap: 8px;
@@ -1559,7 +1574,10 @@ body.child .panel-btn, body.child .adv { display: none; }
   </header>
 
   <div id="messages" ref="msgBox">
-    <div v-for="m in messages" :key="m.id" class="msg" :class="m.role">
+    <div v-if="messageLoadingMore" class="msg-more">正在加载更早记录…</div>
+    <template v-for="m in messages" :key="m.id">
+      <div v-if="m.at" class="msg-time">{{ m.at }}</div>
+      <div class="msg" :class="m.role">
       <template v-if="m.role === 'bot'">
         <div class="col">
           <div class="bubble" v-html="md(m.text)"></div>
@@ -1598,7 +1616,8 @@ body.child .panel-btn, body.child .adv { display: none; }
       <template v-else>
         <div class="sysline"><svg class="icon" aria-hidden="true"><use href="#i-bell"/></svg><span>{{ m.text }}</span></div>
       </template>
-    </div>
+      </div>
+    </template>
     <div v-if="thinking" class="msg bot">
       <div class="avatar bot-av" aria-hidden="true">金</div>
       <div class="col"><div class="bubble typing"><i></i><i></i><i></i></div></div>
@@ -2083,6 +2102,10 @@ createApp({
       micState: false,
       micSecs: 0,
       seq: 1,
+      messageCursor: '',
+      messageHasMore: false,
+      messageLoadingMore: false,
+      suppressOlderScroll: false,
       debug: new URLSearchParams(location.search).has('debug')
     };
   },
@@ -2240,6 +2263,7 @@ createApp({
       const files = this.attachments.slice();
       const clean = String(text || '').trim();
       if (!clean && !files.length) return;
+      const hadSession = Boolean(this.sessionId);
       this.attachments = [];
       this.pushMsg('user', clean || '（附件）', { attachments: files });
       this.thinking = true;
@@ -2252,6 +2276,10 @@ createApp({
         const data = await res.json();
         if (data.error) { this.pushMsg('bot', '出了点问题：' + data.error); return; }
         this.sessionId = data.session_id || this.sessionId;
+        if (!hadSession && this.sessionId) {
+          this.messageCursor = '';
+          this.messageHasMore = false;
+        }
         if (this.sessionId) localStorage.setItem('gfa_session_id', this.sessionId);
         const opts = (data.pending && data.pending.options) || [];
         this.pushMsg('bot', data.reply, { trace: data.trace || [], cards: data.cards || [], options: opts });
@@ -2570,23 +2598,80 @@ createApp({
       };
     },
     applySessionMessages(id, data) {
-      const mapped = (data || [])
+      const page = Array.isArray(data) ? data : [];
+      const mapped = page
         .filter(m => m.role === 'user' || m.role === 'assistant')
         .map(m => ({
           id: this.seq++,
+          serverId: m.id || '',
           role: m.role === 'assistant' ? 'bot' : 'user',
           text: m.content || '',
           at: m.at || '',
           trace: [], cards: [], options: []
         }));
       this.messages = mapped.length ? mapped : [this.welcomeMessage()];
+      this.messageCursor = page.length ? String(page[0].id || '') : '';
+      this.messageHasMore = page.length >= 50;
+      this.suppressOlderScroll = true;
       this.sessionId = id;
       localStorage.setItem('gfa_session_id', id);
-      this.$nextTick(() => this.scrollBottom());
+      this.$nextTick(() => {
+        this.scrollBottom();
+        setTimeout(() => { this.suppressOlderScroll = false; }, 120);
+      });
+    },
+    prependSessionMessages(data) {
+      const page = Array.isArray(data) ? data : [];
+      const mapped = page
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .map(m => ({
+          id: this.seq++,
+          serverId: m.id || '',
+          role: m.role === 'assistant' ? 'bot' : 'user',
+          text: m.content || '',
+          at: m.at || '',
+          trace: [], cards: [], options: []
+        }));
+      if (!mapped.length) return;
+      const box = this.$refs.msgBox;
+      const previousHeight = box ? box.scrollHeight : 0;
+      const previousTop = box ? box.scrollTop : 0;
+      this.suppressOlderScroll = true;
+      const current = this.messages.filter(m => !(m.id === 0 && m.role === 'bot'));
+      this.messages = [...mapped, ...current];
+      this.messageCursor = page.length ? String(page[0].id || this.messageCursor) : this.messageCursor;
+      this.messageHasMore = page.length >= 50;
+      this.$nextTick(() => {
+        if (!box) return;
+        const previousBehavior = box.style.scrollBehavior;
+        box.style.scrollBehavior = 'auto';
+        box.scrollTop = box.scrollHeight - previousHeight + previousTop;
+        requestAnimationFrame(() => {
+          box.style.scrollBehavior = previousBehavior;
+          this.suppressOlderScroll = false;
+        });
+      });
+    },
+    async loadOlderMessages() {
+      if (!this.sessionId || !this.messageHasMore || this.messageLoadingMore || !this.messageCursor) return;
+      this.messageLoadingMore = true;
+      try {
+        const url = '/api/sessions/' + encodeURIComponent(this.sessionId) + '/messages?limit=50&before=' + encodeURIComponent(this.messageCursor);
+        const data = await apiFetch(url).then(r => r.json());
+        if (!Array.isArray(data) || !data.length) {
+          this.messageHasMore = false;
+          return;
+        }
+        this.prependSessionMessages(data);
+      } catch (e) {
+        // 保持当前列表，下次滚动再试。
+      } finally {
+        this.messageLoadingMore = false;
+      }
     },
     async openSession(id) {
       try {
-        const data = await apiFetch('/api/sessions/' + encodeURIComponent(id) + '/messages').then(r => r.json());
+        const data = await apiFetch('/api/sessions/' + encodeURIComponent(id) + '/messages?limit=50').then(r => r.json());
         this.applySessionMessages(id, Array.isArray(data) ? data : []);
         this.showHistory = false;
       } catch (e) {
@@ -2595,16 +2680,22 @@ createApp({
     },
     async restoreSession(id) {
       try {
-        const data = await apiFetch('/api/sessions/' + encodeURIComponent(id) + '/messages').then(r => r.json());
+        const data = await apiFetch('/api/sessions/' + encodeURIComponent(id) + '/messages?limit=50').then(r => r.json());
         if (!Array.isArray(data) || !data.length) throw new Error('empty');
         this.applySessionMessages(id, data);
       } catch (e) {
         this.sessionId = null;
+        this.messageCursor = '';
+        this.messageHasMore = false;
         localStorage.removeItem('gfa_session_id');
       }
     },
     newChat() {
       this.sessionId = null;
+      this.messageCursor = '';
+      this.messageHasMore = false;
+      this.messageLoadingMore = false;
+      this.suppressOlderScroll = false;
       localStorage.removeItem('gfa_session_id');
       this.messages = [this.welcomeMessage()];
       this.showHistory = false;
@@ -2788,6 +2879,13 @@ createApp({
   mounted() {
     applyBodyMode(this.mode);
     this.syncTheme();
+    const box = this.$refs.msgBox;
+    if (box) {
+      box.addEventListener('scroll', () => {
+        if (this.suppressOlderScroll) return;
+        if (box.scrollTop <= 24) this.loadOlderMessages();
+      }, { passive: true });
+    }
     if (window.matchMedia) {
       const mq = window.matchMedia('(prefers-color-scheme: dark)');
       const onChange = () => { if (this.themeMode === 'auto') this.syncTheme(); };

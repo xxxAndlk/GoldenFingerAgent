@@ -4,16 +4,20 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('desktopAssistant', {
   toggle: expanded => ipcRenderer.invoke('widget:set-expanded', expanded),
+  dragStart: (x, y) => ipcRenderer.invoke('widget:drag-start', x, y),
+  dragMove: (x, y) => ipcRenderer.invoke('widget:drag-move', x, y),
+  dragEnd: () => ipcRenderer.invoke('widget:drag-end'),
   chat: (text, attachments) => ipcRenderer.invoke('assistant:chat', text, attachments),
   uploadAttachment: payload => ipcRenderer.invoke('assistant:upload', payload),
   status: () => ipcRenderer.invoke('assistant:status'),
   listSessions: date => ipcRenderer.invoke('assistant:sessions', date || ''),
-  sessionMessages: id => ipcRenderer.invoke('assistant:session-messages', id),
+  sessionMessages: (id, before = '', limit = 50) => ipcRenderer.invoke('assistant:session-messages', id, before, limit),
   useSession: id => ipcRenderer.invoke('assistant:use-session', id || ''),
   setCollaboration: enabled => ipcRenderer.invoke('collaboration:set', enabled),
   collaborationStatus: () => ipcRenderer.invoke('collaboration:status'),
   summarizeNow: () => ipcRenderer.invoke('collaboration:summarize-now'),
   activityList: () => ipcRenderer.invoke('activity:list'),
+  activitySummaries: (sessionId = '') => ipcRenderer.invoke('activity:summaries', sessionId),
   activityEvidence: id => ipcRenderer.invoke('activity:evidence', id),
   clearActivity: () => ipcRenderer.invoke('activity:clear'),
   connectWorkspace: () => ipcRenderer.invoke('workspace:connect'),
@@ -28,11 +32,12 @@ contextBridge.exposeInMainWorld('desktopAssistant', {
     ipcRenderer.on('activity:error', listener);
     return () => ipcRenderer.removeListener('activity:error', listener);
   },
-  listAgents: () => ipcRenderer.invoke('agents:list'),
+  listAgents: (refresh = false) => ipcRenderer.invoke('agents:list', refresh),
   openWindow: kind => ipcRenderer.invoke('ui:open-window', kind),
   openSettings: () => ipcRenderer.invoke('ui:open-settings'),
   openAgent: agentId => ipcRenderer.invoke('agents:open', agentId),
   delegateAgent: (agentId, task, workDir = '') => ipcRenderer.invoke('agents:delegate', agentId, task, workDir),
+  answerAgent: (sessionId, answer, questionId = '') => ipcRenderer.invoke('agents:clarify', sessionId, answer, questionId),
   chooseAgentDirectory: () => ipcRenderer.invoke('agents:choose-directory'),
   onAgentResult: callback => {
     const listener = (_event, value) => callback(value);
@@ -79,6 +84,11 @@ contextBridge.exposeInMainWorld('desktopAssistant', {
     const listener = (_event, value) => callback(value);
     ipcRenderer.on('activity:collapsed', listener);
     return () => ipcRenderer.removeListener('activity:collapsed', listener);
+  },
+  onActivityHandleSide: callback => {
+    const listener = (_event, value) => callback(value);
+    ipcRenderer.on('activity:handle-side', listener);
+    return () => ipcRenderer.removeListener('activity:handle-side', listener);
   },
   onWidgetDock: callback => {
     const listener = (_event, value) => callback(value);

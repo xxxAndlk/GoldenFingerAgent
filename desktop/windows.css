@@ -625,6 +625,20 @@ select {
 .agent-actions { display: flex; gap: 6px; }
 .agent-actions button { min-width: 54px; }
 
+/* BMA 澄清 / 计划确认 */
+#agent-clarify {
+  margin-bottom: 12px;
+  padding: 13px 14px;
+  border: .5px solid var(--orange);
+  border-radius: 11px;
+  background: var(--orange-soft);
+}
+#agent-clarify-question { color: var(--label); }
+.clarify-options { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.clarify-options button { min-height: 29px; }
+.clarify-custom { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-top: 10px; }
+.clarify-custom input { width: 100%; min-width: 0; }
+
 /* 执行结果 */
 .result-section pre {
   max-height: 260px;

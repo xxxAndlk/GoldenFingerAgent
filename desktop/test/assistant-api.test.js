@@ -23,6 +23,34 @@ test('AssistantApi sends chat session and local service identity headers', async
   assert.equal(response.reply, '好的');
 });
 
+test('AssistantApi sends local work context with streamed chat', async () => {
+  let request;
+  const api = new AssistantApi({
+    baseUrl: 'http://127.0.0.1:8080',
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      const body = 'event: done\ndata: {"session_id":"session-1","reply":"好的"}\n\n';
+      return {
+        ok: true,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(body));
+            controller.close();
+          },
+        }),
+      };
+    },
+  });
+  const response = await api.chatStream('今天做了什么', 'session-0', null, undefined, [], '今天的阶段总结');
+  assert.equal(request.url, 'http://127.0.0.1:8080/api/chat/stream');
+  assert.deepEqual(JSON.parse(request.options.body), {
+    text: '今天做了什么',
+    session_id: 'session-0',
+    context: '今天的阶段总结',
+  });
+  assert.equal(response.reply, '好的');
+});
+
 test('AssistantApi rejects non-success responses', async () => {
   const api = new AssistantApi({
     baseUrl: 'http://127.0.0.1:8080',
@@ -51,6 +79,21 @@ test('AssistantApi reads and saves LLM settings', async () => {
     // 生成参数随模型一起保存；未填写时为 0/空，由服务端回落默认值。
     reasoning_effort: '', max_context: 0, max_output: 0, temperature: 0,
   });
+});
+
+test('AssistantApi summarizes activity through the sub-agent endpoint', async () => {
+  let request;
+  const api = new AssistantApi({
+    baseUrl: 'http://127.0.0.1:8080',
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return { ok: true, json: async () => ({ reply: '今天修改了设置。' }) };
+    },
+  });
+  const result = await api.summarizeActivity('今天的工作轨迹', '今天做了什么');
+  assert.equal(request.url, 'http://127.0.0.1:8080/api/summarize');
+  assert.deepEqual(JSON.parse(request.options.body), { context: '今天的工作轨迹', focus: '今天做了什么' });
+  assert.equal(result.reply, '今天修改了设置。');
 });
 
 test('AssistantApi opens an installed desktop agent by id', async () => {
@@ -82,6 +125,37 @@ test('AssistantApi delegates with an optional project directory', async () => {
   assert.equal(request.url, 'http://127.0.0.1:8080/api/agents/delegate');
   assert.deepEqual(JSON.parse(request.options.body), {
     agent_id: 'bma', task: '修复测试', work_dir: 'D:\\project',
+  });
+});
+
+test('AssistantApi pages session messages with a before cursor', async () => {
+  let request;
+  const api = new AssistantApi({
+    baseUrl: 'http://127.0.0.1:8080',
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return { ok: true, json: async () => [{ id: 'm9', role: 'assistant', content: 'old' }] };
+    },
+  });
+  await api.sessionMessages('s1', 'm10', 50);
+  assert.equal(request.url, 'http://127.0.0.1:8080/api/sessions/s1/messages?limit=50&before=m10');
+  assert.equal(request.options.method, 'GET');
+});
+
+test('AssistantApi answers an agent clarification with session and question id', async () => {
+  let request;
+  const api = new AssistantApi({
+    baseUrl: 'http://127.0.0.1:8080',
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return { ok: true, json: async () => ({ state: 'completed', output: 'done' }) };
+    },
+  });
+  await api.answerAgent('s1', 'approve', 'ask-1');
+  assert.equal(request.url, 'http://127.0.0.1:8080/api/agents/clarify');
+  assert.equal(request.options.method, 'POST');
+  assert.deepEqual(JSON.parse(request.options.body), {
+    session_id: 's1', answer: 'approve', question_id: 'ask-1',
   });
 });
 

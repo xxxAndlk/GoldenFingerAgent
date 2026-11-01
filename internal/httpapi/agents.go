@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"goldenfinger/agent/internal/agenthub"
 )
@@ -10,6 +11,11 @@ import (
 func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	if s.Agents == nil {
 		writeError(w, 503, "Agent 调度未配置")
+		return
+	}
+	refresh := r.URL.Query().Get("refresh")
+	if refresh == "1" || strings.EqualFold(refresh, "true") {
+		writeJSON(w, 200, map[string]any{"agents": s.Agents.Refresh(r.Context())})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"agents": s.Agents.Scan(r.Context())})
@@ -50,6 +56,29 @@ func (s *Server) handleDelegateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.Agents.DelegateAt(r.Context(), req.AgentID, req.Task, req.WorkDir)
+	if err != nil {
+		writeError(w, 409, err.Error())
+		return
+	}
+	writeJSON(w, 200, result)
+}
+
+// handleClarifyAgent 把用户对 BMA 计划确认/提问的答复发回原会话。
+func (s *Server) handleClarifyAgent(w http.ResponseWriter, r *http.Request) {
+	if s.Agents == nil {
+		writeError(w, 503, "Agent 调度未配置")
+		return
+	}
+	var req struct {
+		SessionID  string `json:"session_id"`
+		Answer     string `json:"answer"`
+		QuestionID string `json:"question_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "bad request body")
+		return
+	}
+	result, err := s.Agents.AnswerBMA(r.Context(), req.SessionID, req.Answer, req.QuestionID)
 	if err != nil {
 		writeError(w, 409, err.Error())
 		return

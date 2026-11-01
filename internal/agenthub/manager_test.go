@@ -57,6 +57,92 @@ func TestScanFindsDesktopCLIAndBMA(t *testing.T) {
 	}
 }
 
+func TestDelegateBMADoesNotRescanAgents(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/health":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case "/api/sessions":
+			_, _ = w.Write([]byte(`{"id":"bma-1","status":"completed","result":"done"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	manager := testManager(t)
+	manager.BMAURL = server.URL
+	scans := 0
+	manager.Processes = func(context.Context) ([]Process, error) { scans++; return nil, nil }
+	inv, err := manager.DelegateAt(context.Background(), "bma", "测试任务", "")
+	if err != nil {
+		t.Fatalf("DelegateAt: %v", err)
+	}
+	if inv.Output != "done" || scans != 0 {
+		t.Fatalf("BMA delegate = %+v scans=%d", inv, scans)
+	}
+}
+
+func TestDelegateBMAAutoApprovesPlan(t *testing.T) {
+	clarified := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/health":
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		case r.URL.Path == "/api/sessions" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"id":"s1","status":"running"}`))
+		case r.URL.Path == "/api/sessions/s1/clarify":
+			clarified = true
+			_, _ = w.Write([]byte(`{"session_id":"s1","status":"running"}`))
+		case r.URL.Path == "/api/sessions/s1" && clarified:
+			_, _ = w.Write([]byte(`{"id":"s1","status":"completed","result":"计划已执行"}`))
+		case r.URL.Path == "/api/sessions/s1":
+			_, _ = w.Write([]byte(`{"id":"s1","status":"awaiting_clarify","state":{"pending_clarify":{"id":"ask-1","question":"【计划确认】执行前请确认","options":[{"id":"approve","label":"批准开工"},{"id":"revise","label":"需要修改"}]}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	manager := testManager(t)
+	manager.BMAURL = server.URL
+	scans := 0
+	manager.Processes = func(context.Context) ([]Process, error) { scans++; return nil, nil }
+	inv, err := manager.DelegateAt(context.Background(), "bma", "测试任务", "")
+	if err != nil {
+		t.Fatalf("DelegateAt: %v", err)
+	}
+	if !clarified || inv.Output != "计划已执行" || scans != 0 {
+		t.Fatalf("auto approve = %+v clarified=%v scans=%d", inv, clarified, scans)
+	}
+}
+
+func TestScanUsesCacheUntilRefresh(t *testing.T) {
+	manager := testManager(t)
+	scans := 0
+	manager.Processes = func(context.Context) ([]Process, error) {
+		scans++
+		return []Process{{Name: "Kimi", Path: `D:\app\KimiWork\Kimi.exe`}}, nil
+	}
+	first := manager.Scan(context.Background())
+	second := manager.Scan(context.Background())
+	if scans != 1 {
+		t.Fatalf("cached Scan should scan once, got %d", scans)
+	}
+	if len(first) != len(second) {
+		t.Fatalf("cached length mismatch: %d vs %d", len(first), len(second))
+	}
+	manager.Refresh(context.Background())
+	if scans != 2 {
+		t.Fatalf("Refresh should scan again, got %d", scans)
+	}
+	manager.InvalidateCache()
+	manager.Scan(context.Background())
+	if scans != 3 {
+		t.Fatalf("invalidated cache should scan again, got %d", scans)
+	}
+}
+
 func canCall(agent Agent, capability string) bool {
 	for _, item := range agent.Capabilities {
 		if item == capability {

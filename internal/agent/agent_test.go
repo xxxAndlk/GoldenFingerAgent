@@ -164,6 +164,33 @@ func TestLoopMaxStepsBailsOut(t *testing.T) {
 	}
 }
 
+func TestLoopMaxStepsReturnsFinalAnswerWithoutTools(t *testing.T) {
+	callSelf := mock.ToolResponse("c1", "get_datetime", `{}`)
+	sess, rt, _ := testHarness(t, callSelf, callSelf, mock.TextResponse("根据已取到的信息：现在是十点。"))
+	rt.MaxSteps = 2
+	res, err := Run(context.Background(), sess, "现在几点", rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Reply, "现在是十点") {
+		t.Fatalf("final answer = %q", res.Reply)
+	}
+	scripted, ok := rt.LLM.(*mock.Scripted)
+	if !ok {
+		t.Fatal("expected scripted llm")
+	}
+	if len(scripted.Calls) != 3 {
+		t.Fatalf("llm calls = %d, want 3", len(scripted.Calls))
+	}
+	if len(scripted.Calls[2].Tools) != 0 {
+		t.Fatalf("final answer must not expose tools: %+v", scripted.Calls[2].Tools)
+	}
+	last := scripted.Calls[2].Messages[len(scripted.Calls[2].Messages)-1]
+	if !strings.Contains(last.Content, "不要再调用工具") {
+		t.Fatalf("final prompt = %q", last.Content)
+	}
+}
+
 func TestFullConversationCreateTask(t *testing.T) {
 	sess, rt, u := testHarness(t,
 		mock.ToolResponse("c1", "create_task",

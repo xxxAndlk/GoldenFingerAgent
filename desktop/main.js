@@ -8,6 +8,7 @@ const { AssistantApi } = require('./assistant-api');
 const { CollaborationMode } = require('./collaboration');
 const { readActiveWindow } = require('./active-window');
 const { ActivityTrail } = require('./activity-trail');
+const { wantsActivitySummary } = require('./activity-summary');
 const { captureWindow } = require('./window-capture');
 const { readDesktopContent } = require('./desktop-content');
 const { readGitEvidence } = require('./git-connector');
@@ -15,18 +16,14 @@ const { ServerManager } = require('./server-manager');
 const { ScreenpipeSource } = require('./screenpipe-source');
 const { ScreenpipeShadow } = require('./screenpipe-shadow');
 const {
-  clampBounds,
-  snapBounds,
-  dockEdge,
-  nearestEdge,
-  edgeTabBounds,
-  anchorExpandedBounds,
+  clampBounds, snapBounds, dockEdge, nearestEdge, overflowEdge, edgeTabBounds, anchorExpandedBounds,
 } = require('./window-dock');
 
 const COLLAPSED_SIZE = { width: 76, height: 76 };
 const EXPANDED_SIZE = { width: 460, height: 680 };
-const ACTIVITY_SIZE = { width: 340, height: 440 };
+const ACTIVITY_SIZE = { width: 340, height: 340 };
 const ACTIVITY_TAB = { along: 46, cross: 24 };
+const ACTIVITY_HANDLE = { width: 32, height: 46, gap: 2 };
 const SNAP_DELAY = 220;
 const DEFAULT_ACTIVITY_OPACITY = 76;
 // 窗口图标与托盘图标同源，任务栏、Alt+Tab、托盘里看到的都是同一个应用图标。
@@ -51,6 +48,9 @@ if (LOW_INTEGRITY) console.warn('当前进程为低完整性（常见于 --no-sa
 
 let widget = null;
 let activityWindow = null;
+let activityHandleWindow = null;
+let activityHandleSide = 'left';
+let activityHandleTimer = null;
 let agentWindow = null;
 let ccswitchWindow = null;
 let tray = null;
@@ -58,6 +58,7 @@ let trayBusy = false;
 let busyCount = 0;
 let trayIconCache = new Map();
 let expanded = false;
+let widgetDrag = null;
 let activityVisible = true;
 let activityCollapsed = false;
 let activityExpandedBounds = null;
@@ -138,7 +139,36 @@ function broadcast(channel, payload) {
 }
 
 // watchDock 在拖动停顿后吸附屏幕边缘；setBounds 触发的 move 用 suppress 忽略。
-function watchDock(win, onDock) {
+// 悬浮球用指针坐标手动拖拽：Electron 的 app-region drag 会吞掉点击，
+// 无法同时做到“点球展开、按住球拖动”，所以这里用 pointer 事件区分点击和拖动。
+function beginWidgetDrag(x, y) {
+  if (!widget || widget.isDestroyed() || expanded) return false;
+  widgetDrag = { cursorX: Number(x) || 0, cursorY: Number(y) || 0, bounds: widget.getBounds() };
+  return true;
+}
+
+function moveWidgetDrag(x, y) {
+  if (!widgetDrag || !widget || widget.isDestroyed()) return;
+  const dx = (Number(x) || 0) - widgetDrag.cursorX;
+  const dy = (Number(y) || 0) - widgetDrag.cursorY;
+  const next = {
+    ...widgetDrag.bounds,
+    x: widgetDrag.bounds.x + Math.round(dx),
+    y: widgetDrag.bounds.y + Math.round(dy),
+  };
+  const area = screen.getDisplayMatching(next).workArea;
+  const clamped = clampBounds(next, area);
+  widget.setPosition(clamped.x, clamped.y);
+}
+
+function endWidgetDrag() {
+  if (!widgetDrag) return;
+  widgetDrag = null;
+  if (widget && !widget.isDestroyed()) saveSettings({ widgetBounds: widget.getBounds() });
+}
+
+// watchDock 在拖动停顿后吸附屏幕边缘，仅用于工作轨迹窗。
+function watchDock(win, onDock, onOverflow = null) {
   let timer = null;
   let suppress = false;
   const schedule = () => {
@@ -148,6 +178,11 @@ function watchDock(win, onDock) {
       if (win.isDestroyed()) return;
       const bounds = win.getBounds();
       const area = screen.getDisplayMatching(bounds).workArea;
+      const overflow = overflowEdge(bounds, area);
+      if (overflow && onOverflow) {
+        onOverflow(overflow);
+        return;
+      }
       const position = snapBounds(bounds, area);
       const edge = dockEdge({ ...bounds, ...position }, area, 2);
       if (position.x !== bounds.x || position.y !== bounds.y) {
@@ -157,6 +192,18 @@ function watchDock(win, onDock) {
       }
       onDock(edge, { ...bounds, ...position });
     }, SNAP_DELAY);
+  };
+  win.on('move', schedule);
+  win.on('closed', () => clearTimeout(timer));
+}
+
+function watchPosition(win, onMove) {
+  let timer = null;
+  const schedule = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (!win.isDestroyed()) onMove(win.getBounds());
+    }, 180);
   };
   win.on('move', schedule);
   win.on('closed', () => clearTimeout(timer));
@@ -183,7 +230,7 @@ function setExpanded(next) {
     ? anchorExpandedBounds(current, EXPANDED_SIZE, area, widgetDock)
     : collapsedPositionFor(current, area);
   if (!expanded) {
-    widgetDock = dockEdge(bounds, area, 1);
+    widgetDock = '';
     saveSettings({ widgetBounds: bounds });
   }
   widget.setBounds(bounds, true);
@@ -206,11 +253,88 @@ async function syncActivityRecording() {
   }
 }
 
+function hideActivityHandle() {
+  if (activityHandleWindow && !activityHandleWindow.isDestroyed()) activityHandleWindow.hide();
+}
+
+function scheduleActivityHandleSync() {
+  clearTimeout(activityHandleTimer);
+  activityHandleTimer = setTimeout(() => {
+    activityHandleTimer = null;
+    syncActivityHandle();
+  }, 30);
+}
+
+function ensureActivityHandleWindow() {
+  if (activityHandleWindow && !activityHandleWindow.isDestroyed()) return activityHandleWindow;
+  activityHandleWindow = new BrowserWindow({
+    width: ACTIVITY_HANDLE.width,
+    height: ACTIVITY_HANDLE.height,
+    show: false,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    focusable: true,
+    hasShadow: false,
+    backgroundColor: '#00000000',
+    webPreferences: windowPreferences(),
+  });
+  activityHandleWindow.setAlwaysOnTop(true, 'floating');
+  activityHandleWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  activityHandleWindow.webContents.on('did-finish-load', () => {
+    if (!activityHandleWindow || activityHandleWindow.isDestroyed()) return;
+    activityHandleWindow.webContents.send('activity:handle-side', activityHandleSide);
+    syncActivityHandle();
+  });
+  activityHandleWindow.on('closed', () => { activityHandleWindow = null; });
+  activityHandleWindow.loadFile(path.join(__dirname, 'activity-handle.html'));
+  return activityHandleWindow;
+}
+
+// 收回按钮放在卡片外侧的独立小窗口里，避免主窗口留出透明空列。
+function syncActivityHandle() {
+  if (!activityWindow || activityWindow.isDestroyed() || !activityVisible || activityCollapsed || !activityDock) {
+    hideActivityHandle();
+    return;
+  }
+  const bounds = activityWindow.getBounds();
+  const area = screen.getDisplayMatching(bounds).workArea;
+  const width = Math.min(ACTIVITY_HANDLE.width, area.width);
+  const height = Math.min(ACTIVITY_HANDLE.height, area.height);
+  let side = 'left';
+  let x = bounds.x - width - ACTIVITY_HANDLE.gap;
+  if (x < area.x) {
+    side = 'right';
+    x = bounds.x + bounds.width + ACTIVITY_HANDLE.gap;
+  }
+  x = Math.min(Math.max(x, area.x), area.x + area.width - width);
+  const y = Math.min(Math.max(
+    bounds.y + Math.round((bounds.height - height) / 2),
+    area.y,
+  ), area.y + area.height - height);
+  const handle = ensureActivityHandleWindow();
+  if (handle.webContents.isLoading()) {
+    handle.hide();
+    return;
+  }
+  activityHandleSide = side;
+  handle.setBounds({ x, y, width, height });
+  handle.webContents.send('activity:handle-side', side);
+  handle.showInactive();
+}
+
 function setActivityVisible(next) {
   activityVisible = Boolean(next);
   if (!activityWindow || activityWindow.isDestroyed()) createActivityWindow();
   if (activityVisible) activityWindow.showInactive();
   else activityWindow.hide();
+  syncActivityHandle();
   saveSettings({ activityVisible });
   broadcast('activity:visible', activityVisible);
   refreshTrayMenu();
@@ -218,18 +342,19 @@ function setActivityVisible(next) {
   return activityVisible;
 }
 
-function setActivityCollapsed(next) {
+function setActivityCollapsed(next, forcedEdge = '') {
   if (!activityWindow || activityWindow.isDestroyed()) createActivityWindow();
   const nextState = Boolean(next);
   if (nextState === activityCollapsed) {
     if (activityVisible) activityWindow.showInactive();
+    syncActivityHandle();
     return activityCollapsed;
   }
   const current = activityWindow.getBounds();
   const area = screen.getDisplayMatching(current).workArea;
   if (nextState) {
     activityExpandedBounds = current;
-    activityDock = dockEdge(current, area, 2) || nearestEdge(current, area);
+    activityDock = forcedEdge || dockEdge(current, area, 2) || nearestEdge(current, area);
     activityWindow.setBounds(edgeTabBounds(current, area, activityDock, ACTIVITY_TAB), true);
     saveSettings({ activityExpandedBounds, activityCollapsed: true, activityDock });
   } else {
@@ -245,6 +370,7 @@ function setActivityCollapsed(next) {
   activityCollapsed = nextState;
   broadcast('activity:collapsed', { collapsed: activityCollapsed, edge: activityDock });
   if (activityVisible) activityWindow.showInactive();
+  syncActivityHandle();
   refreshTrayMenu();
   return activityCollapsed;
 }
@@ -491,7 +617,7 @@ function createWidget() {
     x: area.x + area.width - size.width - 28,
     y: area.y + area.height - size.height - 28,
   }, area);
-  widgetDock = dockEdge(start, area, 2);
+  widgetDock = '';
   widget = new BrowserWindow({
     ...start,
     frame: false,
@@ -507,13 +633,11 @@ function createWidget() {
   });
   widget.setAlwaysOnTop(true, 'floating');
   allowSafeExternalLinks(widget);
-  watchDock(widget, (edge, bounds) => {
-    widgetDock = edge;
-    if (widget && !widget.isDestroyed()) widget.webContents.send('widget:dock', edge);
+  watchPosition(widget, bounds => {
     if (!expanded) saveSettings({ widgetBounds: bounds });
   });
   widget.webContents.on('did-finish-load', () => {
-    widget.webContents.send('widget:dock', widgetDock);
+    widget.webContents.send('widget:dock', '');
     widget.webContents.send('widget:expanded', expanded);
   });
   widget.on('close', event => {
@@ -531,12 +655,19 @@ function createActivityWindow() {
     width: Math.min(ACTIVITY_SIZE.width, area.width - 32),
     height: Math.min(ACTIVITY_SIZE.height, area.height - 40),
   };
-  const saved = clampBounds(validBounds(settings.activityExpandedBounds) || {
+  const raw = validBounds(settings.activityExpandedBounds) || {
     ...size,
     x: area.x + area.width - size.width - 18,
     y: area.y + 20,
+  };
+  // 旧版本保存的轨迹窗高度可能更长；按当前上限裁剪，不移动它的位置。
+  const saved = clampBounds({
+    ...raw,
+    width: Math.min(raw.width, size.width),
+    height: Math.min(raw.height, size.height),
   }, area);
   activityExpandedBounds = saved;
+  saveSettings({ activityExpandedBounds: saved });
   activityCollapsed = settings.activityCollapsed === true;
   activityDock = activityCollapsed
     ? (settings.activityDock || nearestEdge(saved, area))
@@ -562,16 +693,24 @@ function createActivityWindow() {
     if (activityCollapsed) return;
     activityDock = edge;
     saveSettings({ activityExpandedBounds: current, activityDock: edge });
-    if (!activityWindow.isDestroyed()) activityWindow.webContents.send('activity:collapsed', { collapsed: false, edge });
-  });
+    if (!activityWindow.isDestroyed()) {
+      activityWindow.webContents.send('activity:collapsed', { collapsed: false, edge });
+    }
+    syncActivityHandle();
+  }, edge => setActivityCollapsed(true, edge));
   activityWindow.webContents.on('did-finish-load', () => {
     activityWindow.webContents.send('activity:collapsed', { collapsed: activityCollapsed, edge: activityDock });
+    syncActivityHandle();
   });
+  activityWindow.on('move', scheduleActivityHandleSync);
+  activityWindow.on('show', syncActivityHandle);
+  activityWindow.on('hide', hideActivityHandle);
   activityWindow.on('close', event => {
     if (quitting) return;
     event.preventDefault();
-    setActivityCollapsed(true);
+    setActivityVisible(false);
   });
+  activityWindow.on('closed', hideActivityHandle);
   activityWindow.loadFile(path.join(__dirname, 'activity.html'));
 }
 
@@ -593,9 +732,13 @@ app.whenReady().then(async () => {
         new Notification({ title: '金手指 · 协作总结', body: summary.reply.slice(0, 180) }).show();
       }
     },
-    onSummarized: observations => {
-      if (activityTrail) activityTrail.deleteSummarizedEvidence(observations.map(item => item.id).filter(Boolean));
+    onSummarized: (observations, phase = {}) => {
+      if (!activityTrail) return;
+      const ids = observations.map(item => item.id).filter(Boolean);
+      activityTrail.markSummarized(ids, phase.id || '', phase.completedAt || Date.now());
     },
+    loadLastSummary: () => (activityTrail ? activityTrail.lastSummary() : ''),
+    onPhase: phase => { if (activityTrail) activityTrail.saveSummaryPhase(phase); },
     sessionId: () => chatSessionId,
     onSession: id => {
       chatSessionId = id;
@@ -616,6 +759,7 @@ app.whenReady().then(async () => {
     readPageContent: options => readDesktopContent(options),
     captureWindow: options => captureWindow(options),
     evidenceDir: path.join(app.getPath('userData'), 'activity-evidence'),
+    dataDir: app.getPath('userData'),
     inputMonitorEnabled: !LOW_INTEGRITY,
     onEvent: event => {
       collaboration.addObservation(event);
@@ -624,6 +768,8 @@ app.whenReady().then(async () => {
     },
     onError: error => broadcast('activity:error', error),
   });
+  collaboration.seedPending(activityTrail.pendingObservations());
+  collaboration.lastSummary = activityTrail.lastSummary();
   serverManager = new ServerManager({
     appDir: __dirname,
     userData: app.getPath('userData'),
@@ -681,9 +827,10 @@ app.whenReady().then(async () => {
                 directoryPicker: Boolean(document.querySelector('#workdir-choose')),
               };
             })()`);
-            if (!agentState.status.startsWith('正在扫描')) break;
+            if (!agentState.status.startsWith('正在读取')) break;
           } while (Date.now() < agentDeadline);
           if (!agentState.count || !agentState.desktopOpen || !agentState.directoryPicker || agentState.status.includes('失败')) {
+
             throw new Error(`桌面 Agent 自检失败：${JSON.stringify(agentState)}`);
           }
           const cliState = await agentWindow.webContents.executeJavaScript(`(() => {
@@ -777,12 +924,17 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   quitting = true;
+  clearTimeout(activityHandleTimer);
+  if (activityHandleWindow && !activityHandleWindow.isDestroyed()) activityHandleWindow.destroy();
   if (activityTrail) activityTrail.stop();
   if (screenpipeShadow) screenpipeShadow.stop();
   if (serverManager) serverManager.stop();
 });
 
 ipcMain.handle('widget:set-expanded', (_event, next) => setExpanded(next));
+ipcMain.handle('widget:drag-start', (_event, x, y) => beginWidgetDrag(x, y));
+ipcMain.handle('widget:drag-move', (_event, x, y) => { moveWidgetDrag(x, y); return true; });
+ipcMain.handle('widget:drag-end', () => { endWidgetDrag(); return true; });
 ipcMain.handle('ui:open-window', (_event, kind) => {
   openAuxWindow(String(kind || ''));
   return true;
@@ -808,9 +960,9 @@ ipcMain.handle('assistant:sessions', async (_event, date) => {
   await ensureServer();
   return api.listSessions(String(date || ''));
 });
-ipcMain.handle('assistant:session-messages', async (_event, id) => {
+ipcMain.handle('assistant:session-messages', async (_event, id, before, limit) => {
   await ensureServer();
-  return api.sessionMessages(String(id || ''));
+  return api.sessionMessages(String(id || ''), String(before || ''), Number(limit) || 50);
 });
 ipcMain.handle('assistant:use-session', (_event, id) => {
   chatSessionId = String(id || '');
@@ -825,10 +977,24 @@ ipcMain.handle('assistant:chat', async (_event, text, attachments) => {
   try {
     // 走流式接口：把「思考 / 调用工具 / 澄清」实时推给面板，
     // 最终结果仍按原结构返回，渲染逻辑不变。
+    // 只有明确询问工作/今天进展时才调用独立总结子代理；
+    // 主对话只拿压缩后的短总结，不背当天原始轨迹和大量阶段总结。
+    let workContext = '';
+    if (wantsActivitySummary(cleanText) && activityTrail) {
+      try {
+        const rawContext = activityTrail.chatContext({ maxChars: 16000 });
+        if (rawContext) {
+          const summary = await api.summarizeActivity(rawContext, cleanText);
+          if (summary && summary.reply) workContext = `【工作轨迹子代理总结】\n${String(summary.reply).slice(0, 4000)}`;
+        }
+      } catch (error) {
+        console.error(`工作轨迹总结子代理失败：${error.message}`);
+      }
+    }
     const response = await api.chatStream(cleanText, chatSessionId, status => {
       if (widget && !widget.isDestroyed()) widget.webContents.send('chat:status', status);
       setTrayState(true, trayLabelForStatus(status));
-    }, undefined, files);
+    }, undefined, files, workContext);
     chatSessionId = response.session_id || chatSessionId;
     return response;
   } finally {
@@ -843,7 +1009,7 @@ ipcMain.handle('skills:list', async () => {
   await ensureServer();
   return api.listSkills();
 });
-ipcMain.handle('agents:list', async () => { await ensureServer(); return api.listAgents(); });
+ipcMain.handle('agents:list', async (_event, refresh) => { await ensureServer(); return api.listAgents(Boolean(refresh)); });
 ipcMain.handle('agents:open', async (_event, agentId) => {
   await ensureServer();
   return api.openAgent(String(agentId || ''));
@@ -860,6 +1026,16 @@ ipcMain.handle('agents:delegate', async (_event, agentId, task, workDir) => {
   const listing = await api.listAgents();
   const agent = (listing.agents || []).find(item => item.id === id);
   if (widget && !widget.isDestroyed()) widget.webContents.send('agents:delegated', { name: agent ? agent.name : id, result });
+  return result;
+});
+ipcMain.handle('agents:clarify', async (_event, sessionId, answer, questionId) => {
+  await ensureServer();
+  const result = await api.answerAgent(
+    String(sessionId || ''), String(answer || ''), String(questionId || ''),
+  );
+  if (widget && !widget.isDestroyed()) {
+    widget.webContents.send('agents:delegated', { name: 'BMA', result });
+  }
   return result;
 });
 ipcMain.handle('agents:register-a2a', async (_event, endpoint) => {
@@ -920,8 +1096,13 @@ ipcMain.handle('collaboration:set', async (_event, enabled) => {
 ipcMain.handle('collaboration:status', () => ({ ...collaboration.status(), ...activityTrail.status(), workspace }));
 ipcMain.handle('collaboration:summarize-now', () => runSummarize());
 ipcMain.handle('activity:list', () => activityTrail.list());
+ipcMain.handle('activity:summaries', (_event, sessionId) => activityTrail.listSummaryPhases(String(sessionId || '')));
 ipcMain.handle('activity:evidence', (_event, id) => activityTrail.evidence(id));
-ipcMain.handle('activity:clear', () => { activityTrail.clear(); return activityTrail.status(); });
+ipcMain.handle('activity:clear', () => {
+  activityTrail.clear();
+  if (collaboration) collaboration.clear();
+  return activityTrail.status();
+});
 ipcMain.handle('activity:set-collapsed', (_event, value) => ({ collapsed: setActivityCollapsed(value), edge: activityDock }));
 ipcMain.handle('capture:shadow-status', () => screenpipeShadow.status());
 ipcMain.handle('workspace:connect', async () => {

@@ -109,7 +109,7 @@ func (r *SessionRepo) RecentMessages(ctx context.Context, sessionID string, n in
 	rows, err := r.q.QueryContext(ctx, `
 		SELECT id, session_id, role, content, tool_calls_json, tool_call_id, name, created_at
 		FROM chat_message WHERE session_id = ?
-		ORDER BY created_at DESC LIMIT ?`, sessionID, n)
+		ORDER BY rowid DESC LIMIT ?`, sessionID, n)
 	if err != nil {
 		return nil, err
 	}
@@ -125,6 +125,58 @@ func (r *SessionRepo) RecentMessages(ctx context.Context, sessionID string, n in
 		out = append(out, m)
 	}
 	// 反转为时间正序。
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, rows.Err()
+}
+
+// MessagesBefore 返回 beforeID 之前的一页消息（不含 beforeID），时间正序。
+// beforeID 为空时取最新一页；游标不存在时返回空页，让客户端停止继续加载。
+func (r *SessionRepo) MessagesBefore(ctx context.Context, sessionID, beforeID string, limit int) ([]ChatMessage, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	const columns = `id, session_id, role, content, tool_calls_json, tool_call_id, name, created_at`
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if beforeID == "" {
+		rows, err = r.q.QueryContext(ctx, `
+			SELECT `+columns+` FROM chat_message WHERE session_id = ?
+			ORDER BY rowid DESC LIMIT ?`, sessionID, limit)
+	} else {
+		var beforeRowID int64
+		err = r.q.QueryRowContext(ctx, `
+			SELECT rowid FROM chat_message WHERE id = ? AND session_id = ?`,
+			beforeID, sessionID).Scan(&beforeRowID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		rows, err = r.q.QueryContext(ctx, `
+			SELECT `+columns+` FROM chat_message
+			WHERE session_id = ? AND rowid < ?
+			ORDER BY rowid DESC LIMIT ?`,
+			sessionID, beforeRowID, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChatMessage
+	for rows.Next() {
+		var m ChatMessage
+		var toolCalls []byte
+		if err := rows.Scan(&m.ID, &m.SessionID, &m.Role, &m.Content, &toolCalls, &m.ToolCallID, &m.Name, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		m.ToolCalls = toolCalls
+		out = append(out, m)
+	}
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}

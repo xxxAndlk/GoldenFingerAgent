@@ -65,6 +65,11 @@
         <section id="messages" class="messages" aria-live="polite">
           <article class="message assistant"><p>我是金手指管家，可以对话、记录和调度其他 Agent。右上角是设置与 Agent 管理，顶栏开关控制协作模式。</p></article>
         </section>
+        <button id="summary-line" class="summary-line" type="button" hidden>
+          <span class="summary-line-dot" aria-hidden="true"></span>
+          <span>已产生 <strong id="summary-count">0</strong> 条总结，点击查看</span>
+          <span class="summary-line-arrow" aria-hidden="true">›</span>
+        </button>
         <div id="chat-status" class="chat-status" hidden>
           <span class="status-dot"></span>
           <span id="chat-status-text">正在思考…</span>
@@ -81,6 +86,19 @@
       </section>
     </div>
   </main>
+
+  <div id="summary-modal" class="summary-modal" hidden>
+    <section class="summary-dialog" role="dialog" aria-modal="true" aria-labelledby="summary-title">
+      <header class="summary-dialog-head">
+        <div>
+          <strong id="summary-title">工作总结</strong>
+          <small id="summary-subtitle">已产生的阶段总结</small>
+        </div>
+        <button id="summary-close" class="icon-button" type="button" aria-label="关闭">×</button>
+      </header>
+      <div id="summary-list" class="summary-list"></div>
+    </section>
+  </div>
   <script src="markdown.js"></script>
   <script src="renderer.js"></script>
 </body>

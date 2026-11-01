@@ -42,6 +42,15 @@
       <section id="agent-list" class="agent-list"></section>
       <section id="agent-result-section" class="window-section result-section" hidden>
         <div class="section-heading"><h2 id="agent-result-title">执行结果</h2></div>
+        <div id="agent-clarify" hidden>
+          <p id="agent-clarify-question" class="status-text"></p>
+          <div id="agent-clarify-options" class="clarify-options"></div>
+          <div class="clarify-custom">
+            <input id="agent-clarify-answer" type="text" placeholder="输入自定义答复" autocomplete="off">
+            <button id="agent-clarify-send" class="primary-button" type="button">发送答复</button>
+          </div>
+          <p id="agent-clarify-status" class="status-text" role="status"></p>
+        </div>
         <pre id="agent-result"></pre>
       </section>
 

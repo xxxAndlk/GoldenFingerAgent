@@ -178,15 +178,155 @@
 - **BMA 桌面版**：GFA 自动发现 `D:\WebApp\BMA-Desktop`（或 `GFA_BMA_HOME` / `%LOCALAPPDATA%\Programs\BlockMemoryAgent` / 旧安装目录），读取 `.env` 的 `HTTP_ADDR`（本机 10011）与 `BMA_API_TOKEN`；未运行时通过 `app\launch.ps1 -NoBrowser -Quiet` 拉起。BMA 未运行但安装器存在时也标记为已安装，分派时自动启动；API 请求带 Bearer Token。已实测 `/api/agents` 返回 BMA installed/running，endpoint 为 `http://127.0.0.1:10011/api`。
 - **Skill 系统**：新增 `internal/skill`（`skills/<name>/SKILL.md`，frontmatter `name`/`description`）、提示词技能清单、`list_skills`/`load_skill` 工具、`GET /api/skills` 和管理窗口「技能」卡片。首个技能 `skills/bma/SKILL.md` 覆盖 BMA 架构、安装/升级、启动器、HTTP 会话接口、任务编排、插件/技能、开发测试与排障。
 - **验证**：Go 全量测试、`go vet` 通过；桌面 `npm run check`、`node --test` **83/83**；技能聊天实测返回 `trace:["load_skill → ok"]`；管理页技能卡片截图核对；BMA 健康检查/会话列表/能力检查在 10011 实测可用。
-- **BMA 运行态提醒**：本机 BMA 的 `/api/capabilities` 报 `role meta 的 model_ref "doubao-seed-evolving" 不在模型注册表中`（安装目录缺 `config\models.json` 或绑定失效），需要先在 BMA 模型页修复，否则 BMA 任务会失败；GFA 侧发现与分派链路不受影响。
+- **BMA 运行态提醒（已修复，见 2.18）**：升级后安装目录缺 `config\models.json`，所有角色曾未绑定；现已恢复注册表并把角色切换到可用的 `API-deepseek-v4.1-flash`，`/api/capabilities` 的 `all_ok=true`。原 ARK 模型仍受月度配额 429 限制，不要切回。
 - 手机 APK 仍需重新打包以加载附件/历史/设置页面更新。
+
+### 2.18 BMA 澄清回路与模型绑定恢复（2026-10-31）
+
+- **真实 BMA 链路验证**：直接 API 实测 fast 档会话创建 → 在临时工作目录写入 `BMA-E2E-OK.txt` → `result` 回传；同会话 `POST /messages` 继续提问并读到更新后的 `result`；GFA `POST /api/agents/delegate` 走 daily 档，12.3 秒返回最终回复并验证 `GFA-BMA-E2E.txt` 内容。
+- **修复 `awaiting_clarify` 卡死**：BMA 计划确认或 `ask_user` 提问时，旧 GFA 只认终态，会一直轮询到 5 分钟空闲/30 分钟上限；桌面调用方 10 分钟 HTTP 超时。现在 `waitBMASession` 识别 `pending_clarify` / `awaiting_clarify` / `paused`，立即返回问题、选项、`question_id` 和会话 ID。
+- **新增澄清答复**：`POST /api/agents/clarify`（`session_id`/`answer`/`question_id`）转发到 BMA `/sessions/{id}/clarify` 并继续等待终态；Agent 调度结果区会显示问题、选项按钮和自定义答复输入框。实测 GFA 返回 `awaiting_clarify` 后回答 `yes`，BMA 继续创建 `CLARIFY-E2E.txt` 并返回最终结果。
+- **模型注册表恢复**：从源码模板恢复 `D:\WebApp\BMA-Desktop\config\models.json`（10 个条目）；原 ARK 端点返回 `AccountQuotaExceeded`（2026-11-17 重置），`od-deepseek` 指向未启动的 3425 代理；探测 `API-deepseek-v4.1-flash` 可用后，把 11 个角色全部绑定到该模型（切换前临时备份，验证后已清理）。
+- **验证**：`go test ./...` 全通过、`go vet ./...` 无输出；新增 agenthub 澄清测试；桌面 `node --test` **84/84**、`npm run check` 通过；无头 Edge 加载真实 `agents.html`（stub API）确认问题/选项/答复后完成态渲染正确。
+- **注意**：GFA 要求 `work_dir` 已存在且是目录；BMA 会在其中自动创建 `.bma/tmp/<session>`。若需要全新目录，先由调用方创建再分派。
+
+### 2.19 BMA 桌面操控与 Agent 分工（2026-10-31）
+
+- **桌面操控实测**：`host_computer_use` 插件 running，提供 33 个真机工具。用 `cluster` 档在“画图”窗口完成 `list_windows` → `set_target` → `activate_window` → `get_frontmost_app` → `get_window` → `click`（HID，屏幕坐标 959,578）→ `screenshot`；返回 `effect=changed`、`route=input`、`delivery=hid`，未触碰其他窗口。
+- **daily 档打通**：把安装目录 `config/plugins.yaml` 的 `host_computer_use.roles` 从 `meta/test_assistant` 扩为 `meta/domain/test_assistant`，`POST /api/plugins/reload` 生效；随后通过 GFA 默认 BMA daily 分派再次点击画图成功（DomainAgent 无需切 cluster）。升级 BMA 后需复查该 roles。
+- **安全边界**：首次用记事本测试时，BMA 误把用户已打开、未保存的记事本当作目标并弹出“打开方式”对话框；它在焦点不确定时没有继续输入，会话被手动取消，用户内容未被改动。之后改为唯一标题的“画图”窗口并显式 `set_target`，才继续测试。桌面任务必须锁定唯一窗口，焦点不确定就停止。
+- **Agent 分工**：BMA = 日常助理 + 真机 GUI 操控；Claude Code / Pi = 编程主力。`butler.md`、`AGENT.md`、`skills/bma/SKILL.md` 和 Agent 目录描述已写入该分工；GFA 的自动派发权重未改，编程任务应显式选择 CC/Pi，GUI 任务选 BMA。
+- **验证**：GFA `daily` 分派返回 completed；`/api/plugins` roles 包含 domain；测试用画图窗口和 BMA 会话已清理；用户未保存记事本保持原样。
+
+### 2.20 工作轨迹持久化、阶段总结与 3 天证据保留（2026-10-31）
+
+- **轨迹持久化**：`ActivityTrail` 新增 `userData/activity-events.jsonl` 追加式存储；事件、总结标记、证据清理都以记录/更新行保存，启动时按事件 ID 合并恢复。内存最多 5000 条，界面仍展示最近 300 条；不再因 300 条上限丢失旧事件。
+- **阶段总结**：`CollaborationMode` 每轮生成 `phase_id`、起止时间、覆盖事件 ID、原始摘要和模型总结，写入 `userData/activity-summaries.jsonl`；启动时恢复上一阶段总结和未总结事件（`seedPending`），下一轮提示词带上一阶段总结。长阶段摘要不再只取最后 60 条，超过 60k 字符时才标注剩余条数。
+- **3 天证据保留**：总结成功只调用 `markSummarized()`，不立即删截图；事件保存 `summarizedAt`、`phaseId`、`evidenceExpiresAt`（总结时间 + 3 天）。`removeExpiredEvidence()` 每 3 天保留期到期后删除截图并追加清理更新；未总结截图也按捕获时间 3 天过期。界面增加「已总结」标记，悬停显示截图保留截止时间；过期后点击只提示文字查看。
+- **清空联动**：`activity:clear` 现在同时清空 `ActivityTrail` 事件/证据/阶段文件和 `CollaborationMode` 的待总结队列/上一阶段总结，避免清空后下一轮总结继续消费旧数据。
+- **测试**：桌面 `node --test` **89/89**、`npm run check` 通过；新增持久化恢复、3 天证据过期、清空持久化文件、阶段记录/上一阶段总结、清空联动、70 条细节摘要测试。
+- **注意**：轨迹 JSONL 保存页面正文等本地内容（不提交 Git）；截图仍只在本地，3 天后删除。总结结果继续写入长期记忆。
+
+### 2.23 总结只陈述、不再提问（2026-10-31）
+
+- 协作总结提示词从“最后问一个帮助用户继续工作的问题”改为：只按“本阶段新增进展、仍在继续”陈述事实，不提问、不请求确认/授权、不给下一步建议、不以问句结尾。
+- 新增 `stripTrailingQuestion` 兜底：模型偶尔仍以问句收尾时，去掉结尾问题行；如果整段只有问句，则回退为“本阶段没有可陈述的新进展。”。
+- 阶段记录、`lastSummary` 和弹窗展示都使用清理后的文本；旧总结不回溯改写。
+- **验证**：桌面 `node --test` **92/92**、`npm run check` 通过；新增结尾问句清理和提示词不含“最后问一个问题”的测试。
+
+### 2.24 Agent 缓存、总结流内定位与消息时间（2026-10-31）
+
+- **Agent 缓存**：`Manager.Scan()` 默认返回缓存；新增 `Refresh()`/`InvalidateCache()`。`GET /api/agents` 默认读缓存，`?refresh=1` 或 Agent 面板「重新扫描」强制刷新；新增 `refresh_agents` 工具，`list_agents` 改为读已保存配置。BMA 分派直接走 `BMAURL`，不再为一次调用扫描全部 Agent；CLI/桌面 Agent 先查缓存，目标不存在才刷新一次。
+- **总结入口进对话流**：去掉固定悬浮单行，改为在 `#messages` 中按最近一次总结的 `completedAt` 插入「已产生 N 条总结」节点（带自己的时间）；后续消息把它往上顶，下一轮总结更新计数并移到新的结尾。点击仍打开阶段总结弹窗。
+- **消息时间**：服务端消息 DTO 增加 `created_at`；桌面和手机每条消息上方显示 `at`/发送时刻。历史恢复、分页加载、实时发送都带时间。
+- **验证**：桌面 `node --test` **92/92**、`npm run check` 通过；无头 Edge 桌面验证消息/总结节点顺序为 `10:00 消息 → 10:05 消息 → 10:07 总结 → 10:10 消息`，点击总结弹出阶段总结；手机端 3 条消息显示 `10:00/10:05/10:10`；Go `agenthub` 缓存测试与 BMA 免扫描分派测试通过。
+- **缓存实测**：真实 `/api/agents` 第二次请求 **16ms**（缓存），`?refresh=1` **3520ms**（重新扫描），均返回 11 个 Agent；证明调用不再触发全量扫描。
+
+### 2.26 悬浮球自由拖动与移除侧边贴靠 UI（2026-10-31）
+
+- **悬浮球拖动**：移除 `.orb` 的 `-webkit-app-region: drag` 和中心 no-drag 热区，改为 pointer 事件：按下记录 screen 坐标，移动超过 4px 才进入拖动，通过主进程 `widget:drag-start/move/end` 调 `setPosition` 并限制在工作区；未移动则保留点击展开。
+- **取消贴边**：主悬浮球和轨迹窗不再调用 `watchDock`/`snapBounds`，只保存自由位置；悬浮球不再显示金色贴边滑轨，轨迹窗不再吸附屏幕边缘。
+- **移除侧边小条**：轨迹窗不再收起为 edge-tab；`activity-hide` 隐藏，收起等价于隐藏轨迹窗口，关闭窗口也改为隐藏。旧的 `activityCollapsed` 配置在启动时忽略。
+- **验证**：桌面 `node --test` **92/92**、`npm run check` 通过；真实打包 Electron via CDP：拖动后主窗 `y` 从 654→694（x 受右边界 clamp），拖动后点击仍能展开面板；轨迹窗实际尺寸 340×440，`edge-tab` 与 `activity-hide` 均为 hidden。
+
+### 2.27 修复打包版模型配置重启丢失（2026-10-31）
+
+- **根因**：打包版位于工程目录内时，`ServerManager.prepare()` 让 `config.yaml` 沿用工程根，但 `settings.json` 仍放在 Electron userData；换一种启动方式/userData 就会读到另一份模型列表。保存接口本身正常，测试模型确实写入了当时的 userData settings。
+- **修复**：只要检测到工程根 `config.yaml`，`settings` 也固定为工程根 `settings.json`，配置与模型列表始终同源；独立安装（无工程根 config）仍使用 userData。
+- **验证**：打包版 `/api/settings` 的 `settings_path` 变为工程根 `settings.json`；通过 API 添加测试模型后文件落盘，重启打包版后模型仍在，随后删除测试模型。
+- **注意**：旧开发版 userData 里的模型（`.runtime\desktop-userdata\settings.json` 中的“当前生效/OpenDesign”）不会自动迁移到工程根 settings；需要的话单独迁移。桌面测试增至 **93/93**。
+
+### 2.28 手机版模型配置重启验证（2026-10-31）
+
+- 手机版没有 Electron userData 分叉：`android/gosvc` 固定使用 `context.filesDir`，模型设置写入 `<filesDir>/settings.json`，每次 `StartServer(dataDir)` 都打开同一路径。
+- 新增 `TestSettingsModelsPersistAcrossRestart`：真实启动 gosvc → 保存模型 → StopServer → 用同一 dataDir 重启 → `/api/settings` 仍能读到该模型；`go test ./android/gosvc` 通过。
+- 只有清除应用数据、卸载重装（清数据）才会丢失；普通升级安装和进程重启不会。
+
+### 2.29 轨迹窗补回关闭按钮（2026-10-31）
+
+- 按“不要侧边贴靠 UI”的约定，轨迹窗不再贴边缩成小条，也没有侧边展开按钮；但这导致窗口只能通过托盘/设置隐藏。
+- 轨迹窗标题栏补回可见的 `×`（`#activity-hide`），点击只隐藏轨迹窗，不吸附、不生成侧边条；需要时从托管窗口的设置页“记录并展示工作轨迹”或托盘重新显示。
+- 打包版已重新构建并重启，8080 正常；桌面测试 **93/93**、`npm run check` 通过。
+
+### 2.30 轨迹窗高度裁剪（2026-10-31）
+
+- 按用户要求只裁剪大小，不做自动移动/避让：`ACTIVITY_SIZE.height` 从 440 降为 **340**，轨迹窗默认尺寸变为 340×340。
+- 启动时读取旧 `activityExpandedBounds` 后按 340 高度上限裁剪，并把裁剪结果写回 settings；只改高度，不改变用户保存的 x/y 位置。
+- 轨迹窗标题栏有「立即总结」「清空」和 `×`；`×` 只隐藏，贴边收起逻辑由 2.31 接管。
+
+### 2.31 轨迹窗拖出边缘自动收起与侧边收回按钮（2026-11-01）
+
+- 去掉标题栏的手动收起按钮；`watchDock` 在拖动停顿后用 `overflowEdge` 检测窗口超出工作区边缘是否达到自身尺寸 20%，达到就按该方向自动 `setActivityCollapsed` 成贴边小条。
+- 展开且贴边时，在轨迹窗左侧外侧显示独立收回按钮；窗口拖回中间、不再贴边时自动隐藏；收起成小条后该按钮也隐藏。
+- 收回按钮改为独立小窗口 `activity-handle.html`（32×46），外观复用贴边展开小条的半透明玻璃样式、箭头方向相反；贴在卡片外侧，不占卡片宽度，也不再留透明空列；卡片左侧空间不足时自动换到右侧并旋转箭头。轨迹卡片恢复满宽，仅保留 `data-edge` 用于圆角。
+- 按钮跟随轨迹窗移动；收起、拖回中间、隐藏轨迹时自动隐藏，展开且贴边时恢复。点击按钮收起，点击贴边小条展开。
+- 贴边小条仍是展开按钮，点击恢复原 340×340；`×` 仍是完全隐藏，不影响贴边。
+- 轨迹窗高度上限仍为 340；收起时实际窗口 32×46。主对话面板不贴边。
+- 真实 Electron 验证：轨迹窗 `340×340`、面板 `left=0`（无空列）；收回按钮窗口 `32×46` 位于 `x=1546`，轨迹窗 `x=1580`，`outsideCard=true`；点击收回 → 轨迹 32×46、小条出现、按钮窗口隐藏；点击小条 → 轨迹恢复 340×340、按钮窗口恢复显示。桌面检查与测试 **94/94** 通过。
+
+### 2.34 主对话不再背轨迹，总结改走子代理（2026-11-01）
+
+- 去掉主对话每轮自动注入 `activityTrail.chatContext()` 的行为；“你是谁”等普通对话现在只发送原始用户消息。
+- 只有 `wantsActivitySummary()` 命中“今天/工作/总结/做了什么/做事”等意图时，桌面端才读取当天轨迹并调用新增的 `POST /api/summarize` 子代理；子代理用独立上下文、无工具、单次 LLM 调用，返回最多 4000 字摘要，再交给主对话。
+- `/api/summarize` 不创建会话、不调用工具、不写聊天历史；主对话继续负责最终回复与持久化。
+- 新增 `desktop/activity-summary.js` 意图判断与单测、`AssistantApi.summarizeActivity` 单测、Go `TestSummarizeEndpointUsesNoToolsAndSeparateContext`。
+- **注意**：本次验证时 OpenDesign 本地代理 `127.0.0.1:3425` 对最小 `/v1/responses` 请求也返回 `HTTP 502 ECONNRESET`，所以“你是谁”仍会显示“卡住了”；这是上游模型代理故障，不是上下文或工具限制。需要恢复对话可临时切到 `deepseek-flash`。
+
+### 2.33 工作轨迹恢复页面正文捕获（2026-11-01）
+
+- **先确认版本**：当前主采集源就是自研 `NativeActivitySource`；`.archive/source-snapshot-20261030.tar.gz` 里的活动链路与当前一致，没有更早的“能读正文”的独立实现可回滚。Screenpipe 只在 `screenpipe-shadow.js` 里做默认关闭的影子评估，不是主链路。
+- **根因**：应用以 `--no-sandbox` 启动后是 Low 完整性（RID 4096），`desktopCapturer` 对 Chrome/VS Code 返回空缩略图，UIA 也读不到高完整性窗口正文，于是只剩窗口标题。
+- **截图兜底**：新增 `desktop/screen-capture.js`，用 PowerShell `CopyFromScreen` 截取当前窗口/页面区域；`desktopCapturer` 失败时自动回退。
+- **OCR 修复**：Windows OCR 原脚本用 `StorageFile.GetFileFromPathAsync`，Low/AppContainer 下返回空流并报 `Invalid pointer`；改为 `InMemoryRandomAccessStream + DataWriter` 后成功。实测打包版对 Chrome 页面读到 523–902 字符，对 VS Code 读到 971 字符。
+- **隐私处理**：新增 `desktop/redaction.js`；OCR/UIA 文本入库前脱敏 API Key、Token、密码、中文“密钥”等；命中敏感内容或区域截图未读到文字时丢弃截图证据。实测 Chrome API 页面和 settings.json 页面都只保留脱敏文字，`evidencePath` 为空。
+- **性能/超时**：窗口截图 6s、区域截图 16s、OCR 15s、整轮观察 35s；Screenpipe 影子逻辑未变。
+- **验证**：桌面 `node --test` **103/103**、`npm run check` 通过；打包版真实采集到 Chrome `Open Design Cloud` 的“API 密钥/接入配置/我的密钥”正文与 VS Code 的 settings.json 页面正文；含敏感内容时截图被丢弃。Go 全量测试与 `go vet` 通过。
+
+### 2.32 修复“卡住了”兜底并注入当天工作轨迹（2026-11-01）
+
+- **诊断**：不是模型连不上。`127.0.0.1:3425` 代理正常，`/v1/models` 同时暴露 `auto/deepseek-v4.1-flash` 与 `opendesign/deepseek-v4.1-flash`，直接调用 `/v1/responses` 返回 200；服务日志中 01:05–01:06 每一步都有 LLM 回复和工具调用，没有连接拒绝/401/超时。用户看到的“我这边有点卡住了”是 `internal/agent/loop.go` 在工具循环跑满 6 步后的兜底。
+- **最终回答兜底**：跑满 `maxSteps` 后追加一次不带工具（`Tools` 为空）的请求，提示模型“不要再调用工具，直接用已有结果回答”；只有该请求失败或内容为空才保留原来的“卡住了”。新增 `TestLoopMaxStepsReturnsFinalAnswerWithoutTools`。
+- **当天轨迹上下文**：`ActivityTrail.chatContext()` 汇总当天阶段总结与最近 80 条活动（最多 12000 字符）；桌面 `assistant:chat` 自动随请求发送 `context`；Go `chatRequest.Context` 只把上下文附加到本轮 `agentText`，不写入会话原文。新增 `TestChatContextIsInjectedButNotPersisted` 与 `ActivityTrail chatContext` 单测。
+- **验证**：`go test ./...`、`go vet ./...` 通过；桌面测试 **96/96**、`npm run check` 通过。真实桌面 E2E 提问“今天做了哪些工作”返回了当天 settings.json/VS Code、Open Design Cloud、FolderView/Weixin/CC Switch 等轨迹摘要，不再出现“卡住了”。
+
+### 2.25 BMA 计划确认由 GFA 自动批准（2026-10-31）
+
+- 根因：GFA 的异步 `delegate_agent` 链路在 BMA 返回 `awaiting_clarify` 后只按 completed 落库，计划确认停在 BMA UI。
+- `DelegateAt("bma")` 在 `invokeBMA` 返回后调用 `autoApproveBMAPlan`：仅当问题含“计划/批准开工/计划待批准”且选项含 `approve`/“批准”/“允许开工”时，自动 `AnswerBMA` 并继续等待；同一 `question_id` 只批一次，最多连续处理 4 次。
+- 普通 `ask_user`（例如选择文件、补充信息）不自动回答，仍原样返回需要用户处理。
+- **验证**：新增 `TestBMAPlanApprovalAnswer` 与 `TestDelegateBMAAutoApprovesPlan`；`go test ./internal/agenthub ./internal/httpapi` 通过，自动批准后任务返回 completed，扫描计数为 0。
+- **真实同步链路**：GFA `POST /api/agents/delegate` 触发 BMA `submit_plan`/`ask_user`，BMA 事件显示 `clarify User 提问答复: approve`，随后写文件并 completed。
+- **真实异步链路**：GFA `POST /api/jobs` 提交同一类任务，job 从 running → completed；BMA 计划被自动批准，`BMA-PLAN-ASYNC.txt` 写入并读回 `BMA_PLAN_ASYNC_OK`，证明截图里的异步 `delegate_agent` 路径已覆盖。
+
+### 2.21 总结单行入口与弹窗（2026-10-31）
+
+- **聊天记录不再出现总结气泡**：服务端 `internal` 总结请求即使带当前会话 ID，也只借用上下文，不再持久化用户提示或助手总结；`TestInternalChatWithSessionDoesNotPersistSummary` 锁定。
+- **主对话入口**：消息列表下方增加单行「已产生 N 条总结，点击查看」，按当前会话从 `activity-summaries.jsonl` 读取阶段总结；点击弹出总结列表，展示时间、覆盖记录数和 Markdown 正文，支持关闭/Escape/点遮罩关闭。
+- **兼容旧数据**：历史会话恢复时，用阶段库的总结文本过滤旧版落库的总结助手消息；新总结只来自阶段库，不混入普通气泡。
+- **阶段归属**：`CollaborationMode` 的阶段记录增加 `sessionId`；`ActivityTrail.listSummaryPhases(sessionId)` 按会话过滤，旧记录没有 sessionId 时仍可被兼容展示。
+- **验证**：桌面 `node --test` **89/89**、`npm run check` 通过；无头 Edge 加载真实 `index.html` + stub IPC，确认单行显示「已产生 2 条总结，点击查看」，点击后弹出 2 条总结，关闭后弹窗隐藏。
+
+### 2.22 完整会话记录：游标分页与向上加载（2026-10-31）
+
+- **服务端**：新增 `SessionRepo.MessagesBefore(sessionID, beforeID, limit)`，按 SQLite `rowid` 倒序取页再反转，保证同一时间戳内也按真实写入顺序；`GET /api/sessions/{id}/messages` 支持 `limit`（默认 50，最大 200）和 `before`（消息 ID）游标，响应消息增加 `id` 字段。
+- **桌面端**：首次加载最新 50 条并滚到底部；`#messages` 滚到距顶部 24px 内时用最早消息 ID 加载更早一页，`insertBefore` 只插入旧消息，并用瞬时滚动（临时关闭 `scroll-behavior: smooth`）锚定阅读位置。初始化/加载期间用 `allowOlderLoad` 防误触发。
+- **手机端**：Vue 增加 `messageCursor/messageHasMore/messageLoadingMore/suppressOlderScroll`；初次恢复只取最新 50 条，`#messages` 滚到顶部加载更早一页并保持 scrollTop；顶部显示「正在加载更早记录…」。同样防止初次渲染误加载。
+- **兼容**：旧客户端不传参数仍取最新 50 条；`before` 游标不存在时返回空页，客户端停止加载。`web/index.html` 已同步到 `android/gosvc/webassets` 与 `desktop/server/web`。
+- **验证**：`go test ./...` 全通过（新增 store 分页/游标不存在、HTTP limit/before 测试）；桌面 `node --test` **90/90**、`npm run check` 通过；无头 Edge 桌面与手机两次实测均为：初始 50 条（首条“消息 50”），滚顶后 100 条（首条“消息 0”），scrollTop 分别保持 2357/2683，不再回到顶部。
 
 ## 三、验证记录（2026-10-31 最新）
 
 实际执行并通过：
 
-- `go test ./...`：**20 个包全通过**；`go vet ./...`、`gofmt -l` 干净。
-- 桌面：`node --test` **79 项通过**（含 `window-dock` 7 项、`activity-format` 7 项、Agent 列表过滤 1 项）、`node --check`（29 个 JS 文件）全通过。
+- `go test ./...`：**全部包通过**；`go vet ./...` 无输出；`gofmt` 已整理本轮修改文件。
+- 桌面：`node --test` **92/92 通过**（新增轨迹持久化/3 天证据/清空持久化文件/阶段总结/清空联动/消息分页请求/总结问句清理测试）、`node --check`（29 个 JS 文件）全通过。
+- BMA 真实链路：fast 档创建文件并回传结果（`BMA_E2E_OK`）；同会话继续提问返回 `BMA_E2E_OK`；GFA daily 分派 12.3 秒完成（`GFA_BMA_E2E_OK`）；GFA 返回 `awaiting_clarify` 后回复 `yes`，BMA 继续执行并写入 `CLARIFY_OK`。
+- BMA 桌面操控：cluster 和 GFA daily 两条路径都在“画图”窗口完成 HID 点击（坐标 959,578），返回 `effect=changed`/`delivery=hid`；daily 路径证明 DomainAgent 已获得 `host_computer_use` 权限。
+- Agent 面板澄清 UI：无头 Edge 加载真实 `agents.html` + stub IPC，确认 `awaiting_clarify` 显示问题与两个选项，点击后切换为 `completed` 且澄清区隐藏。
+- 总结单行/弹窗 UI：无头 Edge 加载真实 `index.html` + stub IPC，确认「已产生 2 条总结，点击查看」单行显示，点击弹出 2 条阶段总结，关闭/Escape 后隐藏。
+- 会话分页 UI：无头 Edge 桌面端（stub preload）与手机端（本地 HTTP mock + 真实 Vue 页面）均验证：初始 50 条、滚顶后 100 条、首条从“消息 50”变为“消息 0”，scrollTop 保持 2357/2683。
+- Agent 缓存：无头/HTTP 之外用 Go 测试验证 `Scan` 两次只扫描一次、`Refresh` 再扫描；`DelegateAt("bma")` 使用已保存端点，扫描计数为 0。
+- 总结流内定位：无头 Edge 真实 `index.html` 验证节点顺序 `10:00 消息 → 10:05 消息 → 10:07 总结 → 10:10 消息`，点击弹出对应阶段总结；手机端 3 条消息时间显示为 `10:00/10:05/10:10`。
 - 界面重做本身用真实渲染截图核对（Electron 45 离屏渲染，非浏览器模拟）：390×844 手机竖屏（普通明/暗、适老、儿童、设置面板明/暗、记忆面板明/暗、收件箱、电脑助手）、1280×900 与 900×420 宽屏（明/暗）、管理窗口 900×780（明/暗）与 600×780 窄窗、CC Switch 720×700、工作轨迹 340×440、悬浮球 76×76、面板 460×680；并用 `getBoundingClientRect` 实测 390 宽下 `html/body/#app/header/#messages/#quick/#inputbar` 全部为 390，`scrollWidth` 无横向溢出，发送键右边界 376（=390-14），三枚顶栏按钮位于 254/298/342 各 34 宽、互不重叠。
 - 过程中修掉的两个真实样式缺陷：`.icon` 从未定义导致图标按默认尺寸渲染；`.pc-check input` 被 `.field input` 的 `width:100%/min-height:44px/padding` 撑成大方块（已显式重置）。
 - 说明：截图里的列表内容是注入的示例数据，用于检查样式；**不代表真实 Agent 扫描、真实配对或真实模型调用结果**。

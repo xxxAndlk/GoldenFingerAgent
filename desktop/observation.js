@@ -41,6 +41,8 @@ function normalizeObservation(event, defaults = {}) {
     evidenceRef: clean(event.evidenceRef || event.evidencePath, 2000),
     source: clean(event.source || defaults.source || 'unknown', 80),
     privacyLevel: event.privacyLevel === 'protected' ? 'protected' : 'normal',
+    skipEvidence: Boolean(event.skipEvidence),
+    captureNote: clean(event.captureNote, 300),
   };
 }
 

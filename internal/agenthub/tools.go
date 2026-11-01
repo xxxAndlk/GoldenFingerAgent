@@ -31,8 +31,11 @@ func (t hubTool) Execute(ctx context.Context, args json.RawMessage, _ *agent.Too
 
 func Tools(manager *Manager) []agent.Tool {
 	return []agent.Tool{
-		hubTool{manager: manager, name: "list_agents", description: "扫描本机、A2A、桌面和 BMA Agent，返回真实安装、运行和可调用状态", schema: `{"type":"object","properties":{},"additionalProperties":false}`, run: func(ctx context.Context, _ json.RawMessage) (any, error) {
+		hubTool{manager: manager, name: "list_agents", description: "读取已保存的本机、A2A、桌面和 BMA Agent 列表（默认命中缓存，不会重新扫描）", schema: `{"type":"object","properties":{},"additionalProperties":false}`, run: func(ctx context.Context, _ json.RawMessage) (any, error) {
 			return manager.Scan(ctx), nil
+		}},
+		hubTool{manager: manager, name: "refresh_agents", description: "重新扫描本机、A2A、桌面和 BMA Agent；仅在用户明确要求或安装/启动新工具后使用", schema: `{"type":"object","properties":{},"additionalProperties":false}`, run: func(ctx context.Context, _ json.RawMessage) (any, error) {
+			return manager.Refresh(ctx), nil
 		}},
 		hubTool{manager: manager, name: "open_agent", description: "打开或唤起已安装的桌面 Agent；只适用于 list_agents 中具有 open 能力的桌面软件", schema: `{"type":"object","properties":{"agent_id":{"type":"string","description":"list_agents 返回的桌面 Agent ID"}},"required":["agent_id"],"additionalProperties":false}`, run: func(ctx context.Context, raw json.RawMessage) (any, error) {
 			var args struct {

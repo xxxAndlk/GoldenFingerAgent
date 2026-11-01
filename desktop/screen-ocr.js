@@ -6,8 +6,8 @@ const { execFile } = require('node:child_process');
 const WINDOWS_SCRIPT = String.raw`
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
-[Windows.Storage.StorageFile, Windows.Storage, ContentType=WindowsRuntime] | Out-Null
-[Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType=WindowsRuntime] | Out-Null
+[Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Storage.Streams, ContentType=WindowsRuntime] | Out-Null
+[Windows.Storage.Streams.DataWriter, Windows.Storage.Streams, ContentType=WindowsRuntime] | Out-Null
 [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType=WindowsRuntime] | Out-Null
 [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType=WindowsRuntime] | Out-Null
 [Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType=WindowsRuntime] | Out-Null
@@ -23,8 +23,15 @@ function Await-WinRT($operation, $resultType) {
 $chinese = [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages | Where-Object { $_.LanguageTag -like 'zh-*' } | Select-Object -First 1
 $engine = $(if ($chinese) { [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($chinese) } else { [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages() })
 if (-not $engine) { [PSCustomObject]@{ lines = @() } | ConvertTo-Json -Compress; exit 0 }
-$file = Await-WinRT ([Windows.Storage.StorageFile]::GetFileFromPathAsync('__IMAGE_PATH__')) ([Windows.Storage.StorageFile])
-$stream = Await-WinRT ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+# 低完整性/AppContainer 下 StorageFile 的文件代理会返回空流；
+# 直接用内存流交给 BitmapDecoder，不经过文件代理。
+$bytes = [System.IO.File]::ReadAllBytes('__IMAGE_PATH__')
+$stream = New-Object Windows.Storage.Streams.InMemoryRandomAccessStream
+$writer = New-Object Windows.Storage.Streams.DataWriter([Windows.Storage.Streams.IOutputStream]$stream)
+$writer.WriteBytes($bytes)
+Await-WinRT ($writer.StoreAsync()) ([uint32]) | Out-Null
+$writer.DetachStream() | Out-Null
+$stream.Seek(0)
 try {
   $decoder = Await-WinRT ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
   $bitmap = Await-WinRT ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
@@ -52,12 +59,15 @@ function readScreenOcr(imagePath, execFileImpl = execFile) {
   const script = WINDOWS_SCRIPT.replace('__IMAGE_PATH__', require('node:path').resolve(imagePath).replace(/'/g, "''"));
   return new Promise(resolve => {
     execFileImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], {
-      timeout: 12_000,
+      timeout: 16_000,
       windowsHide: true,
       encoding: 'utf8',
       maxBuffer: 128 * 1024,
-    }, (error, stdout) => {
-      if (error) return resolve({ text: '', lines: [], error: error.message });
+    }, (error, stdout, stderr) => {
+      if (error) {
+        const detail = String(stderr || '').trim() || String(error.message || '').trim();
+        return resolve({ text: '', lines: [], error: detail.slice(-500) });
+      }
       try { resolve(parseOcrOutput(stdout)); } catch (parseError) { resolve({ text: '', lines: [], error: parseError.message }); }
     });
   });

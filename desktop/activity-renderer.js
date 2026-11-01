@@ -26,7 +26,7 @@ const evidenceCaption = document.querySelector('#evidence-caption');
 
 const state = {
   collapsed: false,
-  edge: 'right',
+  edge: '',
   summarizing: false,
   status: null,
   noticeKey: '',
@@ -84,6 +84,16 @@ function renderRow(event) {
   chip.textContent = meta.label;
   line.appendChild(chip);
 
+  if (event.summarized) {
+    const summarizedChip = document.createElement('span');
+    summarizedChip.className = 'type-chip summarized';
+    summarizedChip.textContent = '已总结';
+    if (event.evidenceExpiresAt) {
+      summarizedChip.title = `截图保留至 ${new Date(event.evidenceExpiresAt).toLocaleString('zh-CN')}`;
+    }
+    line.appendChild(summarizedChip);
+  }
+
   const detailText = event.detail && event.detail !== title.textContent
     ? event.detail
     : (event.content ? format.summaryExcerpt(event.content, 180) : '');
@@ -104,7 +114,10 @@ function renderRow(event) {
   button.append(time, rail, body, evidence);
   // 没有本地截图时点击只提示，不要弹出「没有本地证据」错误。
   if (event.hasEvidence) button.addEventListener('click', () => openEvidence(event));
-  else button.addEventListener('click', () => showToast('这条记录没有本地截图，只能查看文字', 'info'));
+  else button.addEventListener('click', () => showToast(
+    event.summarized ? '这条记录已总结，截图已过 3 天保留期并清理，只能查看文字' : '这条记录没有本地截图，只能查看文字',
+    'info',
+  ));
   item.appendChild(button);
   return item;
 }
@@ -197,7 +210,7 @@ function applyCollapsed(payload) {
   const collapsed = Boolean(payload && payload.collapsed);
   const edge = payload && payload.edge;
   state.collapsed = collapsed;
-  if (edge) state.edge = edge;
+  state.edge = edge || '';
   document.body.classList.toggle('collapsed', collapsed);
   document.body.dataset.edge = state.edge;
   panel.hidden = collapsed;
@@ -253,16 +266,26 @@ api.onActivity(event => {
 api.onActivityError(error => showNotice(error));
 api.onActivityCollapsed(payload => applyCollapsed(payload));
 api.onActivityOpacity(setOpacity);
+async function refreshActivityList() {
+  try {
+    const events = await api.activityList();
+    activityEvents.clear();
+    for (const event of events) activityEvents.set(event.id, event);
+    renderList();
+  } catch { /* 保留当前列表 */ }
+}
+
 api.onSummary(summary => {
   if (!state.summarizing) {
     if (summary && summary.error) showNotice(summary.error);
     else if (summary && summary.reply) showToast('定时总结完成，结果已发送到对话', 'ok');
   }
   refreshStatus();
+  refreshActivityList();
 });
 
 summarizeButton.addEventListener('click', summarize);
-hideButton.addEventListener('click', () => api.setActivityCollapsed(true));
+hideButton.addEventListener('click', () => api.setActivityVisible(false));
 edgeTab.addEventListener('click', () => api.setActivityCollapsed(false));
 clearButton.addEventListener('click', async () => {
   await api.clearActivity();
@@ -286,7 +309,7 @@ api.activityList().then(events => {
 }).catch(() => {});
 api.getDesktopSettings().then(settings => {
   setOpacity(settings.activityOpacity);
-  applyCollapsed({ collapsed: settings.activityCollapsed, edge: state.edge });
+  applyCollapsed({ collapsed: settings.activityCollapsed });
 }).catch(() => {});
 refreshStatus();
 setInterval(refreshStatus, 5000);

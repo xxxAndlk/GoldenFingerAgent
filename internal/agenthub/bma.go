@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -81,11 +82,34 @@ func (m *Manager) authorizeBMA(req *http.Request) {
 }
 
 type bmaSession struct {
-	ID      string `json:"id"`
-	Goal    string `json:"goal"`
-	Status  string `json:"status"`
-	Result  string `json:"result"`
-	WorkDir string `json:"work_dir"`
+	ID      string           `json:"id"`
+	Goal    string           `json:"goal"`
+	Status  string           `json:"status"`
+	Result  string           `json:"result"`
+	WorkDir string           `json:"work_dir"`
+	State   *bmaSessionState `json:"state,omitempty"`
+}
+
+// bmaSessionState 只解析调度需要的部分；BMA 还会返回 active_blocks 等字段。
+type bmaSessionState struct {
+	PendingClarify *bmaClarify `json:"pending_clarify,omitempty"`
+}
+
+// bmaClarify 是 BMA ask_user / 计划确认等待用户答复的上下文。
+type bmaClarify struct {
+	ID       string             `json:"id"`
+	Question string             `json:"question"`
+	Context  string             `json:"context,omitempty"`
+	AgentID  string             `json:"agent_id,omitempty"`
+	Kind     string             `json:"kind,omitempty"`
+	Detail   string             `json:"detail,omitempty"`
+	Options  []bmaClarifyOption `json:"options,omitempty"`
+}
+
+type bmaClarifyOption struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
 }
 
 // bmaTerminal 判断会话是否已经结束。
@@ -103,6 +127,56 @@ func bmaFailed(status string) bool {
 		return true
 	}
 	return false
+}
+
+// bmaNeedsInput 表示会话没有结束，但在等用户答复或人工恢复。
+// 继续轮询只会把整次 HTTP 派发拖到超时，必须立即把问题交回调用方。
+func bmaNeedsInput(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "awaiting_clarify", "awaiting_input", "needs_input", "waiting_input", "paused":
+		return true
+	}
+	return false
+}
+
+func bmaClarifyInvocation(agent Agent, session bmaSession, sessionID string) Invocation {
+	inv := Invocation{
+		AgentID: agent.ID,
+		Kind:    agent.Kind,
+		TaskID:  sessionID,
+		State:   "awaiting_clarify",
+	}
+	var pc *bmaClarify
+	if session.State != nil {
+		pc = session.State.PendingClarify
+	}
+	if pc == nil {
+		inv.Output = fmt.Sprintf("BMA 会话 %s 已暂停，等待人工处理。", sessionID)
+		return inv
+	}
+	inv.Question = pc.Question
+	inv.QuestionID = pc.ID
+	var lines []string
+	lines = append(lines, "BMA 正在等待你的答复：", pc.Question)
+	if strings.TrimSpace(pc.Detail) != "" && strings.TrimSpace(pc.Detail) != strings.TrimSpace(pc.Question) {
+		lines = append(lines, "", "计划/上下文：", pc.Detail)
+	}
+	if len(pc.Options) > 0 {
+		lines = append(lines, "", "可选答复：")
+		for _, option := range pc.Options {
+			label := option.Label
+			if option.Description != "" {
+				label += "（" + option.Description + "）"
+			}
+			lines = append(lines, "- "+option.ID+"："+label)
+			inv.Options = append(inv.Options, InvocationOption{
+				ID: option.ID, Label: option.Label, Description: option.Description,
+			})
+		}
+	}
+	lines = append(lines, "", "会话 ID："+sessionID+"；在 Agent 调度结果里直接选择或输入答复即可继续。")
+	inv.Output = strings.Join(lines, "\n")
+	return inv
 }
 
 // ensureBMARunning 在派发前确保 BMA 在线：先探健康检查，不通就用配置的
@@ -217,6 +291,124 @@ func (m *Manager) invokeBMA(ctx context.Context, agent Agent, task, workDir stri
 	return m.waitBMASession(ctx, agent, base, sessionID, accepted.Status)
 }
 
+// bmaPlanApprovalAnswer 只识别 BMA 的“计划确认”门，不自动回答普通 ask_user 问题。
+func bmaPlanApprovalAnswer(inv Invocation) (string, bool) {
+	if inv.State != "awaiting_clarify" {
+		return "", false
+	}
+	text := inv.Question + "\n" + inv.Output
+	if !strings.Contains(text, "计划") &&
+		!strings.Contains(text, "批准开工") &&
+		!strings.Contains(text, "计划待批准") {
+		return "", false
+	}
+	for _, option := range inv.Options {
+		id := strings.TrimSpace(option.ID)
+		if id == "" {
+			continue
+		}
+		label := strings.TrimSpace(option.Label)
+		if strings.EqualFold(id, "approve") ||
+			strings.Contains(label, "批准") ||
+			strings.Contains(label, "允许开工") {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// autoApproveBMAPlan 连续处理 BMA 的计划确认；普通提问原样返回给调用方。
+func (m *Manager) autoApproveBMAPlan(ctx context.Context, inv Invocation) (Invocation, error) {
+	answered := make(map[string]bool)
+	for i := 0; i < 4; i++ {
+		answer, ok := bmaPlanApprovalAnswer(inv)
+		if !ok {
+			return inv, nil
+		}
+		if inv.QuestionID != "" && answered[inv.QuestionID] {
+			return inv, nil
+		}
+		if inv.QuestionID != "" {
+			answered[inv.QuestionID] = true
+		}
+		next, err := m.AnswerBMA(ctx, inv.TaskID, answer, inv.QuestionID)
+		if err != nil {
+			return inv, fmt.Errorf("BMA 计划自动批准失败：%w", err)
+		}
+		inv = next
+	}
+	return inv, nil
+}
+
+// AnswerBMA 把用户对 BMA 澄清/计划确认的答复发回会话，并继续等待到终态。
+// 返回最终结果，或下一次仍需用户输入的提示（BMA 可以连续提问）。
+func (m *Manager) AnswerBMA(ctx context.Context, sessionID, answer, questionID string) (Invocation, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	answer = strings.TrimSpace(answer)
+	if sessionID == "" {
+		return Invocation{}, fmt.Errorf("缺少 BMA 会话 ID")
+	}
+	if answer == "" {
+		return Invocation{}, fmt.Errorf("答复内容不能为空")
+	}
+	base := strings.TrimRight(strings.TrimSpace(m.BMAURL), "/")
+	if base == "" {
+		return Invocation{}, fmt.Errorf("未配置 BMA 地址")
+	}
+	if err := m.ensureBMARunning(ctx); err != nil {
+		return Invocation{}, err
+	}
+	endpoint := base + "/api"
+	if err := m.postBMAClarify(ctx, endpoint, sessionID, answer, questionID); err != nil {
+		return Invocation{}, err
+	}
+	agent := Agent{ID: "bma", Name: "BMA", Kind: "bma", Installed: true, Running: true, Endpoint: endpoint}
+	session, err := m.fetchBMASession(ctx, endpoint, sessionID)
+	if err != nil {
+		// 答复已经受理，查询失败不应伪装成失败。
+		return Invocation{
+			AgentID: agent.ID, Kind: agent.Kind, TaskID: sessionID, State: "running",
+			Output: "答复已提交，BMA 正在继续执行；稍后可在 BMA 会话里查看结果。",
+		}, nil
+	}
+	if (session.State != nil && session.State.PendingClarify != nil) || bmaNeedsInput(session.Status) {
+		return bmaClarifyInvocation(agent, session, sessionID), nil
+	}
+	if bmaTerminal(session.Status) {
+		return bmaInvocation(agent, session), nil
+	}
+	return m.waitBMASession(ctx, agent, endpoint, sessionID, session.Status)
+}
+
+func (m *Manager) postBMAClarify(ctx context.Context, endpoint, sessionID, answer, questionID string) error {
+	payload, err := json.Marshal(map[string]any{
+		"answer":      answer,
+		"question_id": questionID,
+	})
+	if err != nil {
+		return err
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
+		endpoint+"/sessions/"+url.PathEscape(sessionID)+"/clarify", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	m.authorizeBMA(req)
+	resp, err := m.HTTP.Do(req)
+	if err != nil {
+		return fmt.Errorf("BMA 澄清调用失败：%w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("BMA 澄清失败 HTTP %d：%s", resp.StatusCode, truncateText(string(body), 500))
+	}
+	return nil
+}
+
 // waitBMASession 轮询会话详情，直到进入终态或超时。
 func (m *Manager) waitBMASession(ctx context.Context, agent Agent, base, sessionID, initialStatus string) (Invocation, error) {
 	deadline := time.Now().Add(bmaMaxWait)
@@ -239,6 +431,9 @@ func (m *Manager) waitBMASession(ctx context.Context, agent Agent, base, session
 		if session.Status != last {
 			last = session.Status
 			lastProgress = time.Now()
+		}
+		if (session.State != nil && session.State.PendingClarify != nil) || bmaNeedsInput(session.Status) {
+			return bmaClarifyInvocation(agent, session, sessionID), nil
 		}
 		if bmaTerminal(session.Status) {
 			return bmaInvocation(agent, session), nil

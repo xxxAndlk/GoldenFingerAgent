@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -175,6 +176,56 @@ func TestFactSimilarAndForgetCascade(t *testing.T) {
 		if h.PersonID == p.ID {
 			t.Fatal("fact of forgotten person must not be retrievable")
 		}
+	}
+}
+
+func TestMessagesBeforePagination(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	repos := store.NewRepos(db)
+
+	u := &store.User{UserType: store.UserGeneral, Name: "page-user", TZ: "Asia/Shanghai"}
+	if err := repos.Users.Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	s := &store.ChatSession{OwnerUserID: u.ID, State: json.RawMessage(`{}`)}
+	if err := repos.Sessions.Create(ctx, s); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO chat_message (id, session_id, role, content, created_at)
+			VALUES (?, ?, 'user', ?, ?)`,
+			fmt.Sprintf("m%d", i), s.ID, fmt.Sprintf("c%d", i), base.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	latest, err := repos.Sessions.MessagesBefore(ctx, s.ID, "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(latest) != 2 || latest[0].Content != "c3" || latest[1].Content != "c4" {
+		t.Fatalf("latest page = %+v", latest)
+	}
+	older, err := repos.Sessions.MessagesBefore(ctx, s.ID, latest[0].ID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(older) != 2 || older[0].Content != "c1" || older[1].Content != "c2" {
+		t.Fatalf("older page = %+v", older)
+	}
+	oldest, err := repos.Sessions.MessagesBefore(ctx, s.ID, older[0].ID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(oldest) != 1 || oldest[0].Content != "c0" {
+		t.Fatalf("oldest page = %+v", oldest)
+	}
+	missing, err := repos.Sessions.MessagesBefore(ctx, s.ID, "missing", 2)
+	if err != nil || len(missing) != 0 {
+		t.Fatalf("missing cursor = %+v err=%v", missing, err)
 	}
 }
 

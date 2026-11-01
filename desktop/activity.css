@@ -408,6 +408,11 @@ body[data-dock="bottom"] .activity-panel { border-bottom-left-radius: 6px; borde
   font-size: 8.5px;
   font-weight: 550;
 }
+.type-chip.summarized {
+  margin-left: 4px;
+  background: var(--tone-green-soft);
+  color: var(--tone-green);
+}
 .event-detail {
   display: -webkit-box;
   overflow: hidden;

@@ -2,6 +2,7 @@
 
 // 贴边与收起几何：三个浮窗共用。坐标与尺寸都是 Electron 的 DIP 单位。
 const EDGE_SNAP = 26;
+const EDGE_OVERFLOW_RATIO = 0.2;
 const VERTICAL_EDGES = new Set(['left', 'right']);
 
 function clamp(value, min, max) {
@@ -52,6 +53,19 @@ function nearestEdge(bounds, area) {
   return edgeDistances(bounds, area)[0].edge;
 }
 
+// overflowEdge 检测窗口被拖出可用区域超过比例阈值的方向；默认为窗口尺寸的 20%。
+function overflowEdge(bounds, area, ratio = EDGE_OVERFLOW_RATIO) {
+  const candidates = [
+    { edge: 'left', amount: Math.max(0, area.x - bounds.x), limit: bounds.width * ratio },
+    { edge: 'right', amount: Math.max(0, bounds.x + bounds.width - (area.x + area.width)), limit: bounds.width * ratio },
+    { edge: 'top', amount: Math.max(0, area.y - bounds.y), limit: bounds.height * ratio },
+    { edge: 'bottom', amount: Math.max(0, bounds.y + bounds.height - (area.y + area.height)), limit: bounds.height * ratio },
+  ];
+  return candidates
+    .filter(item => item.amount > 0 && item.amount >= item.limit)
+    .sort((a, b) => b.amount - a.amount)[0]?.edge || null;
+}
+
 // edgeTabBounds 把窗口收成贴边小条：左右边生成竖条，上下边生成横条。
 function edgeTabBounds(bounds, area, edge, size = { along: 132, cross: 36 }) {
   const vertical = VERTICAL_EDGES.has(edge);
@@ -90,11 +104,13 @@ function anchorExpandedBounds(anchor, size, area, dock = null) {
 
 module.exports = {
   EDGE_SNAP,
+  EDGE_OVERFLOW_RATIO,
   clamp,
   clampBounds,
   snapBounds,
   dockEdge,
   nearestEdge,
+  overflowEdge,
   edgeTabBounds,
   anchorExpandedBounds,
 };
