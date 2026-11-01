@@ -18,6 +18,7 @@ func NewSessionRepo(q Querier) *SessionRepo { return &SessionRepo{q: q} }
 type SessionSummary struct {
 	ID          string    `json:"id"`
 	OwnerUserID string    `json:"owner_user_id"`
+	Kind        string    `json:"kind,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	Messages    int       `json:"messages"`
@@ -26,11 +27,14 @@ type SessionSummary struct {
 
 func (r *SessionRepo) Create(ctx context.Context, s *ChatSession) error {
 	s.ID = uuid.NewString()
+	if s.Kind == "" {
+		s.Kind = "chat"
+	}
 	return r.q.QueryRowContext(ctx, `
-		INSERT INTO chat_session (id, owner_user_id, state_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO chat_session (id, owner_user_id, kind, thread_id, summary, state_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING created_at, updated_at`,
-		s.ID, s.OwnerUserID, notNullJSON(s.State), nowForDB(), nowForDB(),
+		s.ID, s.OwnerUserID, s.Kind, s.ThreadID, s.Summary, notNullJSON(s.State), nowForDB(), nowForDB(),
 	).Scan(&s.CreatedAt, &s.UpdatedAt)
 }
 
@@ -38,9 +42,64 @@ func (r *SessionRepo) Get(ctx context.Context, id string) (*ChatSession, error) 
 	s := &ChatSession{}
 	var state []byte
 	err := r.q.QueryRowContext(ctx, `
-		SELECT id, owner_user_id, state_json, created_at, updated_at
+		SELECT id, owner_user_id, kind, thread_id, summary, state_json, created_at, updated_at
 		FROM chat_session WHERE id = ?`, id).
-		Scan(&s.ID, &s.OwnerUserID, &state, &s.CreatedAt, &s.UpdatedAt)
+		Scan(&s.ID, &s.OwnerUserID, &s.Kind, &s.ThreadID, &s.Summary, &state, &s.CreatedAt, &s.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	s.State = state
+	return s, nil
+}
+
+// GetOrCreateMain 返回唯一的主会话。旧库没有 main 会话时，
+// 优先把最近一条普通聊天会话原地升级为 main，保留用户当前上下文；
+// 没有可复用的聊天会话才新建。Worker/Router 会话永远不参与升级。
+func (r *SessionRepo) GetOrCreateMain(ctx context.Context, ownerID string) (*ChatSession, error) {
+	if main, err := r.getMain(ctx, ownerID); err == nil {
+		return main, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+
+	res, err := r.q.ExecContext(ctx, `
+		UPDATE chat_session SET kind = 'main', updated_at = ?
+		WHERE id = (
+			SELECT id FROM chat_session
+			WHERE owner_user_id = ? AND kind = 'chat'
+			ORDER BY updated_at DESC, created_at DESC LIMIT 1
+		)`, nowForDB(), ownerID)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return r.getMain(ctx, ownerID)
+		}
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return r.getMain(ctx, ownerID)
+	}
+
+	created := &ChatSession{OwnerUserID: ownerID, Kind: "main"}
+	if err := r.Create(ctx, created); err != nil {
+		if isUniqueViolation(err) {
+			return r.getMain(ctx, ownerID)
+		}
+		return nil, err
+	}
+	return created, nil
+}
+
+func (r *SessionRepo) getMain(ctx context.Context, ownerID string) (*ChatSession, error) {
+	s := &ChatSession{}
+	var state []byte
+	err := r.q.QueryRowContext(ctx, `
+		SELECT id, owner_user_id, kind, thread_id, summary, state_json, created_at, updated_at
+		FROM chat_session WHERE owner_user_id = ? AND kind = 'main'
+		ORDER BY created_at ASC LIMIT 1`, ownerID).
+		Scan(&s.ID, &s.OwnerUserID, &s.Kind, &s.ThreadID, &s.Summary, &state, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -80,13 +139,13 @@ func (r *SessionRepo) ListByOwner(ctx context.Context, ownerUserID string, limit
 		limit = 100
 	}
 	rows, err := r.q.QueryContext(ctx, `
-		SELECT s.id, s.owner_user_id, s.created_at, s.updated_at,
+		SELECT s.id, s.owner_user_id, s.kind, s.created_at, s.updated_at,
 			(SELECT COUNT(*) FROM chat_message m WHERE m.session_id = s.id) AS messages,
 			COALESCE((SELECT m.content FROM chat_message m
 				WHERE m.session_id = s.id AND m.role = 'user'
 				ORDER BY m.created_at ASC LIMIT 1), '') AS preview
 		FROM chat_session s
-		WHERE s.owner_user_id = ?
+		WHERE s.owner_user_id = ? AND s.kind NOT IN ('worker', 'router')
 		ORDER BY s.created_at DESC
 		LIMIT ?`, ownerUserID, limit)
 	if err != nil {
@@ -96,7 +155,7 @@ func (r *SessionRepo) ListByOwner(ctx context.Context, ownerUserID string, limit
 	var out []SessionSummary
 	for rows.Next() {
 		var item SessionSummary
-		if err := rows.Scan(&item.ID, &item.OwnerUserID, &item.CreatedAt, &item.UpdatedAt, &item.Messages, &item.Preview); err != nil {
+		if err := rows.Scan(&item.ID, &item.OwnerUserID, &item.Kind, &item.CreatedAt, &item.UpdatedAt, &item.Messages, &item.Preview); err != nil {
 			return nil, err
 		}
 		out = append(out, item)

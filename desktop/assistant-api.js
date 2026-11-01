@@ -107,6 +107,10 @@ class AssistantApi {
     });
   }
 
+  mainSession() {
+    return this.request('/api/sessions/main', { method: 'GET' });
+  }
+
   // 会话历史：按日期筛选（可选）与读取某个会话的消息。
   listSessions(date = '') {
     const query = date ? `?date=${encodeURIComponent(date)}` : '';
@@ -117,6 +121,101 @@ class AssistantApi {
     const query = new URLSearchParams({ limit: String(limit) });
     if (before) query.set('before', before);
     return this.request(`/api/sessions/${encodeURIComponent(id)}/messages?${query.toString()}`, { method: 'GET' });
+  }
+
+  listWorkerTasks(threadId = '') {
+    const query = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : '';
+    return this.request(`/api/worker-tasks${query}`, { method: 'GET' });
+  }
+
+  cancelWorkerTask(id) {
+    return this.request(`/api/worker-tasks/${encodeURIComponent(id)}/cancel`, { method: 'POST' });
+  }
+
+  steerWorkerTask(id, text) {
+    return this.request(`/api/worker-tasks/${encodeURIComponent(id)}/steer`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    });
+  }
+
+  listOutbox(status = 'pending_approval') {
+    const query = status ? `?status=${encodeURIComponent(status)}` : '';
+    return this.request(`/api/action-outbox${query}`, { method: 'GET' });
+  }
+
+  approveOutbox(id, version) {
+    return this.request(`/api/action-outbox/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ version: Number(version) || 0 }),
+    });
+  }
+
+  rejectOutbox(id, version, reason = '') {
+    return this.request(`/api/action-outbox/${encodeURIComponent(id)}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ version: Number(version) || 0, reason }),
+    });
+  }
+
+  latestBrief(date = '') {
+    const query = date ? `?date=${encodeURIComponent(date)}` : '';
+    return this.request(`/api/briefs/latest${query}`, { method: 'GET' });
+  }
+
+  generateBrief(date = '') {
+    const query = date ? `?date=${encodeURIComponent(date)}` : '';
+    return this.request(`/api/briefs/generate${query}`, { method: 'POST', body: '{}' });
+  }
+
+  markBriefDelivered(id) {
+    return this.request(`/api/briefs/${encodeURIComponent(id)}/delivered`, {
+      method: 'POST',
+      body: '{}',
+    });
+  }
+
+  channelSettings() {
+    return this.request('/api/settings/channels', { method: 'GET' });
+  }
+
+  updateChannelPolicy(policy) {
+    return this.request('/api/settings/channels', {
+      method: 'PUT',
+      body: JSON.stringify(policy || {}),
+    });
+  }
+
+  getEmailSettings() {
+    return this.request('/api/settings/email', { method: 'GET' });
+  }
+
+  saveEmailSettings(email) {
+    return this.request('/api/settings/email', {
+      method: 'PUT',
+      body: JSON.stringify(email || {}),
+    });
+  }
+
+  captureActivityEpisode(payload) {
+    return this.request('/api/channels/activity/episodes', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    });
+  }
+
+  captureWeChatMessage(payload) {
+    return this.request('/api/channels/wechat/messages', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    });
+  }
+
+  captureEmailMessage(payload) {
+    return this.request('/api/channels/email/messages', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    });
   }
 
   uploadAttachment(payload) {

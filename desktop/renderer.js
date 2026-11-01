@@ -20,6 +20,12 @@ const historyList = document.querySelector('#history-list');
 const historyDate = document.querySelector('#history-date');
 const historyNew = document.querySelector('#history-new');
 const historyClose = document.querySelector('#history-close');
+const workbenchToggle = document.querySelector('#workbench-toggle');
+const workbenchDot = document.querySelector('#workbench-dot');
+const pendingStrip = document.querySelector('#pending-strip');
+const pendingStripText = document.querySelector('#pending-strip-text');
+const briefCard = document.querySelector('#brief-card');
+const briefCardText = document.querySelector('#brief-card-text');
 const historyClearDate = document.querySelector('#history-clear-date');
 const attachButton = document.querySelector('#attach');
 const attachInput = document.querySelector('#attach-input');
@@ -348,6 +354,63 @@ async function refreshStatus() {
   connection.className = `connection ${status.connected ? 'online' : 'offline'}`;
 }
 
+// 主会话的任务卡摘要：待审批、等待澄清、异常结束。
+async function refreshWorkbenchBadge() {
+  try {
+    const [tasksResult, outboxResult] = await Promise.all([
+      api.listWorkerTasks(''),
+      api.listOutbox('pending_approval'),
+    ]);
+    const tasks = (tasksResult && tasksResult.tasks) || [];
+    const outbox = (outboxResult && outboxResult.outbox) || [];
+    const waiting = tasks.filter(task =>
+      (task.status === 'running' && task.waiting_kind && task.waiting_kind !== 'none') ||
+      ['failed', 'interrupted', 'timeout'].includes(task.status));
+    const count = outbox.length + waiting.length;
+    workbenchDot.hidden = count === 0;
+    pendingStrip.hidden = count === 0;
+    if (count > 0) {
+      pendingStripText.textContent = `有 ${count} 项待处理：${outbox.length} 个审批 · ${waiting.length} 个任务`;
+    }
+  } catch {
+    workbenchDot.hidden = true;
+    pendingStrip.hidden = true;
+  }
+}
+
+function localDateString() {
+  const now = new Date();
+  const pad = value => String(value).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+async function refreshBriefCard() {
+  try {
+    const result = await api.latestBrief(localDateString());
+    const brief = result && result.brief;
+    if (!brief) throw new Error('not ready');
+    const text = String(brief.content_md || '')
+      .split('\n')
+      .map(line => line.replace(/^#+\s*/, '').trim())
+      .filter(Boolean)
+      .join(' · ');
+    briefCardText.textContent = text.length > 90 ? `${text.slice(0, 90)}…` : text;
+    briefCard.hidden = false;
+  } catch {
+    briefCard.hidden = true;
+  }
+}
+
+workbenchToggle?.addEventListener('click', () => api.openWorkbench());
+pendingStrip?.addEventListener('click', () => api.openWorkbench());
+briefCard?.addEventListener('click', () => api.openWorkbench());
+api.onAgentEvent?.(() => {
+  clearTimeout(refreshWorkbenchBadge.timer);
+  refreshWorkbenchBadge.timer = setTimeout(refreshWorkbenchBadge, 600);
+  clearTimeout(refreshBriefCard.timer);
+  refreshBriefCard.timer = setTimeout(refreshBriefCard, 600);
+});
+
 collabToggle.addEventListener('change', async () => {
   collabToggle.disabled = true;
   try {
@@ -546,34 +609,31 @@ async function openSession(id) {
 }
 
 async function startNewChat() {
-  await api.useSession('');
-  localStorage.removeItem(SESSION_KEY);
-  conversationSession = '';
-  oldestMessageId = '';
-  messageHasMore = false;
-  await loadSummaries();
-  renderConversation([]);
+  await restoreMainSession();
   closeHistory();
   input.focus();
 }
 
-async function restoreLastSession() {
-  const saved = localStorage.getItem(SESSION_KEY);
-  if (!saved) {
-    await loadSummaries();
-    return;
-  }
+// 桌面与手机共用同一条主会话；旧聊天记录只作为历史查看。
+async function restoreMainSession() {
   try {
-    await api.useSession(saved);
-    conversationSession = saved;
+    const result = await api.mainSession();
+    const id = result && result.session && result.session.id;
+    if (!id) throw new Error('main session missing');
+    await api.useSession(id);
+    conversationSession = id;
+    localStorage.setItem(SESSION_KEY, id);
     await loadSummaries();
-    const page = await api.sessionMessages(saved, '', MESSAGE_PAGE_SIZE);
+    const page = await api.sessionMessages(id, '', MESSAGE_PAGE_SIZE);
     renderConversation(page, { hasMore: page.length >= MESSAGE_PAGE_SIZE });
   } catch (error) {
     localStorage.removeItem(SESSION_KEY);
     await api.useSession('');
     conversationSession = '';
+    oldestMessageId = '';
+    messageHasMore = false;
     await loadSummaries();
+    renderConversation([]);
   }
 }
 
@@ -688,9 +748,13 @@ input.addEventListener('keydown', event => {
 
 refreshStatus();
 refreshCollaboration();
+refreshWorkbenchBadge();
+refreshBriefCard();
+setInterval(refreshWorkbenchBadge, 15000);
+setInterval(refreshBriefCard, 60000);
 (async () => {
   await loadSummaries();
-  await restoreLastSession();
+  await restoreMainSession();
 })();
 setInterval(refreshCollaboration, 5000);
 

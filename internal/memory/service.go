@@ -332,6 +332,32 @@ func (s *Service) SaveNote(ctx context.Context, ownerID, text, rawRef string, so
 	return e, nil
 }
 
+// SaveWorkerResult 先把 Worker 结论同步写成片段（立即可检索），
+// 再异步补向量并镜像长期记忆；嵌入失败不影响结论已经进入统一记忆。
+func (s *Service) SaveWorkerResult(ctx context.Context, ownerID, text, rawRef string) (*store.Episode, error) {
+	e := &store.Episode{OwnerUserID: ownerID, Summary: text, RawRef: rawRef}
+	if err := s.eps.Create(ctx, e); err != nil {
+		return nil, err
+	}
+	s.mirrorEpisode(ctx, rawRef, ownerID, text, "worker", e.CreatedAt)
+	if s.embed != nil {
+		go func(id, text string) {
+			embedCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			vecs, err := s.embed.Embed(embedCtx, []string{text})
+			if err != nil || len(vecs) != 1 {
+				return
+			}
+			if err := s.eps.SetEmbedding(context.Background(), id, vecs[0]); err != nil {
+				log.Printf("[memory] worker result embedding update failed: %v", err)
+			}
+		}(e.ID, text)
+	}
+	owner := ownerID
+	_ = s.audit.Append(ctx, &owner, "agent", "worker_result", e.ID, nil)
+	return e, nil
+}
+
 // FactLine 把一条事实渲染为一行提示文本。
 func FactLine(f *store.Fact) string {
 	return fmt.Sprintf("%s: %s", f.FactType, f.ValueText)

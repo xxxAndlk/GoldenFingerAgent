@@ -215,6 +215,27 @@ class CollaborationMode {
       phase.completedAt = this.lastSummaryAt;
       this.onSummarized(observations, phase);
       this.onPhase(phase);
+      // 已完成的工作片段进入 Super-agent 的活动 Thread；失败不影响本地总结。
+      if (typeof this.api.captureActivityEpisode === 'function') {
+        try {
+          await this.api.captureActivityEpisode({
+            episode_id: phase.id,
+            started_at: new Date(phase.startedAt).toISOString(),
+            ended_at: new Date(phase.endedAt).toISOString(),
+            app: observations[0]?.app || '桌面',
+            title: '工作片段 ' + new Date(phase.endedAt).toLocaleString(),
+            summary: reply,
+            status: 'completed',
+            outputs: [],
+            decisions: '',
+            issues: '',
+            evidence_ids: phase.eventIds,
+            cursor: phase.eventIds.length ? String(phase.eventIds[phase.eventIds.length - 1]) : '',
+          });
+        } catch (error) {
+          console.error(`工作片段入队失败：${error.message}`);
+        }
+      }
       const result = { phase_id: phase.id, record: summary, reply, at: new Date(this.lastSummaryAt).toISOString() };
       this.onSummary(result);
       return result;

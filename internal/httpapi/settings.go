@@ -98,6 +98,12 @@ func (s *Server) currentLLM() settings.LLM {
 	return ls
 }
 
+// EffectiveRuntime 暴露热更新后的运行时，供 Worker 复用同一模型设置。
+func (s *Server) EffectiveRuntime() *agent.Runtime { return s.effectiveRuntime() }
+
+// HistoryLimit 暴露按模型上下文折算的历史条数，Worker 与聊天保持一致。
+func (s *Server) HistoryLimit() int { return s.historyLimit() }
+
 // effectiveRuntime 每次调用都读取 JSON，因此界面保存和外部编辑均无需重启。
 func (s *Server) effectiveRuntime() *agent.Runtime {
 	rt := s.Runtime

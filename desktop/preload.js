@@ -10,6 +10,26 @@ contextBridge.exposeInMainWorld('desktopAssistant', {
   chat: (text, attachments) => ipcRenderer.invoke('assistant:chat', text, attachments),
   uploadAttachment: payload => ipcRenderer.invoke('assistant:upload', payload),
   status: () => ipcRenderer.invoke('assistant:status'),
+  mainSession: () => ipcRenderer.invoke('assistant:main-session'),
+  listWorkerTasks: threadId => ipcRenderer.invoke('assistant:worker-tasks', threadId || ''),
+  cancelWorkerTask: id => ipcRenderer.invoke('assistant:worker-cancel', id),
+  steerWorkerTask: (id, text) => ipcRenderer.invoke('assistant:worker-steer', id, text),
+  listOutbox: status => ipcRenderer.invoke('assistant:outbox', status || 'pending_approval'),
+  approveOutbox: (id, version) => ipcRenderer.invoke('assistant:outbox-approve', id, version),
+  rejectOutbox: (id, version, reason) => ipcRenderer.invoke('assistant:outbox-reject', id, version, reason || ''),
+  latestBrief: date => ipcRenderer.invoke('assistant:brief-latest', date || ''),
+  generateBrief: date => ipcRenderer.invoke('assistant:brief-generate', date || ''),
+  markBriefDelivered: id => ipcRenderer.invoke('assistant:brief-delivered', id),
+  channelSettings: () => ipcRenderer.invoke('assistant:channel-settings'),
+  updateChannelPolicy: policy => ipcRenderer.invoke('assistant:channel-policy', policy),
+  getEmailSettings: () => ipcRenderer.invoke('assistant:email-settings'),
+  saveEmailSettings: email => ipcRenderer.invoke('assistant:email-save', email),
+  openWorkbench: () => ipcRenderer.invoke('ui:open-window', 'workbench'),
+  onAgentEvent: callback => {
+    const listener = (_event, value) => callback(value);
+    ipcRenderer.on('agent:event', listener);
+    return () => ipcRenderer.removeListener('agent:event', listener);
+  },
   listSessions: date => ipcRenderer.invoke('assistant:sessions', date || ''),
   sessionMessages: (id, before = '', limit = 50) => ipcRenderer.invoke('assistant:session-messages', id, before, limit),
   useSession: id => ipcRenderer.invoke('assistant:use-session', id || ''),

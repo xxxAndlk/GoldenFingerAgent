@@ -50,11 +50,25 @@ type Relay struct {
 	URL string `json:"url,omitempty"`
 }
 
+// Email 保存可选的 IMAP 收件配置；密码只落本地 settings.json，不写日志。
+type Email struct {
+	Enabled      bool   `json:"enabled,omitempty"`
+	Host         string `json:"host,omitempty"`
+	Port         int    `json:"port,omitempty"`
+	Username     string `json:"username,omitempty"`
+	Password     string `json:"password,omitempty"`
+	Mailbox      string `json:"mailbox,omitempty"`
+	TLS          bool   `json:"tls,omitempty"`
+	InitialFetch int    `json:"initial_fetch,omitempty"`
+	PollSeconds  int    `json:"poll_seconds,omitempty"`
+}
+
 type fileShape struct {
 	LLM    LLM     `json:"llm"`
 	Models []Model `json:"models,omitempty"`
 	Search Search  `json:"search,omitempty"`
 	Relay  Relay   `json:"relay,omitempty"`
+	Email  Email   `json:"email,omitempty"`
 }
 
 // Shape 是全部设置的完整快照，供 Save 的回调直接编辑各分区。
@@ -137,6 +151,14 @@ func (s *Store) Relay() Relay {
 	return s.data.Relay
 }
 
+// Email 返回 IMAP 收件配置。
+func (s *Store) Email() Email {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reloadLocked()
+	return s.data.Email
+}
+
 // Save 在锁内应用 mutate 并以原子方式持久化全部设置。
 func (s *Store) Save(mutate func(*fileShape)) error {
 	s.mu.Lock()
@@ -160,6 +182,11 @@ func (s *Store) SaveSearch(v Search) error {
 // SaveRelay 替换中继地址。
 func (s *Store) SaveRelay(v Relay) error {
 	return s.Save(func(f *fileShape) { f.Relay = v })
+}
+
+// SaveEmail 替换 IMAP 收件配置。
+func (s *Store) SaveEmail(v Email) error {
+	return s.Save(func(f *fileShape) { f.Email = v })
 }
 
 func (s *Store) writeLocked(next fileShape) error {

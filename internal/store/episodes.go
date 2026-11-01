@@ -25,6 +25,12 @@ func (r *EpisodeRepo) Create(ctx context.Context, e *Episode) error {
 	).Scan(&e.CreatedAt)
 }
 
+// SetEmbedding 回填片段向量；先落原文、后补向量，避免嵌入服务拖慢主流程。
+func (r *EpisodeRepo) SetEmbedding(ctx context.Context, id string, vec []float32) error {
+	_, err := r.q.ExecContext(ctx, `UPDATE episode SET embedding = ? WHERE id = ?`, vecToBlob(vec), id)
+	return err
+}
+
 // Similar 取出候选（含 embedding BLOB），在 Go 内算余弦并排序取前 k。
 func (r *EpisodeRepo) Similar(ctx context.Context, ownerID string, vec []float32, k int) ([]ScoredEpisode, error) {
 	if len(vec) == 0 {

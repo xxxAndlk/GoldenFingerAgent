@@ -60,6 +60,7 @@ test('due summary is persisted and sent as a proactive conversation', async () =
   const captures = [];
   const chats = [];
   const summaries = [];
+  const episodes = [];
   const windows = [
     { owner: { name: 'Code' }, title: 'main.js' },
     { owner: { name: 'Chrome' }, title: '技术方案' },
@@ -69,6 +70,7 @@ test('due summary is persisted and sent as a proactive conversation', async () =
     api: {
       capture: async (...args) => captures.push(args),
       chat: async text => { chats.push(text); return { reply: '你最近在开发和查资料。要继续吗？' }; },
+      captureActivityEpisode: async payload => episodes.push(payload),
     },
     onSummary: summary => summaries.push(summary),
     now: () => now,
@@ -87,6 +89,10 @@ test('due summary is persisted and sent as a proactive conversation', async () =
   assert.match(chats[0], /不要把未采集到的内容猜成事实/);
   assert.equal(summaries.length, 1);
   assert.match(summaries[0].reply, /开发和查资料/);
+  assert.equal(episodes.length, 1);
+  assert.match(episodes[0].summary, /开发和查资料/);
+  assert.equal(episodes[0].status, 'completed');
+  assert.ok(episodes[0].episode_id);
 });
 
 test('failed delivery restores unsaved observations', async () => {

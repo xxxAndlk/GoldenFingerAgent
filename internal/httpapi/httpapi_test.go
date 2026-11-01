@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"goldenfinger/agent/internal/agent"
+	"goldenfinger/agent/internal/agenthub"
 	"goldenfinger/agent/internal/compliance"
 	"goldenfinger/agent/internal/extsvc/stub"
 	"goldenfinger/agent/internal/inbox"
@@ -20,6 +21,7 @@ import (
 	"goldenfinger/agent/internal/memory"
 	"goldenfinger/agent/internal/nlu"
 	"goldenfinger/agent/internal/store"
+	"goldenfinger/agent/internal/superagent"
 	"goldenfinger/agent/internal/task"
 )
 
@@ -72,12 +74,15 @@ func newTestServer(t *testing.T, script ...llm.ChatResponse) (*Server, *store.Re
 	}
 
 	srv := &Server{
-		Repos:   repos,
-		Runtime: rt,
-		WebDir:  "../../web",
-		Now:     func() time.Time { return fixedNow },
-		Outbox:  &Outbox{},
-		Inbox:   inbox.NewService(repos, nil, func() time.Time { return fixedNow }, 1024),
+		Repos:           repos,
+		Runtime:         rt,
+		WebDir:          "../../web",
+		Now:             func() time.Time { return fixedNow },
+		Outbox:          &Outbox{},
+		Inbox:           inbox.NewService(repos, nil, func() time.Time { return fixedNow }, 1024),
+		SuperAgent:      superagent.New(db),
+		AgentDispatcher: agenthub.NewDispatcher(db, agenthub.New(t.TempDir(), "")),
+		Briefs:          superagent.NewBriefGenerator(db, nil),
 	}
 	return srv, repos
 }

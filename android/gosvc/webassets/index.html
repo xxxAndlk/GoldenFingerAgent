@@ -411,6 +411,31 @@ header .avatar { width: 40px; height: 40px; }
   scroll-behavior: smooth;
 }
 
+.brief-mobile-card {
+  margin: 0 0 14px;
+  border: 1px solid rgba(10, 132, 255, .22);
+  border-radius: 16px;
+  background: rgba(10, 132, 255, .08);
+  color: var(--label);
+  overflow: hidden;
+}
+.brief-mobile-card summary {
+  padding: 11px 14px;
+  color: var(--blue);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.brief-mobile-card pre {
+  margin: 0;
+  padding: 0 14px 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
 .msg-more {
   padding: 2px 0 12px;
   color: var(--label-3);
@@ -1574,6 +1599,10 @@ body.child .panel-btn, body.child .adv { display: none; }
   </header>
 
   <div id="messages" ref="msgBox">
+    <details v-if="todayBrief" class="brief-mobile-card">
+      <summary>今日简报 · 第 {{ todayBrief.version }} 版</summary>
+      <pre>{{ todayBrief.content_md }}</pre>
+    </details>
     <div v-if="messageLoadingMore" class="msg-more">正在加载更早记录…</div>
     <template v-for="m in messages" :key="m.id">
       <div v-if="m.at" class="msg-time">{{ m.at }}</div>
@@ -1799,7 +1828,7 @@ body.child .panel-btn, body.child .adv { display: none; }
     <div class="dhead"><span><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg>对话历史</span><button class="dhead-close" @click="showHistory=false" aria-label="关闭">×</button></div>
     <div class="dbody">
       <div class="history-toolbar">
-        <button class="btn" type="button" @click="newChat"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>新对话</button>
+        <button class="btn" type="button" @click="newChat"><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg>回到主会话</button>
         <input type="date" v-model="historyDate" @change="loadSessions" aria-label="按日期查找对话">
         <button v-if="historyDate" class="btn ghost" type="button" @click="clearHistoryDate">全部</button>
       </div>
@@ -2039,7 +2068,8 @@ createApp({
       attachments: [],
       uploading: false,
       thinking: false,
-      sessionId: localStorage.getItem('gfa_session_id') || null,
+      sessionId: null,
+      todayBrief: null,
       showPanel: false,
       showSettings: false,
       showHistory: false,
@@ -2678,10 +2708,31 @@ createApp({
         this.historyLoading = false;
       }
     },
+    async loadBrief() {
+      try {
+        const data = await apiFetch('/api/briefs/latest').then(r => r.json());
+        this.todayBrief = (data && data.brief) || null;
+      } catch (e) {
+        this.todayBrief = null;
+      }
+    },
+    async loadMainSession() {
+      try {
+        const data = await apiFetch('/api/sessions/main').then(r => r.json());
+        const id = data && data.session && data.session.id;
+        if (!id) throw new Error('main session missing');
+        await this.restoreSession(id);
+      } catch (e) {
+        this.sessionId = null;
+        this.messageCursor = '';
+        this.messageHasMore = false;
+        localStorage.removeItem('gfa_session_id');
+      }
+    },
     async restoreSession(id) {
       try {
         const data = await apiFetch('/api/sessions/' + encodeURIComponent(id) + '/messages?limit=50').then(r => r.json());
-        if (!Array.isArray(data) || !data.length) throw new Error('empty');
+        if (!Array.isArray(data)) throw new Error('bad response');
         this.applySessionMessages(id, data);
       } catch (e) {
         this.sessionId = null;
@@ -2690,15 +2741,9 @@ createApp({
         localStorage.removeItem('gfa_session_id');
       }
     },
-    newChat() {
-      this.sessionId = null;
-      this.messageCursor = '';
-      this.messageHasMore = false;
-      this.messageLoadingMore = false;
-      this.suppressOlderScroll = false;
-      localStorage.removeItem('gfa_session_id');
-      this.messages = [this.welcomeMessage()];
+    async newChat() {
       this.showHistory = false;
+      await this.loadMainSession();
       this.$nextTick(() => this.scrollBottom());
     },
     formatSessionTime(value) {
@@ -2893,7 +2938,9 @@ createApp({
       else if (mq.addListener) mq.addListener(onChange);
     }
     this.loadPanel();
-    if (this.sessionId) this.restoreSession(this.sessionId);
+    this.loadMainSession();
+    this.loadBrief();
+    setInterval(() => this.loadBrief(), 60000);
     apiFetch('/api/me').then(r => r.json()).then(u => { this.me = u; this.online = true; this.adoptUserType(u); }).catch(() => { this.online = false; });
     setInterval(this.pollOutbox, 6000);
     this.loadPCStatus();

@@ -40,7 +40,7 @@ func NewDispatcher(db *store.DB, manager *Manager) *Dispatcher {
 func (d *Dispatcher) Start(ctx context.Context) error {
 	d.root = ctx
 	now := time.Now()
-	interrupted, err := d.DB.AgentJobs().InterruptRunning(ctx, now)
+	interrupted, err := d.DB.AgentJobs().InterruptRunningExcludingAgent(ctx, store.AgentIDSuperAgent, now)
 	if err != nil {
 		return err
 	}
@@ -170,7 +170,7 @@ func (d *Dispatcher) claim(ctx context.Context) (*store.AgentJob, error) {
 	var job *store.AgentJob
 	err := d.DB.WithTx(ctx, func(tx *sql.Tx) error {
 		repos := store.NewRepos(tx)
-		next, err := repos.AgentJobs.FirstQueued(ctx)
+		next, err := repos.AgentJobs.FirstQueuedExcludingAgent(ctx, "superagent")
 		if err != nil || next == nil {
 			return err
 		}

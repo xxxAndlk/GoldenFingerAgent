@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -22,6 +23,7 @@ import (
 	"goldenfinger/agent/internal/settings"
 	"goldenfinger/agent/internal/skill"
 	"goldenfinger/agent/internal/store"
+	"goldenfinger/agent/internal/superagent"
 	"goldenfinger/agent/internal/voice"
 )
 
@@ -59,10 +61,18 @@ type Server struct {
 	Voice *voice.Service
 	// Skills 是本机 Markdown 技能池；nil 时 /api/skills 返回空列表。
 	Skills *skill.Pool
+	// SuperAgent 是 Trigger/Thread/EventLog 事件层；nil 时相关端点返回 503。
+	SuperAgent *superagent.Service
+	// SuperAgentWorkers 执行 Thread Worker；nil 时 create_worker 会降级为通知。
+	SuperAgentWorkers *superagent.WorkerManager
+	// Briefs 生成跨渠道每日简报；nil 时生成端点返回 503。
+	Briefs *superagent.BriefGenerator
 }
 
 // Outbox 是已投递提醒文本的小型内存队列（开发 MVP）。
+// 调度器、Inbox 与 Router 后台循环会并发写入，因此需要互斥。
 type Outbox struct {
+	mu    sync.Mutex
 	items []OutboxItem
 }
 
@@ -73,10 +83,14 @@ type OutboxItem struct {
 }
 
 func (o *Outbox) Push(userID, body string, at time.Time) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.items = append(o.items, OutboxItem{UserID: userID, Body: body, At: at.Format("15:04")})
 }
 
 func (o *Outbox) Drain(userID string) []OutboxItem {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	var out []OutboxItem
 	var rest []OutboxItem
 	for _, it := range o.items {
@@ -100,6 +114,7 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("GET /uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(s.UploadDir))))
 	}
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
+	mux.HandleFunc("GET /api/sessions/main", s.handleMainSession)
 	mux.HandleFunc("GET /api/sessions/{id}/messages", s.handleSessionMessages)
 	mux.HandleFunc("GET /api/skills", s.handleListSkills)
 	mux.HandleFunc("GET /api/persons", s.handleListPersons)
@@ -121,6 +136,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("POST /api/me/consent", s.handleConsent)
 	mux.HandleFunc("GET /api/settings/llm", s.handleGetLLMSettings)
+	mux.HandleFunc("GET /api/settings/channels", s.handleChannelSettings)
+	mux.HandleFunc("PUT /api/settings/channels", s.handleUpdateChannelSettings)
+	mux.HandleFunc("GET /api/settings/email", s.handleGetEmailSettings)
+	mux.HandleFunc("PUT /api/settings/email", s.handlePutEmailSettings)
+	mux.HandleFunc("POST /api/channels/activity/episodes", s.handleActivityEpisode)
+	mux.HandleFunc("POST /api/channels/email/messages", s.handleEmailMessage)
+	mux.HandleFunc("POST /api/channels/wechat/messages", s.handleWeChatMessage)
+	mux.HandleFunc("POST /api/channels/calendar/events", s.handleCalendarEvent)
 	mux.HandleFunc("GET /api/settings", s.handleGetSettings)
 	mux.HandleFunc("PUT /api/settings/llm", s.handlePutLLMSettings)
 	mux.HandleFunc("POST /api/settings/models", s.handleSaveModel)
@@ -178,6 +201,31 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/inbox/watches", s.handleInboxCreateWatch)
 	mux.HandleFunc("GET /api/inbox/watches", s.handleInboxListWatches)
 	mux.HandleFunc("DELETE /api/inbox/watches/{id}", s.handleInboxCancelWatch)
+
+	// Super-agent：Trigger/Thread/Worker/审批与持久事件流（未装配时 503）。
+	mux.HandleFunc("POST /api/triggers", s.handleCreateTrigger)
+	mux.HandleFunc("GET /api/triggers", s.handleListTriggers)
+	mux.HandleFunc("GET /api/threads", s.handleListThreads)
+	mux.HandleFunc("GET /api/threads/{id}", s.handleGetThread)
+	mux.HandleFunc("POST /api/threads/{id}/link", s.handleLinkThread)
+	mux.HandleFunc("DELETE /api/threads/{id}/link/{linkedID}", s.handleUnlinkThread)
+	mux.HandleFunc("GET /api/worker-tasks", s.handleListWorkerTasks)
+	mux.HandleFunc("POST /api/worker-tasks/{id}/cancel", s.handleCancelWorkerTask)
+	mux.HandleFunc("POST /api/worker-tasks/{id}/steer", s.handleSteerWorkerTask)
+	mux.HandleFunc("GET /api/action-outbox", s.handleListActionOutbox)
+	mux.HandleFunc("POST /api/action-outbox", s.handleCreateActionOutbox)
+	mux.HandleFunc("GET /api/action-outbox/{id}", s.handleGetActionOutbox)
+	mux.HandleFunc("PUT /api/action-outbox/{id}", s.handleUpdateActionOutbox)
+	mux.HandleFunc("POST /api/action-outbox/{id}/approve", s.handleApproveActionOutbox)
+	mux.HandleFunc("POST /api/action-outbox/{id}/reject", s.handleRejectActionOutbox)
+	mux.HandleFunc("POST /api/superagent/route", s.handleRouteTriggers)
+	mux.HandleFunc("GET /api/events", s.handleAgentEvents)
+	mux.HandleFunc("GET /api/superagent/health", s.handleSuperAgentHealth)
+	mux.HandleFunc("GET /api/briefs", s.handleListBriefs)
+	mux.HandleFunc("GET /api/briefs/latest", s.handleLatestBrief)
+	mux.HandleFunc("POST /api/briefs/generate", s.handleGenerateBrief)
+	mux.HandleFunc("GET /api/briefs/{id}", s.handleGetBrief)
+	mux.HandleFunc("POST /api/briefs/{id}/delivered", s.handleBriefDelivered)
 
 	// 静态 Web UI。
 	mux.Handle("GET /", http.FileServer(http.Dir(s.WebDir)))

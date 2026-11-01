@@ -4,12 +4,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,12 +22,14 @@ import (
 	"goldenfinger/agent/internal/compliance"
 	"goldenfinger/agent/internal/config"
 	"goldenfinger/agent/internal/device"
+	emailsvc "goldenfinger/agent/internal/email"
 	"goldenfinger/agent/internal/extsvc"
 	"goldenfinger/agent/internal/extsvc/deepseek"
 	"goldenfinger/agent/internal/extsvc/stub"
 	"goldenfinger/agent/internal/httpapi"
 	"goldenfinger/agent/internal/inbox"
 	"goldenfinger/agent/internal/intent"
+	"goldenfinger/agent/internal/llm"
 	"goldenfinger/agent/internal/llm/openai"
 	"goldenfinger/agent/internal/memory"
 	"goldenfinger/agent/internal/nlu"
@@ -33,6 +38,7 @@ import (
 	"goldenfinger/agent/internal/settings"
 	"goldenfinger/agent/internal/skill"
 	"goldenfinger/agent/internal/store"
+	"goldenfinger/agent/internal/superagent"
 	"goldenfinger/agent/internal/task"
 	"goldenfinger/agent/internal/voice"
 )
@@ -221,23 +227,156 @@ func main() {
 	// 同名覆盖：delegate_agent 改为异步派发，并补充查询/取消工具。
 	tools = append(tools, agenthub.AsyncTools(jobQueue)...)
 	runtime.Registry = agent.NewRegistry(tools...)
+
+	// Super-agent 事件层：只负责 Trigger/Thread/EventLog 与路由落库，
+	// 外部发送仍必须经过 ActionOutbox 人工审批。
+	superAgent := superagent.New(db)
+	superAgent.OnNotify = func(_ context.Context, ownerID string, trigger *store.Trigger, decision superagent.Decision) {
+		outbox.Push(ownerID, notifyText(trigger, decision), time.Now())
+	}
+
 	api := &httpapi.Server{
-		Repos:       repos,
-		Runtime:     runtime,
-		WebDir:      cfg.Server.WebDir,
-		UploadDir:   filepath.Join(filepath.Dir(cfg.Database.Path), "uploads"),
-		Skills:      skillPool,
-		Now:         time.Now,
-		Outbox:      outbox,
-		Settings:    st,
-		FallbackLLM: settings.LLM{BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model},
-		Device:      deviceHub,
-		DeviceGuard: deviceGuard,
-		Inbox:       inboxSvc,
-		Agents:      agentHub,
-		Jobs:        jobQueue,
+		Repos:           repos,
+		Runtime:         runtime,
+		WebDir:          cfg.Server.WebDir,
+		UploadDir:       filepath.Join(filepath.Dir(cfg.Database.Path), "uploads"),
+		Skills:          skillPool,
+		Now:             time.Now,
+		Outbox:          outbox,
+		Settings:        st,
+		FallbackLLM:     settings.LLM{BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model},
+		Device:          deviceHub,
+		DeviceGuard:     deviceGuard,
+		Inbox:           inboxSvc,
+		Agents:          agentHub,
+		Jobs:            jobQueue,
+		AgentDispatcher: jobQueue,
 		// 语音口令判定（唤醒词/指令窗口/片段合并）在 Go，手机只执行动作。
-		Voice: voice.NewService(voice.Config{}, time.Now),
+		Voice:      voice.NewService(voice.Config{}, time.Now),
+		SuperAgent: superAgent,
+	}
+
+	llmFor := func() (llm.Client, string) {
+		rt := api.EffectiveRuntime()
+		if rt == nil || rt.LLM == nil {
+			return nil, ""
+		}
+		return rt.LLM, rt.Model
+	}
+	superAgent.Summarizer = superagent.NewSummarizer(db, llmFor)
+	briefs := superagent.NewBriefGenerator(db, llmFor)
+	briefs.OnReady = func(_ context.Context, ownerID string, brief *store.DailyBrief) {
+		outbox.Push(ownerID, "今日简报已生成（第 "+strconv.Itoa(brief.Version)+" 版）："+truncateText(brief.ContentMD, 500), time.Now())
+	}
+	api.Briefs = briefs
+
+	// 可选 IMAP 收件：只读正文，不标记已读、不发送邮件；关闭时完全空转。
+	emailOwnerID, err := ensureLocalUserID(ctx, repos)
+	if err != nil {
+		log.Printf("[email] 无法准备本地用户，IMAP 采集未启动：%v", err)
+	} else {
+		emailPoller := emailsvc.NewPoller(func() emailsvc.Config {
+			e := st.Email()
+			return emailsvc.Config{
+				Enabled: e.Enabled, Host: e.Host, Port: e.Port, Username: e.Username,
+				Password: e.Password, Mailbox: e.Mailbox, TLS: e.TLS, InitialFetch: e.InitialFetch,
+				PollInterval: time.Duration(e.PollSeconds) * time.Second,
+			}
+		}, &emailCursorStore{db: db, ownerID: emailOwnerID}, func(ctx context.Context, message emailsvc.Message) error {
+			allowed, err := repos.ChannelPolicies.Allowed(ctx, emailOwnerID, "email", message.Account)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				return repos.ChannelSkips.Increment(ctx, emailOwnerID, "email",
+					time.Now().In(time.Local).Format("2006-01-02"), time.Now())
+			}
+			payload, _ := json.Marshal(map[string]any{
+				"account": message.Account, "from": message.From, "to": message.To, "cc": message.Cc,
+				"snippet": message.Snippet, "attachments": message.Attachments,
+				"raw_ref": fmt.Sprintf("imap:%d", message.UID),
+			})
+			title := strings.TrimSpace(message.Subject)
+			if title == "" {
+				title = message.Snippet
+			}
+			_, err = superAgent.Ingest(ctx, emailOwnerID, superagent.TriggerInput{
+				Channel: "email", Kind: "email_message",
+				ExternalID:       "email:" + message.Account + ":" + message.MessageID,
+				ThreadExternalID: "email:" + message.Account + ":" + message.ThreadKey,
+				Title:            title,
+				Body:             firstText(message.Text, message.Snippet),
+				Payload:          payload,
+				ReceivedAt:       message.ReceivedAt,
+			})
+			return err
+		})
+		go emailPoller.Run(ctx)
+	}
+
+	// Super-agent Worker 复用 TurnService；create_worker 只有在执行器启动成功时
+	// 才挂到 WorkerSink，否则 Router 会按确定性回退降级为通知。
+	turnService := &agent.TurnService{
+		Repos:        repos,
+		RuntimeFor:   api.EffectiveRuntime,
+		HistoryLimit: api.HistoryLimit,
+		UploadDir:    api.UploadDir,
+	}
+	workerManager := superagent.NewWorkerManager(db, superAgentWorkerRunner{turns: turnService})
+	// Worker 的结论进入统一记忆（episode + 长期记忆镜像），主会话可检索追问；
+	// 原始 Worker 会话仍保留在 agent_job / chat_session，不进入用户可见会话列表。
+	workerManager.OnResult = func(ctx context.Context, job *store.AgentJob, summary string) error {
+		text := "Worker 任务结果\n任务：" + job.Task + "\n结果：" + summary
+		_, err := mem.SaveWorkerResult(ctx, job.OwnerUserID, text, "worker:"+job.ID)
+		return err
+	}
+	if raw := os.Getenv("GFA_SUPERAGENT_MAX_WORKERS"); raw != "" {
+		if n, convErr := strconv.Atoi(raw); convErr == nil && n > 0 && n <= 8 {
+			workerManager.MaxWorkers = n
+		}
+	}
+	if err := workerManager.Start(ctx); err != nil {
+		log.Printf("superagent-workers: 启动失败（create_worker 将降级为通知）: %v", err)
+	} else {
+		superAgent.Workers = workerManager
+		api.SuperAgentWorkers = workerManager
+		log.Printf("superagent-workers: started (max=%d)", workerManager.MaxWorkers)
+	}
+
+	// Router 后台批处理默认关闭；GFA_SUPERAGENT=1 时每 2s 处理一批 queued Trigger。
+	if os.Getenv("GFA_SUPERAGENT") == "1" {
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					var router superagent.Router = superagent.DeterministicRouter{}
+					if rt := api.EffectiveRuntime(); rt != nil && rt.LLM != nil &&
+						os.Getenv("GFA_SUPERAGENT_ROUTER") != "deterministic" {
+						router = &superagent.LLMRouter{Client: rt.LLM, Model: rt.Model}
+					}
+					results, err := superAgent.RoutePendingForAll(ctx, router, 20)
+					if err != nil {
+						if ctx.Err() == nil {
+							log.Printf("superagent router: %v", err)
+						}
+						continue
+					}
+					if len(results) > 0 {
+						log.Printf("superagent router: routed %d trigger(s)", len(results))
+					}
+				}
+			}
+		}()
+		log.Printf("superagent router: enabled (batch=2s, llm fallback=deterministic)")
+	}
+
+	// 每日简报：到达 digest.time 后生成当天第一版；之后有新事件时最多每 30 分钟再出更新版。
+	if strings.TrimSpace(cfg.Digest.Time) != "" {
+		go runBriefScheduler(ctx, briefs, repos, cfg.Digest.Time)
 	}
 
 	// ---- 手机 → 电脑：中继接收器（仅 GFA_RELAY_URL 配置时启用）----
@@ -336,6 +475,162 @@ func hostname() string {
 		return "电脑"
 	}
 	return name
+}
+
+func notifyText(trigger *store.Trigger, decision superagent.Decision) string {
+	for _, candidate := range []string{decision.Reply, decision.Question, trigger.Title, trigger.Body, decision.Reason} {
+		if strings.TrimSpace(candidate) != "" {
+			return truncateText(candidate, 500)
+		}
+	}
+	return "新事件：" + trigger.Channel
+}
+
+func truncateText(text string, limit int) string {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) <= limit {
+		return string(runes)
+	}
+	return string(runes[:limit]) + "…"
+}
+
+type superAgentWorkerRunner struct {
+	turns *agent.TurnService
+}
+
+func (r superAgentWorkerRunner) RunWorker(ctx context.Context, req superagent.WorkerRequest) (*superagent.WorkerResult, error) {
+	var onEvent func(agent.Event)
+	if req.OnEvent != nil {
+		onEvent = func(ev agent.Event) {
+			req.OnEvent(superagent.WorkerEvent{Kind: ev.Kind, Name: ev.Name, Detail: ev.Detail})
+		}
+	}
+	out, err := r.turns.Run(ctx, agent.TurnRequest{
+		UserID:    req.OwnerID,
+		SessionID: req.SessionID,
+		Text:      req.Goal,
+		Kind:      "worker",
+		ThreadID:  req.ThreadID,
+		OnEvent:   onEvent,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &superagent.WorkerResult{
+		SessionID: out.SessionID,
+		Reply:     out.Reply,
+		Summary:   truncateText(out.Reply, 4000),
+	}, nil
+}
+
+// runBriefScheduler 在每天 digest.time 后生成首版简报；有新事件时最多每 30 分钟补一版。
+func runBriefScheduler(ctx context.Context, gen *superagent.BriefGenerator, repos *store.Repos, hhmm string) {
+	targetClock, err := time.ParseInLocation("15:04", strings.TrimSpace(hhmm), time.Local)
+	if err != nil {
+		log.Printf("brief scheduler: invalid digest.time %q: %v", hhmm, err)
+		return
+	}
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			local := now.In(time.Local)
+			target := time.Date(local.Year(), local.Month(), local.Day(),
+				targetClock.Hour(), targetClock.Minute(), 0, 0, time.Local)
+			if local.Before(target) {
+				continue
+			}
+			users, err := repos.Users.ListAll(ctx)
+			if err != nil {
+				log.Printf("brief scheduler: list users: %v", err)
+				continue
+			}
+			date := local.Format("2006-01-02")
+			start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
+			end := start.AddDate(0, 0, 1)
+			for _, user := range users {
+				latest, latestErr := repos.DailyBriefs.Latest(ctx, user.ID, date)
+				if latestErr != nil && !errors.Is(latestErr, store.ErrNotFound) {
+					log.Printf("brief scheduler: latest %s: %v", user.ID, latestErr)
+					continue
+				}
+				need := latest == nil
+				if latest != nil {
+					if local.Sub(latest.UpdatedAt) < 30*time.Minute {
+						continue
+					}
+					triggers, listErr := repos.Triggers.ListBetween(ctx, user.ID, "", start, end, 1000)
+					if listErr != nil {
+						log.Printf("brief scheduler: triggers %s: %v", user.ID, listErr)
+						continue
+					}
+					for _, trigger := range triggers {
+						if trigger.ReceivedAt.After(latest.UpdatedAt) {
+							need = true
+							break
+						}
+					}
+				}
+				if !need {
+					continue
+				}
+				genCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+				brief, genErr := gen.Generate(genCtx, user.ID, local)
+				cancel()
+				if genErr != nil {
+					log.Printf("brief scheduler: generate %s: %v", user.ID, genErr)
+					continue
+				}
+				log.Printf("brief scheduler: generated %s v%d", brief.BriefDate, brief.Version)
+			}
+		}
+	}
+}
+
+type emailCursorStore struct {
+	db      *store.DB
+	ownerID string
+}
+
+func (c *emailCursorStore) Get(ctx context.Context, account string) (uint32, error) {
+	value, err := store.NewRepos(c.db).ChannelCursors.Get(ctx, c.ownerID, "email", account)
+	if err != nil || value == "" {
+		return 0, err
+	}
+	n, err := strconv.ParseUint(value, 10, 32)
+	return uint32(n), err
+}
+
+func (c *emailCursorStore) Set(ctx context.Context, account string, uid uint32) error {
+	return store.NewRepos(c.db).ChannelCursors.Set(ctx, c.ownerID, "email", account,
+		strconv.FormatUint(uint64(uid), 10), time.Now())
+}
+
+func ensureLocalUserID(ctx context.Context, repos *store.Repos) (string, error) {
+	users, err := repos.Users.ListAll(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(users) > 0 {
+		return users[0].ID, nil
+	}
+	u := &store.User{UserType: store.UserGeneral, Name: "演示用户", TZ: "Asia/Shanghai"}
+	if err := repos.Users.Create(ctx, u); err != nil {
+		return "", err
+	}
+	return u.ID, nil
+}
+
+func firstText(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func fatal(err error) {

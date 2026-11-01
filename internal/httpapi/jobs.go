@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"goldenfinger/agent/internal/store"
+	"goldenfinger/agent/internal/superagent"
 )
 
 // JobService 是持久化异步 Agent 任务队列（agenthub.Dispatcher 满足该接口）。
@@ -47,6 +48,10 @@ func (s *Server) handleJobSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.AgentID) == "" {
 		writeError(w, 400, "agent_id 不能为空")
+		return
+	}
+	if req.AgentID == superagent.WorkerAgentID {
+		writeError(w, 400, "agent_id 为 Super-agent 保留值")
 		return
 	}
 	job, err := s.Jobs.Submit(r.Context(), u.ID, req.AgentID, req.Task, req.WorkDir, req.IdempotencyKey)

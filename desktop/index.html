@@ -30,6 +30,10 @@
         <button id="history-toggle" class="icon-button" aria-label="对话历史" title="对话历史">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.3"/><path d="M12 7.4V12l3.2 2"/></svg>
         </button>
+        <button id="workbench-toggle" class="icon-button" aria-label="工作台" title="工作台：任务 / 审批 / 简报">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h9"/></svg>
+          <span id="workbench-dot" class="workbench-dot" hidden></span>
+        </button>
         <button id="theme-toggle" class="icon-button" aria-label="切换亮暗模式" title="切换亮暗模式">
           <svg viewBox="0 0 24 24" aria-hidden="true" class="i-sun"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.6v2.4M12 19v2.4M4.2 4.2l1.7 1.7M18.1 18.1l1.7 1.7M2.6 12H5M19 12h2.4M4.2 19.8l1.7-1.7M18.1 5.9l1.7-1.7"/></svg>
           <svg viewBox="0 0 24 24" aria-hidden="true" class="i-moon"><path d="M20.4 14.6A8.6 8.6 0 0 1 9.4 3.6a8.6 8.6 0 1 0 11 11z"/></svg>
@@ -43,13 +47,25 @@
       </div>
     </header>
 
+    <button id="pending-strip" class="pending-strip" type="button" hidden>
+      <span class="pending-strip-dot" aria-hidden="true"></span>
+      <span id="pending-strip-text">有待处理事项</span>
+      <span class="pending-strip-arrow" aria-hidden="true">›</span>
+    </button>
+
+    <button id="brief-card" class="brief-card" type="button" hidden>
+      <span class="brief-card-label">今日简报</span>
+      <span id="brief-card-text"></span>
+      <span class="pending-strip-arrow" aria-hidden="true">›</span>
+    </button>
+
     <span id="main-collab-status" class="visually-hidden" role="status">未授权，不会观察</span>
 
     <section id="history-panel" class="history-panel" aria-label="对话历史" hidden>
       <header class="history-head">
         <strong>对话历史</strong>
         <div class="history-head-actions">
-          <button id="history-new" class="history-new" type="button">新对话</button>
+          <button id="history-new" class="history-new" type="button">回到主会话</button>
           <button id="history-close" class="icon-button history-close" type="button" aria-label="关闭">×</button>
         </div>
       </header>

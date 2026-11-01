@@ -165,7 +165,110 @@
 
 ---
 
-## 三、其余既有端点（摘要）
+## 三、Super-agent `/api/triggers`、`/api/threads`、`/api/worker-tasks`、`/api/action-outbox`、`/api/events`
+
+本轮为 P1 地基：单用户单大脑，`owner_user_id` 仅作内部兼容字段；用户只面对一个主会话（`GET /api/sessions/main`），Worker/Router 会话不出现在 `/api/sessions`。`create_worker` 由 `agent_job` 承载并由 TurnService 执行；Worker 成功后结论同步写入统一记忆（episode）并更新所属 Thread 摘要。外部发送尚未接入，ActionOutbox 只负责草稿与人工审批。
+
+### 1. 写入 / 查询 Trigger
+
+`POST /api/triggers`（`201` 新建，`200` 重复投递返回原记录）：
+
+```json
+{
+  "channel": "email",
+  "external_id": "message-id-123",
+  "thread_external_id": "thread-root-123",
+  "kind": "email",
+  "title": "周五能交付吗",
+  "body": "请确认交付时间",
+  "trusted": false,
+  "privacy_level": "normal",
+  "payload": {"from": "a@example.com"}
+}
+```
+
+响应：`{"trigger":{...},"thread":{...},"created":true,"filtered":false}`。去重优先 `owner+channel+external_id`，无外部 ID 时使用 5 分钟时间桶内容哈希。
+
+`GET /api/triggers?status=queued&thread_id=&limit=50`
+
+### 2. Thread 与关联
+
+| 方法 路径 | 用途 |
+|---|---|
+| `GET /api/threads?channel=&limit=50` | Thread 列表 |
+| `GET /api/threads/{id}` | Thread 详情 + 最近 Trigger + 关联 |
+| `POST /api/threads/{id}/link` | `{"linked_thread_id":"...","relation":"manual","confidence":0.8,"reason":"..."}`；relation 支持 `same_people/same_project/calendar/manual` |
+| `DELETE /api/threads/{id}/link/{linkedID}?relation=manual` | 解除关联 |
+| `GET /api/sessions/main` | 获取/创建唯一主会话；客户端启动时直接恢复它，不再依赖本地会话 ID |
+
+### 3. 路由与 Worker
+
+`POST /api/superagent/route?mode=deterministic|llm&limit=20` 手动路由一批 `queued` Trigger。响应 `{"results":[{"trigger_id":"...","action":"notify","status":"routed"}]}`。`mode=llm` 失败时自动回退确定性 Router。
+
+| 方法 路径 | 用途 |
+|---|---|
+| `GET /api/worker-tasks?thread_id=&limit=50` | Worker 任务视图（`agent_job` 扩展字段） |
+| `POST /api/worker-tasks/{id}/cancel` | 取消排队/运行中的 Worker |
+| `POST /api/worker-tasks/{id}/steer` | `{"text":"先核对日期"}`；追加为任务事件 |
+| `GET /api/superagent/health` | Trigger/Event/Outbox 计数、Worker 数与最新事件 ID |
+
+后台 Router 默认关闭；`GFA_SUPERAGENT=1` 时每 2s 批量路由，`GFA_SUPERAGENT_ROUTER=deterministic` 可强制不走模型，`GFA_SUPERAGENT_MAX_WORKERS` 控制并发（1–8）。
+
+### 4. ActionOutbox 草稿与版本审批
+
+`POST /api/action-outbox`：
+
+```json
+{"channel":"email","kind":"reply","body":"草稿正文","requires_approval":true,"idempotency_key":"draft-1"}
+```
+
+| 方法 路径 | 用途 |
+|---|---|
+| `GET /api/action-outbox?status=pending_approval&limit=50` | 列表 |
+| `GET /api/action-outbox/{id}` | 详情 |
+| `PUT /api/action-outbox/{id}` | `{"version":0,"body":"编辑后"}`；版本不匹配返回 `409` |
+| `POST /api/action-outbox/{id}/approve` | `{"version":0}` |
+| `POST /api/action-outbox/{id}/reject` | `{"version":0,"reason":"不需要"}` |
+
+每次编辑/审批递增 `version`；旧版本或重复审批返回 `409`，不会重复发送。本轮没有外部发送器，`approved` 只表示人工已确认。
+
+### 5. 事件流
+
+`GET /api/events?after=0&limit=100` 返回 `{"events":[...],"next_event_id":N,"has_more":false}`。
+
+`GET /api/events?stream=1` 使用 SSE，支持 `Last-Event-ID` 或 `after` 断线补拉；每帧 `event: agent`、`id: <event_id>`。Worker 生命周期通过 `worker.created/running/completed/failed/timeout/cancelled/interrupted` 进入同一事件流，桌面任务卡可直接由 SSE 驱动。
+
+### 6. 渠道接入与增量摘要
+
+渠道原始内容统一写 `agent_trigger`；`activity/email/wechat` 新事件会异步更新所属 Thread 的滚动摘要（LLM 失败时确定性回退）。
+
+| 方法 路径 | 用途 |
+|---|---|
+| `POST /api/channels/activity/episodes` | 桌面工作片段：`episode_id/started_at/ended_at/app/title/summary/status/outputs/evidence_ids/cursor`；按日期归入 `activity:<YYYY-MM-DD>` Thread |
+| `POST /api/channels/email/messages` | 单封邮件：`account/message_id/thread_key/from/to/subject/text/received_at`；同一 `thread_key` 复用 Thread |
+| `POST /api/channels/wechat/messages` | 可见微信内容：`source/message_id/sender/text/incomplete`；默认拒绝，来源需显式允许 |
+| `POST /api/channels/calendar/events` | 日历事件：`calendar/event_id/series_id/title/description/location/start_at/end_at/attendees/status`；按 series/event 归 Thread |
+| `GET /api/settings/channels` | 返回渠道策略、今日跳过计数；微信默认 deny，其他渠道默认 allow |
+| `PUT /api/settings/channels` | `{"channel":"wechat","source":"项目群","allowed":true}`；拒绝来源不落正文，只增加跳过计数 |
+| `GET/PUT /api/settings/email` | IMAP 收件配置（host/port/username/password/mailbox/tls/initial_fetch/poll_seconds）；GET 密码打码，空密码表示保留原值 |
+
+可选 IMAP 采集器只读取正文（`BODY.PEEK[]`），不标记已读、不发送邮件；游标保存在 `agent_channel_cursor`，重启不重复拉取。
+
+### 7. 跨渠道每日简报
+
+| 方法 路径 | 用途 |
+|---|---|
+| `GET /api/briefs?limit=30` | 简报版本列表（旧版本保留） |
+| `GET /api/briefs/latest?date=YYYY-MM-DD` | 当天最新版本；未生成返回 404 |
+| `POST /api/briefs/generate?date=YYYY-MM-DD` | 手动生成新版本；晚到事件可重新生成，不覆盖旧版 |
+| `GET /api/briefs/{id}` | 指定版本 |
+| `POST /api/briefs/{id}/delivered` | 标记已读；重复标记返回 409 |
+
+简报固定三段：`needs_action`（审批、明确问题、当天到期）、`important_changes`（决定/改期/完成/阻塞）、`background`。每条必须带来源 ref（`trigger:` / `thread:` / `worker:` / `outbox:` / `task:`）。到达 `digest.time` 后自动生成首版，之后有新事件最多每 30 分钟补一版。
+
+---
+
+## 四、其余既有端点（摘要）
 
 | 方法 路径 | 功能 |
 |---|---|
@@ -193,6 +296,6 @@
 
 ---
 
-## 四、错误格式
+## 五、错误格式
 
 统一：`{"error":"<message>"}`，常见状态码 400（请求/格式错误）、404（资源不存在）、500（服务端错误）、503（对应服务未装配，如 Inbox=nil）。

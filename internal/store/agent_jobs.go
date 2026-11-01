@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -17,23 +18,41 @@ const (
 	AgentJobInterrupted = "interrupted"
 )
 
+const (
+	AgentJobWaitingNone     = "none"
+	AgentJobWaitingClarify  = "clarify"
+	AgentJobWaitingApproval = "approval"
+)
+
+// AgentIDSuperAgent 是 Super-agent Worker 的保留 agent_id。
+const AgentIDSuperAgent = "superagent"
+
 type AgentJob struct {
-	ID             string     `json:"id"`
-	OwnerUserID    string     `json:"owner_user_id"`
-	AgentID        string     `json:"agent_id"`
-	Task           string     `json:"task"`
-	WorkDir        string     `json:"work_dir"`
-	Status         string     `json:"status"`
-	IdempotencyKey string     `json:"idempotency_key"`
-	ExternalTaskID string     `json:"external_task_id,omitempty"`
-	Output         string     `json:"output,omitempty"`
-	Error          string     `json:"error,omitempty"`
-	Attempt        int        `json:"attempt"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
-	StartedAt      *time.Time `json:"started_at,omitempty"`
-	FinishedAt     *time.Time `json:"finished_at,omitempty"`
-	HeartbeatAt    *time.Time `json:"heartbeat_at,omitempty"`
+	ID              string          `json:"id"`
+	OwnerUserID     string          `json:"owner_user_id"`
+	AgentID         string          `json:"agent_id"`
+	Task            string          `json:"task"`
+	WorkDir         string          `json:"work_dir"`
+	Status          string          `json:"status"`
+	IdempotencyKey  string          `json:"idempotency_key"`
+	ExternalTaskID  string          `json:"external_task_id,omitempty"`
+	Output          string          `json:"output,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	Attempt         int             `json:"attempt"`
+	ThreadID        string          `json:"thread_id,omitempty"`
+	SessionID       string          `json:"session_id,omitempty"`
+	ParentTriggerID string          `json:"parent_trigger_id,omitempty"`
+	Profile         string          `json:"profile,omitempty"`
+	Priority        int             `json:"priority,omitempty"`
+	ResultSummary   string          `json:"result_summary,omitempty"`
+	WaitingKind     string          `json:"waiting_kind,omitempty"`
+	WaitingPayload  json.RawMessage `json:"waiting_payload,omitempty"`
+	Version         int             `json:"version"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	StartedAt       *time.Time      `json:"started_at,omitempty"`
+	FinishedAt      *time.Time      `json:"finished_at,omitempty"`
+	HeartbeatAt     *time.Time      `json:"heartbeat_at,omitempty"`
 }
 
 type AgentJobEvent struct {
@@ -64,10 +83,20 @@ func (d *DB) AgentJobs() *AgentJobRepo { return NewAgentJobRepo(d) }
 func (d *DB) AgentNotifications() *AgentNotificationRepo { return NewAgentNotificationRepo(d) }
 
 func (r *AgentJobRepo) Create(ctx context.Context, job *AgentJob) error {
+	if job.WaitingKind == "" {
+		job.WaitingKind = AgentJobWaitingNone
+	}
+	if len(job.WaitingPayload) == 0 {
+		job.WaitingPayload = json.RawMessage(`{}`)
+	}
 	_, err := r.q.ExecContext(ctx, `INSERT INTO agent_job
-		(id, owner_user_id, agent_id, task, work_dir, status, idempotency_key, attempt, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`, job.ID, job.OwnerUserID, job.AgentID, job.Task,
-		job.WorkDir, job.Status, job.IdempotencyKey, job.CreatedAt, job.UpdatedAt)
+		(id, owner_user_id, agent_id, task, work_dir, status, idempotency_key, attempt,
+		 thread_id, session_id, parent_trigger_id, profile, priority, result_summary,
+		 waiting_kind, waiting_payload_json, version, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		job.ID, job.OwnerUserID, job.AgentID, job.Task, job.WorkDir, job.Status, job.IdempotencyKey,
+		job.ThreadID, job.SessionID, job.ParentTriggerID, job.Profile, job.Priority, job.ResultSummary,
+		job.WaitingKind, string(job.WaitingPayload), job.Version, job.CreatedAt, job.UpdatedAt)
 	return err
 }
 
@@ -80,12 +109,16 @@ func (r *AgentJobRepo) AddEvent(ctx context.Context, jobID, eventType, body stri
 func scanAgentJob(row interface{ Scan(...any) error }) (*AgentJob, error) {
 	var job AgentJob
 	var started, finished, heartbeat sql.NullTime
+	var waitingPayload []byte
 	err := row.Scan(&job.ID, &job.OwnerUserID, &job.AgentID, &job.Task, &job.WorkDir, &job.Status,
 		&job.IdempotencyKey, &job.ExternalTaskID, &job.Output, &job.Error, &job.Attempt,
+		&job.ThreadID, &job.SessionID, &job.ParentTriggerID, &job.Profile, &job.Priority,
+		&job.ResultSummary, &job.WaitingKind, &waitingPayload, &job.Version,
 		&job.CreatedAt, &job.UpdatedAt, &started, &finished, &heartbeat)
 	if err != nil {
 		return nil, err
 	}
+	job.WaitingPayload = waitingPayload
 	job.StartedAt, job.FinishedAt, job.HeartbeatAt = timePointer(started), timePointer(finished), timePointer(heartbeat)
 	return &job, nil
 }
@@ -99,7 +132,9 @@ func timePointer(value sql.NullTime) *time.Time {
 }
 
 const agentJobColumns = `id, owner_user_id, agent_id, task, work_dir, status, idempotency_key,
-	external_task_id, output, error, attempt, created_at, updated_at, started_at, finished_at, heartbeat_at`
+	external_task_id, output, error, attempt, thread_id, session_id, parent_trigger_id, profile,
+	priority, result_summary, waiting_kind, waiting_payload_json, version,
+	created_at, updated_at, started_at, finished_at, heartbeat_at`
 
 func (r *AgentJobRepo) Get(ctx context.Context, ownerID, id string) (*AgentJob, error) {
 	job, err := scanAgentJob(r.q.QueryRowContext(ctx, `SELECT `+agentJobColumns+` FROM agent_job WHERE owner_user_id = ? AND id = ?`, ownerID, id))
@@ -125,6 +160,25 @@ func (r *AgentJobRepo) FirstQueued(ctx context.Context) (*AgentJob, error) {
 	return job, err
 }
 
+// FirstQueuedExcludingAgent 让通用 CLI/BMA 队列跳过 Super-agent 内部 Worker。
+func (r *AgentJobRepo) FirstQueuedExcludingAgent(ctx context.Context, agentID string) (*AgentJob, error) {
+	job, err := scanAgentJob(r.q.QueryRowContext(ctx, `SELECT `+agentJobColumns+` FROM agent_job
+		WHERE status = 'queued' AND agent_id <> ? ORDER BY created_at, id LIMIT 1`, agentID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return job, err
+}
+
+func (r *AgentJobRepo) FirstQueuedForAgent(ctx context.Context, agentID string) (*AgentJob, error) {
+	job, err := scanAgentJob(r.q.QueryRowContext(ctx, `SELECT `+agentJobColumns+` FROM agent_job
+		WHERE status = 'queued' AND agent_id = ? ORDER BY priority DESC, created_at, id LIMIT 1`, agentID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return job, err
+}
+
 func (r *AgentJobRepo) List(ctx context.Context, ownerID string, limit int) ([]AgentJob, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
@@ -143,6 +197,65 @@ func (r *AgentJobRepo) List(ctx context.Context, ownerID string, limit int) ([]A
 		jobs = append(jobs, *job)
 	}
 	return jobs, rows.Err()
+}
+
+// ListWorkerTasks 只返回属于 Super-agent Thread 的任务；threadID 非空时按 Thread 过滤。
+func (r *AgentJobRepo) ListWorkerTasks(ctx context.Context, ownerID, threadID string, limit int) ([]AgentJob, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	query := `SELECT ` + agentJobColumns + ` FROM agent_job
+		WHERE owner_user_id = ? AND (thread_id <> '' OR parent_trigger_id <> '')`
+	args := []any{ownerID}
+	if threadID != "" {
+		query = `SELECT ` + agentJobColumns + ` FROM agent_job WHERE owner_user_id = ? AND thread_id = ?`
+		args = append(args, threadID)
+	}
+	query += ` ORDER BY priority DESC, created_at DESC, id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := r.q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	jobs := make([]AgentJob, 0)
+	for rows.Next() {
+		job, err := scanAgentJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, *job)
+	}
+	return jobs, rows.Err()
+}
+
+// SetWaiting 让运行中的 Worker 进入等待（澄清/审批），等待期间不占并发槽。
+func (r *AgentJobRepo) SetWaiting(ctx context.Context, ownerID, id, kind string, payload json.RawMessage, at time.Time) (bool, error) {
+	if len(payload) == 0 {
+		payload = json.RawMessage(`{}`)
+	}
+	res, err := r.q.ExecContext(ctx, `UPDATE agent_job SET waiting_kind = ?, waiting_payload_json = ?,
+		version = version + 1, updated_at = ?
+		WHERE owner_user_id = ? AND id = ? AND status = 'running' AND waiting_kind = 'none'`,
+		kind, string(payload), at, ownerID, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// ClearWaiting 以版本 CAS 结束等待，避免旧回调复活新状态。
+func (r *AgentJobRepo) ClearWaiting(ctx context.Context, ownerID, id, kind string, version int, at time.Time) (bool, error) {
+	res, err := r.q.ExecContext(ctx, `UPDATE agent_job SET waiting_kind = 'none',
+		waiting_payload_json = '{}', version = version + 1, updated_at = ?
+		WHERE owner_user_id = ? AND id = ? AND status = 'running'
+		  AND waiting_kind = ? AND version = ?`, at, ownerID, id, kind, version)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 func (r *AgentJobRepo) Events(ctx context.Context, ownerID, jobID string) ([]AgentJobEvent, error) {
@@ -188,6 +301,19 @@ func (r *AgentJobRepo) Finish(ctx context.Context, id, status, output, taskError
 	return count == 1, err
 }
 
+// FinishWorker 保存 Worker 结果、摘要与会话绑定；仅 running 可结算。
+func (r *AgentJobRepo) FinishWorker(ctx context.Context, id, status, output, resultSummary, sessionID, taskError string, at time.Time) (bool, error) {
+	result, err := r.q.ExecContext(ctx, `UPDATE agent_job SET status = ?, output = ?, error = ?,
+		result_summary = ?, session_id = ?, finished_at = ?, updated_at = ?
+		WHERE id = ? AND status = 'running'`,
+		status, output, taskError, resultSummary, sessionID, at, at, id)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	return count == 1, err
+}
+
 func (r *AgentJobRepo) Cancel(ctx context.Context, ownerID, id string, at time.Time) (bool, error) {
 	result, err := r.q.ExecContext(ctx, `UPDATE agent_job SET status = 'cancelled', finished_at = ?, updated_at = ?
 		WHERE owner_user_id = ? AND id = ? AND status IN ('queued', 'running')`, at, at, ownerID, id)
@@ -199,7 +325,57 @@ func (r *AgentJobRepo) Cancel(ctx context.Context, ownerID, id string, at time.T
 }
 
 func (r *AgentJobRepo) InterruptRunning(ctx context.Context, at time.Time) ([]AgentJob, error) {
-	rows, err := r.q.QueryContext(ctx, `SELECT `+agentJobColumns+` FROM agent_job WHERE status = 'running'`)
+	return r.interruptRunning(ctx, "", at, true)
+}
+
+// InterruptRunningExcludingAgent 让通用队列只恢复自己的任务，不碰 Super-agent Worker。
+func (r *AgentJobRepo) InterruptRunningExcludingAgent(ctx context.Context, agentID string, at time.Time) ([]AgentJob, error) {
+	return r.interruptRunning(ctx, agentID, at, false)
+}
+
+// InterruptRunningForAgent 恢复指定 agent 的运行中任务；等待澄清/审批的任务保持
+// running + waiting_kind，等回调恢复，不标记为 interrupted。
+func (r *AgentJobRepo) InterruptRunningForAgent(ctx context.Context, agentID string, at time.Time) ([]AgentJob, error) {
+	rows, err := r.q.QueryContext(ctx, `SELECT `+agentJobColumns+` FROM agent_job
+		WHERE status = 'running' AND agent_id = ? AND waiting_kind = 'none'`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	jobs := make([]AgentJob, 0)
+	for rows.Next() {
+		job, scanErr := scanAgentJob(rows)
+		if scanErr != nil {
+			rows.Close()
+			return nil, scanErr
+		}
+		jobs = append(jobs, *job)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, job := range jobs {
+		if _, err := r.q.ExecContext(ctx, `UPDATE agent_job SET status = 'interrupted',
+			finished_at = ?, updated_at = ?
+			WHERE id = ? AND status = 'running' AND waiting_kind = 'none'`, at, at, job.ID); err != nil {
+			return nil, err
+		}
+	}
+	return jobs, nil
+}
+
+func (r *AgentJobRepo) interruptRunning(ctx context.Context, agentID string, at time.Time, includeAgent bool) ([]AgentJob, error) {
+	query := `SELECT ` + agentJobColumns + ` FROM agent_job WHERE status = 'running'`
+	args := []any{}
+	if agentID != "" {
+		if includeAgent {
+			query += ` AND agent_id = ?`
+		} else {
+			query += ` AND agent_id <> ?`
+		}
+		args = append(args, agentID)
+	}
+	rows, err := r.q.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

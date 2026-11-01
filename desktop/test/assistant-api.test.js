@@ -23,6 +23,60 @@ test('AssistantApi sends chat session and local service identity headers', async
   assert.equal(response.reply, '好的');
 });
 
+test('AssistantApi resolves the single main session', async () => {
+  let request;
+  const api = new AssistantApi({
+    baseUrl: 'http://127.0.0.1:8080',
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return { ok: true, json: async () => ({ session: { id: 'main-1', kind: 'main' } }) };
+    },
+  });
+  const response = await api.mainSession();
+  assert.equal(request.url, 'http://127.0.0.1:8080/api/sessions/main');
+  assert.equal(request.options.method, 'GET');
+  assert.equal(response.session.id, 'main-1');
+});
+
+test('AssistantApi exposes workbench, brief and channel endpoints', async () => {
+  const requests = [];
+  const api = new AssistantApi({
+    baseUrl: 'http://127.0.0.1:8080',
+    fetchImpl: async (url, options) => {
+      requests.push({ url, method: options.method, body: options.body });
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  await api.listWorkerTasks('thread-1');
+  await api.cancelWorkerTask('task-1');
+  await api.listOutbox();
+  await api.approveOutbox('outbox-1', 2);
+  await api.latestBrief('2026-11-01');
+  await api.generateBrief('2026-11-01');
+  await api.getEmailSettings();
+  await api.saveEmailSettings({ enabled: false });
+  await api.channelSettings();
+  await api.updateChannelPolicy({ channel: 'wechat', source: '项目群', allowed: true });
+  await api.captureActivityEpisode({ episode_id: 'ep-1' });
+  await api.captureWeChatMessage({ source: '项目群', text: 'hi' });
+
+  const paths = requests.map(item => `${item.method} ${item.url.replace('http://127.0.0.1:8080', '')}`);
+  assert.deepEqual(paths, [
+    'GET /api/worker-tasks?thread_id=thread-1',
+    'POST /api/worker-tasks/task-1/cancel',
+    'GET /api/action-outbox?status=pending_approval',
+    'POST /api/action-outbox/outbox-1/approve',
+    'GET /api/briefs/latest?date=2026-11-01',
+    'POST /api/briefs/generate?date=2026-11-01',
+    'GET /api/settings/email',
+    'PUT /api/settings/email',
+    'GET /api/settings/channels',
+    'PUT /api/settings/channels',
+    'POST /api/channels/activity/episodes',
+    'POST /api/channels/wechat/messages',
+  ]);
+});
+
 test('AssistantApi sends local work context with streamed chat', async () => {
   let request;
   const api = new AssistantApi({

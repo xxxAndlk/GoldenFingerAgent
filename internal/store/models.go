@@ -152,6 +152,9 @@ type Consent struct {
 type ChatSession struct {
 	ID          string          `json:"id"`
 	OwnerUserID string          `json:"owner_user_id"`
+	Kind        string          `json:"kind,omitempty"`
+	ThreadID    string          `json:"thread_id,omitempty"`
+	Summary     string          `json:"summary,omitempty"`
 	State       json.RawMessage `json:"state,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`
 	UpdatedAt   time.Time       `json:"updated_at"`

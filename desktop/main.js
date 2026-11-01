@@ -2,6 +2,7 @@
 
 const path = require('node:path');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const { app, BrowserWindow, ipcMain, screen, Notification, Tray, Menu, nativeImage, dialog, shell, nativeTheme } = require('electron');
 const { AssistantApi } = require('./assistant-api');
@@ -53,6 +54,9 @@ let activityHandleSide = 'left';
 let activityHandleTimer = null;
 let agentWindow = null;
 let ccswitchWindow = null;
+let workbenchWindow = null;
+let eventStreamController = null;
+let eventStreamLastId = 0;
 let tray = null;
 let trayBusy = false;
 let busyCount = 0;
@@ -85,6 +89,86 @@ async function ensureServer() {
   // 长期记忆已内置在 Go 服务里（internal/memory/native.go），
   // 不再有需要单独启动的 Python 进程。
   return serverManager.ensure();
+}
+
+// 主进程维护一条到本机服务的 SSE；所有窗口通过 IPC 收到同一事件流。
+let lastWeChatFingerprint = '';
+
+// 微信只转发当前窗口的可见文本；不读数据库、不注入、不绕过客户端。
+// 服务端默认拒绝微信来源，用户在“工作台 → 渠道采集”显式允许后才入库。
+function forwardWeChatActivity(event) {
+  if (!api || !event || !/wechat|weixin|微信/i.test(String(event.app || ''))) return;
+  const text = String(event.content || event.detail || '').trim();
+  if (text.length < 8) return;
+  const source = String(event.title || event.app || '微信').trim().slice(0, 80);
+  const fingerprint = crypto.createHash('sha1').update(source + '\n' + text).digest('hex');
+  if (fingerprint === lastWeChatFingerprint) return;
+  lastWeChatFingerprint = fingerprint;
+  api.captureWeChatMessage({
+    source,
+    message_id: fingerprint,
+    sender: '',
+    text,
+    kind: 'visible_content',
+    received_at: new Date(event.at || Date.now()).toISOString(),
+    incomplete: !event.content,
+    raw_ref: 'activity:' + String(event.id || fingerprint),
+  }).catch(() => {});
+}
+
+function startEventStream() {
+  if (eventStreamController || !api) return;
+  const controller = new AbortController();
+  eventStreamController = controller;
+  const headers = {};
+  if (api.token) headers['X-Token'] = api.token;
+  if (api.userId) headers['X-User-Id'] = api.userId;
+  (async () => {
+    while (!controller.signal.aborted) {
+      try {
+        const response = await fetch(`${api.baseUrl}/api/events?stream=1&after=${eventStreamLastId}`, {
+          headers,
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (!controller.signal.aborted) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let index;
+          while ((index = buffer.indexOf('\n\n')) >= 0) {
+            const frame = buffer.slice(0, index);
+            buffer = buffer.slice(index + 2);
+            let data = '';
+            for (const line of frame.split('\n')) {
+              if (line.startsWith('data:')) data += line.slice(5).trim();
+            }
+            if (!data) continue;
+            try {
+              const event = JSON.parse(data);
+              if (Number(event.id) > eventStreamLastId) eventStreamLastId = Number(event.id);
+              broadcast('agent:event', event);
+            } catch {
+              // 单帧损坏不终止事件流。
+            }
+          }
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
+  })();
+}
+
+function stopEventStream() {
+  if (eventStreamController) {
+    eventStreamController.abort();
+    eventStreamController = null;
+  }
 }
 
 function settingsPath() {
@@ -133,7 +217,7 @@ function applyTheme(value) {
 }
 
 function broadcast(channel, payload) {
-  for (const window of [widget, activityWindow, agentWindow, ccswitchWindow]) {
+  for (const window of [widget, activityWindow, agentWindow, ccswitchWindow, workbenchWindow]) {
     if (window && !window.isDestroyed()) window.webContents.send(channel, payload);
   }
 }
@@ -446,6 +530,7 @@ function buildTrayMenu() {
     },
     { label: '立即总结一次', enabled: Boolean(collaboration && collaboration.enabled), click: () => runSummarize() },
     { type: 'separator' },
+    { label: '工作台（任务 / 审批 / 简报）', click: () => openAuxWindow('workbench') },
     { label: 'Agent 与设置', click: () => openAuxWindow('agents') },
     { label: 'CC Switch 代理与额度', click: () => openAuxWindow('ccswitch') },
     { type: 'separator' },
@@ -574,10 +659,11 @@ function openAuxWindow(kind) {
   const configs = {
     agents: { file: 'agents.html', title: 'Agent 与设置', width: 900, height: 780, minWidth: 620, minHeight: 560 },
     ccswitch: { file: 'ccswitch.html', title: 'CC Switch 代理与额度', width: 720, height: 700, minWidth: 520, minHeight: 480 },
+    workbench: { file: 'workbench.html', title: '工作台', width: 920, height: 720, minWidth: 640, minHeight: 520 },
   };
   const config = configs[kind];
   if (!config) throw new Error('未知窗口类型');
-  let target = kind === 'agents' ? agentWindow : ccswitchWindow;
+  let target = kind === 'agents' ? agentWindow : kind === 'workbench' ? workbenchWindow : ccswitchWindow;
   if (target && !target.isDestroyed()) {
     target.show();
     target.focus();
@@ -596,11 +682,13 @@ function openAuxWindow(kind) {
     webPreferences: windowPreferences(),
   });
   if (kind === 'agents') agentWindow = target;
+  else if (kind === 'workbench') workbenchWindow = target;
   else ccswitchWindow = target;
   allowSafeExternalLinks(target);
   target.once('ready-to-show', () => target.show());
   target.on('closed', () => {
     if (kind === 'agents') agentWindow = null;
+    else if (kind === 'workbench') workbenchWindow = null;
     else ccswitchWindow = null;
   });
   target.loadFile(path.join(__dirname, config.file));
@@ -765,6 +853,7 @@ app.whenReady().then(async () => {
       collaboration.addObservation(event);
       screenpipeShadow.addNative(event);
       broadcast('activity:event', event);
+      forwardWeChatActivity(event);
     },
     onError: error => broadcast('activity:error', error),
   });
@@ -776,6 +865,7 @@ app.whenReady().then(async () => {
     baseUrl: process.env.GFA_SERVER_URL || 'http://127.0.0.1:8080',
   });
   try { await ensureServer(); } catch (error) { console.error(error.message); }
+  startEventStream();
   try {
     createTray();
     if (!process.argv.includes('--smoke-test')) announceTrayOnce();
@@ -924,6 +1014,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   quitting = true;
+  stopEventStream();
   clearTimeout(activityHandleTimer);
   if (activityHandleWindow && !activityHandleWindow.isDestroyed()) activityHandleWindow.destroy();
   if (activityTrail) activityTrail.stop();
@@ -956,6 +1047,10 @@ ipcMain.handle('assistant:status', async () => {
     return { connected: false, error: error.message };
   }
 });
+ipcMain.handle('assistant:main-session', async () => {
+  await ensureServer();
+  return api.mainSession();
+});
 ipcMain.handle('assistant:sessions', async (_event, date) => {
   await ensureServer();
   return api.listSessions(String(date || ''));
@@ -963,6 +1058,58 @@ ipcMain.handle('assistant:sessions', async (_event, date) => {
 ipcMain.handle('assistant:session-messages', async (_event, id, before, limit) => {
   await ensureServer();
   return api.sessionMessages(String(id || ''), String(before || ''), Number(limit) || 50);
+});
+ipcMain.handle('assistant:worker-tasks', async (_event, threadId) => {
+  await ensureServer();
+  return api.listWorkerTasks(String(threadId || ''));
+});
+ipcMain.handle('assistant:worker-cancel', async (_event, id) => {
+  await ensureServer();
+  return api.cancelWorkerTask(String(id || ''));
+});
+ipcMain.handle('assistant:worker-steer', async (_event, id, text) => {
+  await ensureServer();
+  return api.steerWorkerTask(String(id || ''), String(text || ''));
+});
+ipcMain.handle('assistant:outbox', async (_event, status) => {
+  await ensureServer();
+  return api.listOutbox(String(status || 'pending_approval'));
+});
+ipcMain.handle('assistant:outbox-approve', async (_event, id, version) => {
+  await ensureServer();
+  return api.approveOutbox(String(id || ''), Number(version) || 0);
+});
+ipcMain.handle('assistant:outbox-reject', async (_event, id, version, reason) => {
+  await ensureServer();
+  return api.rejectOutbox(String(id || ''), Number(version) || 0, String(reason || ''));
+});
+ipcMain.handle('assistant:brief-latest', async (_event, date) => {
+  await ensureServer();
+  return api.latestBrief(String(date || ''));
+});
+ipcMain.handle('assistant:brief-generate', async (_event, date) => {
+  await ensureServer();
+  return api.generateBrief(String(date || ''));
+});
+ipcMain.handle('assistant:brief-delivered', async (_event, id) => {
+  await ensureServer();
+  return api.markBriefDelivered(String(id || ''));
+});
+ipcMain.handle('assistant:channel-settings', async () => {
+  await ensureServer();
+  return api.channelSettings();
+});
+ipcMain.handle('assistant:channel-policy', async (_event, policy) => {
+  await ensureServer();
+  return api.updateChannelPolicy(policy || {});
+});
+ipcMain.handle('assistant:email-settings', async () => {
+  await ensureServer();
+  return api.getEmailSettings();
+});
+ipcMain.handle('assistant:email-save', async (_event, email) => {
+  await ensureServer();
+  return api.saveEmailSettings(email || {});
 });
 ipcMain.handle('assistant:use-session', (_event, id) => {
   chatSessionId = String(id || '');

@@ -28,6 +28,40 @@ func testRepos(t *testing.T) (*store.Repos, *Service) {
 	return repos, svc
 }
 
+func TestSaveWorkerResultIsImmediatelySearchable(t *testing.T) {
+	repos, svc := testRepos(t)
+	ctx := context.Background()
+	u := &store.User{UserType: store.UserGeneral, Name: "worker-result-user", TZ: "Asia/Shanghai"}
+	if err := repos.Users.Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	text := "Worker 任务结果\n任务：起草会议通知\n结果：明天上午10点在B201开产品评审会"
+	episode, err := svc.SaveWorkerResult(ctx, u.ID, text, "worker:test-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if episode.ID == "" || episode.RawRef != "worker:test-1" {
+		t.Fatalf("episode=%+v", episode)
+	}
+	recent, err := repos.Episodes.ListRecent(ctx, u.ID, 5)
+	if err != nil || len(recent) == 0 || recent[0].ID != episode.ID {
+		t.Fatalf("episode not persisted immediately: %+v err=%v", recent, err)
+	}
+	results, err := svc.Search(ctx, u.ID, "会议通知", 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, result := range results {
+		if result.ID == episode.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("worker result not searchable: %+v", results)
+	}
+}
+
 func TestSaveFactConflictResolution(t *testing.T) {
 	repos, svc := testRepos(t)
 	ctx := context.Background()

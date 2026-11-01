@@ -1,6 +1,6 @@
 # 当前进度与修改记录
 
-最后更新：2026-10-31
+最后更新：2026-11-01
 
 本文件记录**当前实现状态**与验证证据，不是「全部功能已验收」的证明。每条尽量区分：代码实现 / 自动测试 / 真实环境验证。
 
@@ -313,6 +313,45 @@
 - **手机端**：Vue 增加 `messageCursor/messageHasMore/messageLoadingMore/suppressOlderScroll`；初次恢复只取最新 50 条，`#messages` 滚到顶部加载更早一页并保持 scrollTop；顶部显示「正在加载更早记录…」。同样防止初次渲染误加载。
 - **兼容**：旧客户端不传参数仍取最新 50 条；`before` 游标不存在时返回空页，客户端停止加载。`web/index.html` 已同步到 `android/gosvc/webassets` 与 `desktop/server/web`。
 - **验证**：`go test ./...` 全通过（新增 store 分页/游标不存在、HTTP limit/before 测试）；桌面 `node --test` **90/90**、`npm run check` 通过；无头 Edge 桌面与手机两次实测均为：初始 50 条（首条“消息 50”），滚顶后 100 条（首条“消息 0”），scrollTop 分别保持 2357/2683，不再回到顶部。
+
+### 2.33 Super-agent P1 地基（2026-11-01）
+
+计划书：`docs/SuperAgent个人Agent架构改造计划书.md`。本轮只落 P1 的存储、事件接入、路由与 Worker 执行骨架，不接邮件/日历/微信，不做外部发送。
+
+- **加法迁移** `migrations/0007_superagent.sql`：`agent_thread`、`agent_thread_link`、`agent_trigger`、`agent_thread_subscription`、`agent_action_outbox`、`agent_event`；`agent_job` 增加 `thread_id/session_id/parent_trigger_id/profile/priority/result_summary/waiting_kind/waiting_payload_json/version`；`chat_session` 增加 `kind/thread_id/summary`。
+- **仓储** `internal/store/superagent.go`：Trigger 按 `(owner, dedupe_key)` 幂等写入并返回原记录；状态迁移使用 CAS；Thread 摘要游标只允许前进；ActionOutbox 每次编辑/审批递增 `version`；EventLog 自增 ID 支持 `after` 分页。`AgentJobRepo` 增加 Worker 视图、`FinishWorker`、等待状态 CAS，通用 Dispatcher 跳过 `agent_id=superagent`。
+- **事件层** `internal/superagent`：`Ingest` 完成校验、Thread 解析/创建、去重、事件日志与 `new→queued/ignored` 迁移；确定性 Filter；Router 协议与 `ignore|notify|reply|create_worker|route_to_worker|ask_user`；LLM Router 使用无工具 JSON 决策，失败由 `DeterministicRouter` 回退。
+- **Worker**：`WorkerManager` 复用 `agent_job`，最多 3 个并发（`GFA_SUPERAGENT_MAX_WORKERS` 可调），心跳、超时、取消、完成/失败通知；`create_worker` 以 `superagent:<trigger_id>` 幂等创建并订阅 Thread。`internal/agent/runner.go` 抽取 `TurnService`，HTTP 聊天与 Worker 共用会话准备、`agent.Run` 与持久化；会话读取新增 owner 校验。
+- **HTTP**：`POST/GET /api/triggers`、`GET /api/threads`、`GET /api/threads/{id}`、`POST/DELETE` 关联、`GET /api/worker-tasks`、取消/追加指令、`/api/action-outbox` CRUD+版本审批、`GET /api/events`（JSON 分页 / SSE + `Last-Event-ID`）、`POST /api/superagent/route`、`GET /api/superagent/health`。旧 `/api/chat`、`/api/jobs`、`/api/outbox` 未改语义。
+- **开关**：`GFA_SUPERAGENT=1` 才启动每 2s 的 Router 后台批处理；默认只保留手动路由/API 与 Worker 消费。`GFA_SUPERAGENT_ROUTER=deterministic` 强制不走 LLM Router。外部发送仍必须进入 ActionOutbox 人工审批，本轮没有发送器。
+- **验证**：`go test ./...` 全通过、`go vet ./...` 无输出。新增仓储去重/CAS、EventLog 分页、Thread 摘要游标、Outbox 版本冲突、Ingest 去重与 owner 隔离、确定性/LLM Router 解析、Worker 完成/幂等/取消、HTTP 触发器/线程/事件/审批/Worker 路由测试。
+- **隔离 E2E（2026-11-01）**：独立新库 `.runtime/e2e-superagent/e2e.db` + 独立 `GFA_CONFIG`/`GFA_SETTINGS` + 端口 18080，迁移 `0001-0007` 全部应用。实测通过：Trigger 写入（201）→ `mode=llm` Router 返回 `create_worker` → Worker 完成并写入独立 `kind=worker` 会话 → Thread 详情/EventLog；重复投递返回原 Trigger；Outbox 重复幂等键 409、旧版本审批 409、批准后 version=1、重复审批 409；Thread 关联；SSE `event: agent`；健康检查计数。E2E 中发现并修复：确定性通知优先显示 Router 内部原因而不是 Trigger 标题（`notifyText` 顺序已调整）。
+- **真实模型阻塞**：当前 `settings.json` 指向 `127.0.0.1:3425` OpenDesign 代理，最小 `/v1/responses` 返回 **502 ECONNRESET**；`config.yaml` 的直连 DeepSeek Key 经 `/v1/chat/completions` 返回 **401 invalid**。因此本轮 E2E 使用本地 OpenAI 兼容桩模型（`.runtime/e2e-superagent/mock-llm.js`，端口 18081）验证集成链路，**没有验证真实模型质量**；修复模型配置后应重跑同一脚本。
+- **环境注意**：本机 `TEMP` 指向 Go 临时目录时，`agenthub` 的工作目录断言会因 `t.TempDir()` 路径不一致失败；测试时把 `TEMP/TMP` 指到项目内可写目录即可。与业务代码无关。
+
+### 2.35 补丁：单用户单主会话与 Worker 结果回流（2026-11-01）
+
+按 `docs/补丁.md` 的最高优先级落地：唯一主会话 → 创建后台 Worker → 完成后结果与经验回到统一记忆 → 主会话可继续追问。
+
+- **唯一主会话** `migrations/0008_single_main_session.sql` 增加 `kind='main'` 的部分唯一索引；`SessionRepo.GetOrCreateMain` 优先把最近一条普通聊天会话原地升级为 `main`，旧库升级不丢当前上下文；`ListByOwner` 过滤 `worker/router` 会话。`TurnService` 在未显式传会话时默认落到主会话；新增 `GET /api/sessions/main`。桌面 `assistant-api/main/preload/renderer` 与手机页面启动时直接恢复主会话，历史入口只作查看。
+- **Worker 生命周期进事件流**：`worker.running/completed/failed/timeout/cancelled/interrupted` 与 `worker.created` 统一写入 `agent_event`，SSE 可直接驱动任务卡；重启恢复把失去执行线程的 Worker 标 `interrupted`，等待中的任务保持暂停。
+- **结果回流统一记忆**：Worker 成功完成后，在同一完成流程内更新所属 Thread 摘要（游标只前进）；`WorkerManager.OnResult` 同步调用新增的 `memory.SaveWorkerResult`：先落 SQLite episode（立即可检索），再异步补向量并镜像长期记忆。Worker 原始会话继续保留，但不进入用户会话列表。
+- **真实模型 E2E（隔离库 `.runtime/e2e-real`，端口 18082）**：真实 Router 4 秒内返回 `create_worker`，Worker 用真实模型 19 秒完成报价单草稿；执行中强杀进程后重启，任务变为 `interrupted` 且不重复执行；`/api/events` 出现 `worker.running`/`worker.completed`；`/api/sessions/main` 在旧库升级后稳定复用原聊天会话，两次无会话聊天返回同一 `session_id`；Worker 完成后立即用 `/api/memory/search` 命中“Worker 任务结果”，Thread 摘要写入，Worker 会话不出现在 `/api/sessions`；主会话追问“刚才后台任务完成的会议通知说了什么”正确回答“明天上午10点在B201开产品评审会，产品负责人和研发负责人参加”。
+- **验证**：`go test ./...` 全部通过、`go vet ./...` 无输出；桌面 `npm run check` 通过，`node --test` **106/106** 通过；新增主会话仓储/HTTP、默认会话、Worker 生命周期事件、Thread 摘要与 OnResult 测试。
+- **当前边界**：Worker 结果回流使用 Worker 最终摘要，尚未另起“经验提取 Worker”；历史旧会话仍可打开查看但日常默认主会话；工作轨迹 Episode、邮件/微信 Thread、跨渠道每日简报和桌面任务卡仍待接。
+
+### 2.36 补丁剩余项：活动 Episode、邮件/微信、每日简报、工作台（2026-11-01）
+
+- **迁移** `0009_channels_briefs.sql`：`agent_channel_policy`（来源 allow/deny）、`agent_channel_skip`（仅计数，不保存被拒正文）、`agent_channel_cursor`（IMAP 单调游标）、`agent_daily_brief`（按日期+版本保留，旧版不覆盖）。
+- **渠道入口**：`/api/channels/activity/episodes`、`/api/channels/email/messages`、`/api/channels/wechat/messages`。活动片段按日期归入 `activity:<日期>` Thread；邮件按 `thread_key` 归 Thread；日历事件按 `series_id/event_id` 归 `calendar:` Thread；微信默认 deny，用户在“工作台 → 渠道采集”显式允许后才落正文。拒绝只增加当日跳过计数。
+- **Thread 增量摘要**：`internal/superagent/summary.go` 维护滚动摘要，按已覆盖 trigger ID 去重，同一 Thread 合并排队；无模型时确定性摘要；摘要游标只前进，并记录 `thread.summarized` 事件和来源 ID。桌面工作片段完成后自动调用活动入口；微信窗口可见文本由桌面网关转发（不读微信数据库、不注入、不绕过客户端）。
+- **邮件 IMAP**：`internal/email` 可选只读采集器（新增 go-imap v1 + go-message + x/text），`BODY.PEEK[]` 不标记已读，游标落库；正文/MIME/HTML 转文本和附件名解析有单测；配置在 settings.json `email`，接口 `/api/settings/email`（GET 打码、空密码保留原值）。不实现自动发送。
+- **每日简报**：`internal/superagent/brief.go` 按日期汇总活动/邮件/微信 Thread 摘要、Worker、待审批和到期任务，输出 `needs_action/important_changes/background`；已有 Thread 摘要时不再重复喂原始 trigger。`digest.time` 后自动生成首版，新增事件最多每 30 分钟补版；`GET /api/briefs/latest`、`POST /api/briefs/generate`、版本列表与已读标记。主会桌面/手机显示简报卡，桌面“工作台”显示完整内容。
+- **桌面工作台**：新增 `workbench.html/js` 与主进程 SSE 转发。主进程连接 `/api/events?stream=1`，通过 IPC `agent:event` 广播；主对话显示待处理条（审批/等待/异常任务）和简报卡，工作台含“待处理 / 进行中 / 今日简报 / 渠道采集”，支持批准/驳回、取消/追加 Worker、生成简报、微信 allow/deny 和邮箱 IMAP 配置。
+- **验证**：`go test ./...` 全通过、`go vet ./...` 无输出；桌面 `npm run check` 通过、`node --test` **107/107**。隔离 E2E（端口 18082）：活动/邮件/微信入口分别生成 Thread 摘要（真实模型）；微信先 202 拦截并计数、允许后 201；日简报 v4 长 3143 字，含三类摘要且不再包含被摘要覆盖的原始邮件/微信 trigger；邮箱配置 GET/PUT 不泄漏密码；无待审批时主会话显示 1 个异常 Worker 待处理；Electron CDP 实测主窗简报卡、待处理条、工作台三页内容与 SSE IPC（`trigger.queued` 事件）均正常；手机网页无头 Edge 实测简报卡与主会话消息。新增假 IMAP 服务器测试验证 PollOnce 登录/EXAMINE/UID SEARCH/UID FETCH/游标推进。
+- **边界（需真实环境验收）**：没有真实邮箱凭据，IMAP 只做了假服务器与解析单测；微信只验证了桌面可见文本入口，没有个人微信数据库解密/hook/非官方协议；邮件只读，不发送；活动 Episode 目前由现有阶段总结触发，不是独立的后台切片器。
+
+**本轮未做**：真实邮箱与微信账号验收、手机工作台/动态待办、relay v2 增量同步、ICS 日历、邮件发送器、Worker `route_to_worker` 执行上下文。这些仍按计划书 P4 推进。
 
 ## 三、验证记录（2026-10-31 最新）
 

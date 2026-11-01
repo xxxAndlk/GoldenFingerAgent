@@ -20,7 +20,7 @@ const files = [
   'index.html', 'styles.css', 'activity.html', 'activity.css', 'activity-renderer.js',
   'activity-handle.html', 'activity-handle.css', 'activity-handle.js',
   'settings-renderer.js', 'agents.html', 'management.js', 'ccswitch.html', 'ccswitch.js', 'windows.css',
-  'markdown.js', 'agent-panel.js',
+  'markdown.js', 'agent-panel.js', 'workbench.html', 'workbench.js',
   'tray-icon.png', 'tray-icon.ico', 'tray-icon-busy.png', 'tray-icon-busy.ico',
   'app-icon.png', 'app-icon.ico', 'app-icon.css',
 ];
