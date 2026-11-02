@@ -266,6 +266,76 @@
 
 简报固定三段：`needs_action`（审批、明确问题、当天到期）、`important_changes`（决定/改期/完成/阻塞）、`background`。每条必须带来源 ref（`trigger:` / `thread:` / `worker:` / `outbox:` / `task:`）。到达 `digest.time` 后自动生成首版，之后有新事件最多每 30 分钟补一版。
 
+### 8. 渠道与全局开关
+
+六类渠道 `activity`、`email`、`feishu`、`dingtalk`、`wechat_desktop`、`wechat_mobile` 分别保存五个开关，**默认全部关闭**：
+
+| 字段 | 语义 |
+|---|---|
+| `enabled` | 是否采集新信息；关闭时在入库前拦截，只增加跳过计数 |
+| `summary_enabled` | 是否因新事件调用 Thread 摘要模型 |
+| `index_enabled` | 是否生成新向量（关闭不影响按日期/来源 ID/关键词查询） |
+| `brief_enabled` | 是否进入自动或手动每日简报 |
+| `auto_worker_enabled` | 是否允许 Router 因该渠道事件自动创建 Worker |
+
+全局开关：`router_enabled`、`worker_enabled`、`daily_brief_enabled`、`proactive_notify_enabled`。渠道自动 Worker 需要渠道与全局同时允许。
+
+| 方法 路径 | 用途 |
+|---|---|
+| `GET /api/settings/channels` | 返回 `configs`、`global`、`policies`、`skips_today` 与渠道列表 |
+| `PUT /api/settings/channels/config/{channel}` | 覆盖单个渠道的五个开关 |
+| `PUT /api/settings/channels/global` | 覆盖四个全局开关 |
+| `PUT /api/settings/channels` | 来源策略 `{"channel","source","allowed"}`；微信、飞书、钉钉来源默认拒绝 |
+
+`/api/inbox/events` 在写入旧通知中心前应用 `wechat_mobile` 开关和来源策略；被拒微信通知只计数，不落正文、不生成向量索引。
+
+### 9. 邮箱 UIDVALIDITY 与筛选
+
+`GET/PUT /api/settings/email` 在原有字段外增加：
+
+```json
+{
+  "mailboxes": ["INBOX", "项目/客户"],
+  "senders": ["client@example.com"],
+  "subject_filters": ["报价", "合同"],
+  "since_days": 30
+}
+```
+
+游标保存 `UIDVALIDITY + UID`；邮箱重建导致 UIDVALIDITY 变化时自动按首次拉取策略重置，不按旧 UID 漏信。筛选同时在 IMAP SEARCH 和本地解析后执行。仍使用 `EXAMINE` / `BODY.PEEK[]`，不修改已读状态、不自动发送。
+
+### 10. 通用网页采集
+
+`POST /api/channels/web/items`：
+
+```json
+{
+  "site_id": "example",
+  "account": "me",
+  "url": "https://example.com/items/42",
+  "canonical_url": "https://example.com/items/42?a=1&b=2",
+  "item_id": "42",
+  "title": "条目标题",
+  "text": "脱敏后的正文",
+  "captured_at": "2026-11-01T10:00:00+08:00",
+  "extracted_by": "adapter|readability|dom|ocr_fallback",
+  "completeness": "complete|partial|unknown",
+  "evidence_ids": []
+}
+```
+
+服务端校验站点开关、来源策略、授权 origin/路径和正文大小，对规范化正文重算 SHA-256；`ExternalID=web:<site>:<account>:<item>:<hash>`，`ThreadExternalID=web:<site>:<account>:<canonical_url>`。同一内容重复上报返回原 Trigger，内容变化产生同一 Thread 的新版本。网页内容固定 `trusted=false`。
+
+| 方法 路径 | 用途 |
+|---|---|
+| `GET /api/settings/web/sites` | 站点列表与说明 |
+| `PUT /api/settings/web/sites/{id}` | 新增/覆盖站点；`interval_seconds` 不得低于 60，`max_pages ≤ 20`，`max_depth ≤ 3`；开启自动登录必须提供 HTTPS `login_url`、`credential_ref` 和三个确定性选择器 |
+| `DELETE /api/settings/web/sites/{id}` | 删除站点（已采集记录不删除） |
+
+站点开关：`enabled`、`summary_enabled`、`index_enabled`、`brief_enabled`、`auto_worker_enabled`、`navigation_enabled`、`session_enabled`、`auto_login_enabled`。桌面工作台“网页采集”页可新增/保存、立即采集、人工/自动登录、保存/删除凭据、停止和读取当前页；浏览器使用独立 profile，不导出 Cookie，不读取其他标签页。
+
+自动登录相关字段：`login_url`、`credential_ref`、`username_selector`、`password_selector`、`submit_selector`。密码不经过 HTTP API，只由 Electron 主进程写入 `safeStorage`（Windows 上为 DPAPI）加密文件；每次填充前弹窗确认，origin/登录地址不匹配或遇到验证码/二次验证立即停止。
+
 ---
 
 ## 四、其余既有端点（摘要）

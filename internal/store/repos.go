@@ -27,6 +27,8 @@ type Repos struct {
 	ChannelPolicies     *ChannelPolicyRepo
 	ChannelSkips        *ChannelSkipRepo
 	ChannelCursors      *ChannelCursorRepo
+	ChannelConfigs      *ChannelConfigRepo
+	GlobalConfigs       *GlobalConfigRepo
 	DailyBriefs         *DailyBriefRepo
 }
 
@@ -58,6 +60,8 @@ func NewRepos(q Querier) *Repos {
 		ChannelPolicies:     NewChannelPolicyRepo(q),
 		ChannelSkips:        NewChannelSkipRepo(q),
 		ChannelCursors:      NewChannelCursorRepo(q),
+		ChannelConfigs:      NewChannelConfigRepo(q),
+		GlobalConfigs:       NewGlobalConfigRepo(q),
 		DailyBriefs:         NewDailyBriefRepo(q),
 	}
 }

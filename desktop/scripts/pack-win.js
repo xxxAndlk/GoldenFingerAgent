@@ -21,6 +21,8 @@ const files = [
   'activity-handle.html', 'activity-handle.css', 'activity-handle.js',
   'settings-renderer.js', 'agents.html', 'management.js', 'ccswitch.html', 'ccswitch.js', 'windows.css',
   'markdown.js', 'agent-panel.js', 'workbench.html', 'workbench.js',
+  'browser-policy.js', 'browser-extract.js', 'browser-session.js', 'browser-collector.js',
+  'secret-store.js',
   'tray-icon.png', 'tray-icon.ico', 'tray-icon-busy.png', 'tray-icon-busy.ico',
   'app-icon.png', 'app-icon.ico', 'app-icon.css',
 ];
@@ -34,6 +36,15 @@ fs.cpSync(electronDist, output, { recursive: true });
 fs.mkdirSync(appOutput, { recursive: true });
 for (const file of files) {
   fs.copyFileSync(path.join(root, file), path.join(appOutput, file));
+}
+// 网页采集依赖 playwright-core 与 Readability；只复制这两个运行时依赖，不带 devDependencies。
+for (const moduleName of ['playwright-core', '@mozilla/readability']) {
+  const source = path.join(root, 'node_modules', moduleName);
+  if (fs.existsSync(source)) {
+    const target = path.join(appOutput, 'node_modules', moduleName);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.cpSync(source, target, { recursive: true });
+  }
 }
 const projectRoot = path.resolve(root, '..');
 const serverOutput = path.join(appOutput, 'server');

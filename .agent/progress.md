@@ -351,7 +351,25 @@
 - **验证**：`go test ./...` 全通过、`go vet ./...` 无输出；桌面 `npm run check` 通过、`node --test` **107/107**。隔离 E2E（端口 18082）：活动/邮件/微信入口分别生成 Thread 摘要（真实模型）；微信先 202 拦截并计数、允许后 201；日简报 v4 长 3143 字，含三类摘要且不再包含被摘要覆盖的原始邮件/微信 trigger；邮箱配置 GET/PUT 不泄漏密码；无待审批时主会话显示 1 个异常 Worker 待处理；Electron CDP 实测主窗简报卡、待处理条、工作台三页内容与 SSE IPC（`trigger.queued` 事件）均正常；手机网页无头 Edge 实测简报卡与主会话消息。新增假 IMAP 服务器测试验证 PollOnce 登录/EXAMINE/UID SEARCH/UID FETCH/游标推进。
 - **边界（需真实环境验收）**：没有真实邮箱凭据，IMAP 只做了假服务器与解析单测；微信只验证了桌面可见文本入口，没有个人微信数据库解密/hook/非官方协议；邮件只读，不发送；活动 Episode 目前由现有阶段总结触发，不是独立的后台切片器。
 
-**本轮未做**：真实邮箱与微信账号验收、手机工作台/动态待办、relay v2 增量同步、ICS 日历、邮件发送器、Worker `route_to_worker` 执行上下文。这些仍按计划书 P4 推进。
+### 2.37 补丁第 13 条：渠道开关、隐私前置与网页采集地基（2026-11-01）
+
+- **渠道与全局开关** `migrations/0010_channel_configs.sql`：六类渠道（activity/email/feishu/dingtalk/wechat_desktop/wechat_mobile）分别保存 `enabled/summary_enabled/index_enabled/brief_enabled/auto_worker_enabled`，默认全关；全局 `router_enabled/worker_enabled/daily_brief_enabled/proactive_notify_enabled` 默认开启。新增 `GET /api/settings/channels`（configs/global/policies/skips）、`PUT /api/settings/channels/config/{channel}`、`PUT /api/settings/channels/global`。
+- **开关语义真正生效**：渠道关闭时 `/api/channels/*` 在持久化前返回 202 并只增加跳过计数；`summary_enabled` 控制是否入摘要队列；`brief_enabled` 过滤每日简报来源；`auto_worker_enabled` 与全局 `worker_enabled` 同时放行才允许 Router 创建 Worker，否则降级为通知；`proactive_notify_enabled` 抑制主动通知回调和简报推送；全局 `router_enabled`/`daily_brief_enabled` 控制后台循环。JSON 配置不再靠界面隐藏。
+- **手机微信统一过滤**：`/api/inbox/events` 在写旧通知中心前识别 `com.tencent.mm`，按 `wechat_mobile` 渠道开关与来源策略过滤；默认关闭且来源默认拒绝，被拒正文不落库、不留向量，只计数。`index_enabled` 关闭时不生成 embedding。
+- **工作台**：渠道页展示每个渠道五项开关、四个全局开关和来源 allow/deny；邮箱页增加多文件夹、发件人、主题、最近天数筛选。新增“网页采集”页。手机设置抽屉同步增加“渠道采集与每日简报”折叠区，可直接开关 `wechat_mobile` 并允许/拒绝具体群名或联系人。
+- **邮箱闭环**：IMAP 游标升级为 `UIDVALIDITY + UID`，邮箱重建后自动重置；支持 `Mailboxes`、`Senders`、`SubjectFilters`、`SinceDays` 服务端搜索 + 本地二次校验；继续 `EXAMINE`/`BODY.PEEK[]` 只读，不标记已读、不发送。
+- **网页采集服务端**：`POST /api/channels/web/items`、`GET/PUT/DELETE /api/settings/web/sites`。站点配置保存授权 origin/路径、页数/深度/间隔、摘要/索引/简报/自动 Worker/导航/会话开关；未启用站点在入库前 202 拦截。服务端重算规范化正文 SHA-256，按 `web:<site>:<account>:<item>:<hash>` 幂等，同一 Thread 仍可保留内容变化的新版本；网页内容固定 `trusted=false`。
+- **桌面 Browser Collector**：新增 `desktop/browser-policy.js`（URL origin/路径/边界）、`browser-extract.js`（Readability + DOM 兜底 + 脱敏 + SHA-256）、`browser-session.js`（按站点独立持久 profile、人工登录接续、登录页探测）、`browser-collector.js`（单站点 single-flight、页数/深度/时长限制、只跟随授权链接）与 `secret-store.js`（Electron safeStorage/DPAPI 加密存储）。启用 `playwright-core` 与 `@mozilla/readability`，使用本机 Edge/Chrome，不下载额外 Chromium。自动登录只允许 HTTPS 登录地址和确定性选择器；每次填充前确认，origin 不匹配、验证码/二次验证或表单变化立即停止并转人工，不重试。
+- **微信采集端前置**：桌面主进程缓存 `wechat_desktop` 开关与来源策略，关闭时不再把可见文本发往服务端；所有可见快照固定标记 `incomplete=true`，不伪装成完整逐条消息。手机微信通知仍由服务端在旧通知中心前统一过滤。
+- **验证**：Go 全量测试通过；桌面 `node --test` **122/122**、`npm run check` 通过；Playwright + Readability 本地 HTML 冒烟实际返回 `extractedBy=readability`、正文 229 字、链接 1 条；新增渠道开关、手机微信过滤、简报/Worker 门控、网页去重与越权 URL 拒绝、SecretStore 加密/拒绝明文、自动登录 origin 校验与表单填充测试。
+- **打包版真实联调**：隔离库（复制真实 `gfa.db` + 独立 `GFA_CONFIG`，端口 18083）迁移只应用 `0010_channel_configs.sql`；默认 email 202 拦截、开启后 201；网页站点保存后 item 201、重复 200、关闭站点 202；关闭站点 `brief_enabled` 后新简报不再引用该 web Thread。
+- **打包版工作台 CDP**：Electron 低完整性启动，工作台出现 5 个标签（含“网页采集”），读取到 6 个渠道配置与 4 个全局开关；本地 HTTP 样例站点“立即采集”实际捕获 1 条，重复采集服务端仍只有 1 条 web Trigger。首次运行报 Playwright `mkdtemp EPERM`（低完整性不能写默认 AppData 临时目录），已在 `ensureBrowserCollector` 里把 `TMP/TEMP` 指向 `userData/tmp` 并重新打包验证通过。测试站点已从生产 `settings.json` 删除，示例 HTTP 服务已停止。
+- **手机页面**：`web/index.html` 设置抽屉新增渠道折叠区，无头 Edge 390×844 实测渲染 34 个开关、`/api/settings/channels` 返回 6 个渠道配置；页面同步到 `android/gosvc/webassets` 与 `desktop/server/web`。
+- **DPAPI 真实写入**：打包版 CDP 调用 `saveBrowserCredential` 保存测试账号，`secrets.json` 仅含 safeStorage 密文，未出现账号或密码明文；随后通过 IPC 删除凭据并删除测试站点。
+- **真实站点验收**：打包版 Browser Collector 实际采集百度百科「人工智能」文章（`baike.baidu.com/item/.../9180`），Readability 提取 75,568 字节正文、`complete`；重复采集服务端仍只有 1 条 web Trigger；Thread 摘要由真实模型生成（176 字），当日简报 v3 引用该 `thread:` 来源。原始正文上限从 64KB 提高到 512KB（请求体 1MB），避免长文章被误判超限；测试站点已删除，采集记录保留作为证据。
+- **边界**：飞书/钉钉连接器按用户要求暂缓；自动登录已具备 DPAPI 加密存储和确定性填充，但尚未在真实 QQ 邮箱/BOSS 页面验收；网页调度游标只在进程内，重启后依赖服务端内容 hash 去重；尚未用真实邮箱与微信账号验收。
+
+**本轮未做（飞书/钉钉按要求暂缓）**：飞书官方 SDK、钉钉 Stream SDK、QQ 邮箱/BOSS 专用适配器、真实邮箱与微信账号验收、手机工作台/动态待办、relay v2 增量同步、ICS 日历、邮件发送器、Worker `route_to_worker` 执行上下文。
 
 ## 三、验证记录（2026-10-31 最新）
 

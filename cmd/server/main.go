@@ -231,6 +231,50 @@ func main() {
 	// Super-agent 事件层：只负责 Trigger/Thread/EventLog 与路由落库，
 	// 外部发送仍必须经过 ActionOutbox 人工审批。
 	superAgent := superagent.New(db)
+	superAgent.SummaryAllowed = func(ctx context.Context, ownerID, channel string) (bool, error) {
+		if !store.IsGatedChannel(store.NormalizeChannel(channel)) {
+			return true, nil
+		}
+		return repos.ChannelConfigs.SummaryEnabled(ctx, ownerID, channel)
+	}
+	superAgent.AutoWorkerAllowed = func(ctx context.Context, ownerID, channel string) (bool, error) {
+		global, err := repos.GlobalConfigs.Get(ctx, ownerID)
+		if err != nil || !global.WorkerEnabled {
+			return false, err
+		}
+		if !store.IsGatedChannel(store.NormalizeChannel(channel)) {
+			return true, nil
+		}
+		return repos.ChannelConfigs.AutoWorkerEnabled(ctx, ownerID, channel)
+	}
+	superAgent.NotifyAllowed = func(ctx context.Context, ownerID string) (bool, error) {
+		global, err := repos.GlobalConfigs.Get(ctx, ownerID)
+		return global.ProactiveNotifyEnabled, err
+	}
+	superAgent.TriggerSummaryAllowed = func(ctx context.Context, ownerID string, trigger *store.Trigger) (bool, error) {
+		if trigger.Channel != store.ChannelWeb {
+			if !store.IsGatedChannel(store.NormalizeChannel(trigger.Channel)) {
+				return true, nil
+			}
+			return repos.ChannelConfigs.SummaryEnabled(ctx, ownerID, trigger.Channel)
+		}
+		site, ok := st.Site(superagent.WebSiteID(trigger))
+		return ok && site.Enabled && site.SummaryEnabled, nil
+	}
+	superAgent.TriggerAutoWorkerAllowed = func(ctx context.Context, ownerID string, trigger *store.Trigger) (bool, error) {
+		global, err := repos.GlobalConfigs.Get(ctx, ownerID)
+		if err != nil || !global.WorkerEnabled {
+			return false, err
+		}
+		if trigger.Channel != store.ChannelWeb {
+			if !store.IsGatedChannel(store.NormalizeChannel(trigger.Channel)) {
+				return true, nil
+			}
+			return repos.ChannelConfigs.AutoWorkerEnabled(ctx, ownerID, trigger.Channel)
+		}
+		site, ok := st.Site(superagent.WebSiteID(trigger))
+		return ok && site.Enabled && site.AutoWorkerEnabled, nil
+	}
 	superAgent.OnNotify = func(_ context.Context, ownerID string, trigger *store.Trigger, decision superagent.Decision) {
 		outbox.Push(ownerID, notifyText(trigger, decision), time.Now())
 	}
@@ -265,7 +309,38 @@ func main() {
 	}
 	superAgent.Summarizer = superagent.NewSummarizer(db, llmFor)
 	briefs := superagent.NewBriefGenerator(db, llmFor)
-	briefs.OnReady = func(_ context.Context, ownerID string, brief *store.DailyBrief) {
+	briefs.ChannelEnabled = func(ctx context.Context, ownerID, channel string) (bool, error) {
+		if channel == store.ChannelWeb {
+			return true, nil
+		}
+		if !store.IsGatedChannel(store.NormalizeChannel(channel)) {
+			return true, nil
+		}
+		return repos.ChannelConfigs.BriefEnabled(ctx, ownerID, channel)
+	}
+	briefs.TriggerEnabled = func(_ context.Context, _ string, trigger *store.Trigger) bool {
+		if trigger.Channel != store.ChannelWeb {
+			return true
+		}
+		site, ok := st.Site(superagent.WebSiteID(trigger))
+		return ok && site.Enabled && site.BriefEnabled
+	}
+	briefs.ThreadEnabled = func(_ context.Context, _ string, thread *store.Thread) bool {
+		if thread.Channel != store.ChannelWeb {
+			return true
+		}
+		parts := strings.SplitN(thread.ExternalID, ":", 4)
+		if len(parts) < 2 {
+			return false
+		}
+		site, ok := st.Site(parts[1])
+		return ok && site.Enabled && site.BriefEnabled
+	}
+	briefs.OnReady = func(ctx context.Context, ownerID string, brief *store.DailyBrief) {
+		global, err := repos.GlobalConfigs.Get(ctx, ownerID)
+		if err != nil || !global.ProactiveNotifyEnabled {
+			return
+		}
 		outbox.Push(ownerID, "今日简报已生成（第 "+strconv.Itoa(brief.Version)+" 版）："+truncateText(brief.ContentMD, 500), time.Now())
 	}
 	api.Briefs = briefs
@@ -277,32 +352,47 @@ func main() {
 	} else {
 		emailPoller := emailsvc.NewPoller(func() emailsvc.Config {
 			e := st.Email()
+			// 渠道关闭时在采集端停止，不建立 IMAP 连接，也不把正文交给服务端。
+			channelOn, _ := repos.ChannelConfigs.Enabled(context.Background(), emailOwnerID, store.ChannelEmail)
 			return emailsvc.Config{
-				Enabled: e.Enabled, Host: e.Host, Port: e.Port, Username: e.Username,
-				Password: e.Password, Mailbox: e.Mailbox, TLS: e.TLS, InitialFetch: e.InitialFetch,
-				PollInterval: time.Duration(e.PollSeconds) * time.Second,
+				Enabled: e.Enabled && channelOn, Host: e.Host, Port: e.Port, Username: e.Username,
+				Password: e.Password, Mailbox: e.Mailbox, Mailboxes: e.Mailboxes,
+				TLS: e.TLS, InitialFetch: e.InitialFetch,
+				PollInterval:   time.Duration(e.PollSeconds) * time.Second,
+				Senders:        e.Senders,
+				SubjectFilters: e.SubjectFilters,
+				SinceDays:      e.SinceDays,
 			}
 		}, &emailCursorStore{db: db, ownerID: emailOwnerID}, func(ctx context.Context, message emailsvc.Message) error {
-			allowed, err := repos.ChannelPolicies.Allowed(ctx, emailOwnerID, "email", message.Account)
+			enabled, err := repos.ChannelConfigs.Enabled(ctx, emailOwnerID, store.ChannelEmail)
+			if err != nil {
+				return err
+			}
+			if !enabled {
+				return repos.ChannelSkips.Increment(ctx, emailOwnerID, store.ChannelEmail,
+					time.Now().In(time.Local).Format("2006-01-02"), time.Now())
+			}
+			allowed, err := repos.ChannelPolicies.Allowed(ctx, emailOwnerID, store.ChannelEmail, message.Account)
 			if err != nil {
 				return err
 			}
 			if !allowed {
-				return repos.ChannelSkips.Increment(ctx, emailOwnerID, "email",
+				return repos.ChannelSkips.Increment(ctx, emailOwnerID, store.ChannelEmail,
 					time.Now().In(time.Local).Format("2006-01-02"), time.Now())
 			}
 			payload, _ := json.Marshal(map[string]any{
-				"account": message.Account, "from": message.From, "to": message.To, "cc": message.Cc,
+				"account": message.Account, "mailbox": message.Mailbox,
+				"from": message.From, "to": message.To, "cc": message.Cc,
 				"snippet": message.Snippet, "attachments": message.Attachments,
-				"raw_ref": fmt.Sprintf("imap:%d", message.UID),
+				"raw_ref": fmt.Sprintf("imap:%s:%d", message.Mailbox, message.UID),
 			})
 			title := strings.TrimSpace(message.Subject)
 			if title == "" {
 				title = message.Snippet
 			}
 			_, err = superAgent.Ingest(ctx, emailOwnerID, superagent.TriggerInput{
-				Channel: "email", Kind: "email_message",
-				ExternalID:       "email:" + message.Account + ":" + message.MessageID,
+				Channel: store.ChannelEmail, Kind: "email_message",
+				ExternalID:       "email:" + message.Account + ":" + message.Mailbox + ":" + message.MessageID,
 				ThreadExternalID: "email:" + message.Account + ":" + message.ThreadKey,
 				Title:            title,
 				Body:             firstText(message.Text, message.Snippet),
@@ -358,15 +448,30 @@ func main() {
 						os.Getenv("GFA_SUPERAGENT_ROUTER") != "deterministic" {
 						router = &superagent.LLMRouter{Client: rt.LLM, Model: rt.Model}
 					}
-					results, err := superAgent.RoutePendingForAll(ctx, router, 20)
+					users, err := repos.Users.ListAll(ctx)
 					if err != nil {
 						if ctx.Err() == nil {
 							log.Printf("superagent router: %v", err)
 						}
 						continue
 					}
-					if len(results) > 0 {
-						log.Printf("superagent router: routed %d trigger(s)", len(results))
+					routed := 0
+					for _, user := range users {
+						global, gErr := repos.GlobalConfigs.Get(ctx, user.ID)
+						if gErr != nil || !global.RouterEnabled {
+							continue
+						}
+						results, rErr := superAgent.RoutePending(ctx, user.ID, router, 20)
+						if rErr != nil {
+							if ctx.Err() == nil {
+								log.Printf("superagent router: %v", rErr)
+							}
+							continue
+						}
+						routed += len(results)
+					}
+					if routed > 0 {
+						log.Printf("superagent router: routed %d trigger(s)", routed)
 					}
 				}
 			}
@@ -552,6 +657,10 @@ func runBriefScheduler(ctx context.Context, gen *superagent.BriefGenerator, repo
 			start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
 			end := start.AddDate(0, 0, 1)
 			for _, user := range users {
+				global, gErr := repos.GlobalConfigs.Get(ctx, user.ID)
+				if gErr != nil || !global.DailyBriefEnabled {
+					continue
+				}
 				latest, latestErr := repos.DailyBriefs.Latest(ctx, user.ID, date)
 				if latestErr != nil && !errors.Is(latestErr, store.ErrNotFound) {
 					log.Printf("brief scheduler: latest %s: %v", user.ID, latestErr)
@@ -567,8 +676,10 @@ func runBriefScheduler(ctx context.Context, gen *superagent.BriefGenerator, repo
 						log.Printf("brief scheduler: triggers %s: %v", user.ID, listErr)
 						continue
 					}
-					for _, trigger := range triggers {
-						if trigger.ReceivedAt.After(latest.UpdatedAt) {
+					for i := range triggers {
+						trigger := &triggers[i]
+						if trigger.ReceivedAt.After(latest.UpdatedAt) &&
+							gen.IncludesTrigger(ctx, user.ID, trigger) {
 							need = true
 							break
 						}
@@ -595,18 +706,30 @@ type emailCursorStore struct {
 	ownerID string
 }
 
-func (c *emailCursorStore) Get(ctx context.Context, account string) (uint32, error) {
-	value, err := store.NewRepos(c.db).ChannelCursors.Get(ctx, c.ownerID, "email", account)
+func (c *emailCursorStore) Get(ctx context.Context, account string) (emailsvc.Cursor, error) {
+	value, err := store.NewRepos(c.db).ChannelCursors.Get(ctx, c.ownerID, store.ChannelEmail, account)
 	if err != nil || value == "" {
-		return 0, err
+		return emailsvc.Cursor{}, err
 	}
-	n, err := strconv.ParseUint(value, 10, 32)
-	return uint32(n), err
+	var cursor emailsvc.Cursor
+	if err := json.Unmarshal([]byte(value), &cursor); err == nil {
+		return cursor, nil
+	}
+	// 兼容旧版本只保存 UID 的游标。
+	n, legacyErr := strconv.ParseUint(value, 10, 32)
+	if legacyErr != nil {
+		return emailsvc.Cursor{}, legacyErr
+	}
+	return emailsvc.Cursor{UID: uint32(n)}, nil
 }
 
-func (c *emailCursorStore) Set(ctx context.Context, account string, uid uint32) error {
-	return store.NewRepos(c.db).ChannelCursors.Set(ctx, c.ownerID, "email", account,
-		strconv.FormatUint(uint64(uid), 10), time.Now())
+func (c *emailCursorStore) Set(ctx context.Context, account string, cursor emailsvc.Cursor) error {
+	raw, err := json.Marshal(cursor)
+	if err != nil {
+		return err
+	}
+	return store.NewRepos(c.db).ChannelCursors.Set(ctx, c.ownerID, store.ChannelEmail, account,
+		string(raw), time.Now())
 }
 
 func ensureLocalUserID(ctx context.Context, repos *store.Repos) (string, error) {

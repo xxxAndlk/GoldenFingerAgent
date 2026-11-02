@@ -1,10 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"goldenfinger/agent/internal/store"
 )
 
 func doGet(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
@@ -13,6 +17,42 @@ func doGet(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+func TestInboxWeChatMobilePolicyFiltersBeforePersistence(t *testing.T) {
+	srv, _ := newTestServer(t)
+	h := srv.Handler()
+	message := `{"events":[{"source_pkg":"com.tencent.mm","app_name":"微信","title":"项目群","text":"周五发版","posted_at":"2026-11-01T10:00:00+08:00"}]}`
+
+	// 渠道默认关闭：微信通知不进入旧通知中心。
+	rec := postJSON(t, h, "/api/inbox/events", message)
+	body := decodeMap(t, rec)
+	if body["ingested"].(float64) != 0 || body["filtered"].(float64) != 1 {
+		t.Fatalf("disabled=%s", rec.Body)
+	}
+	if events := decodeMap(t, doGet(t, h, "/api/inbox/events"))["events"].([]any); len(events) != 0 {
+		t.Fatalf("disabled wechat persisted: %v", events)
+	}
+
+	// 开启渠道但来源仍默认拒绝。
+	enableChannel(t, srv, store.ChannelWeChatMobile)
+	rec = postJSON(t, h, "/api/inbox/events", message)
+	if decodeMap(t, rec)["ingested"].(float64) != 0 {
+		t.Fatalf("denied source ingested: %s", rec.Body)
+	}
+
+	user, err := srv.resolveUser(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Repos.ChannelPolicies.Set(context.Background(), user.ID,
+		store.ChannelWeChatMobile, "项目群", true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	rec = postJSON(t, h, "/api/inbox/events", message)
+	if decodeMap(t, rec)["ingested"].(float64) != 1 {
+		t.Fatalf("allowed source=%s", rec.Body)
+	}
 }
 
 func TestInboxNilService503(t *testing.T) {
@@ -41,6 +81,15 @@ func TestInboxNilService503(t *testing.T) {
 // TestInboxEndpointsContract 按契约逐字段核对八端点（nil embedder → mode=keyword）。
 func TestInboxEndpointsContract(t *testing.T) {
 	srv, _ := newTestServer(t)
+	enableChannel(t, srv, store.ChannelWeChatMobile)
+	user, err := srv.resolveUser(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Repos.ChannelPolicies.Set(context.Background(), user.ID,
+		store.ChannelWeChatMobile, "消息", true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	h := srv.Handler()
 
 	// 1. POST /api/inbox/events：2 唯一 + 1 重复 → ingested=2。

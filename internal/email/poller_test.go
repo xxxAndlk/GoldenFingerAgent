@@ -32,7 +32,7 @@ func TestParseMessageExtractsThreadAndBody(t *testing.T) {
 			{}: testLiteral{Reader: strings.NewReader(raw), size: len(raw)},
 		},
 	}
-	parsed, err := parseMessage(Config{Username: "me@example.com", Host: "imap.example.com", Mailbox: "INBOX"}, msg, section)
+	parsed, err := parseMessage(Config{Username: "me@example.com", Host: "imap.example.com", Mailbox: "INBOX"}, "INBOX", msg, section)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +44,51 @@ func TestParseMessageExtractsThreadAndBody(t *testing.T) {
 	}
 	if parsed.From == "" || len(parsed.To) != 1 {
 		t.Fatalf("addresses from=%q to=%v", parsed.From, parsed.To)
+	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestMessageMatchesSenderSubjectAndDateFilters(t *testing.T) {
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.Local)
+	cfg := Config{Senders: []string{"client@"}, SubjectFilters: []string{"报价"}, SinceDays: 7}
+	message := Message{
+		From: "Client <client@example.com>", Subject: "Q4 报价",
+		ReceivedAt: now.AddDate(0, 0, -1),
+	}
+	if !messageMatches(cfg, message, now) {
+		t.Fatal("matching message rejected")
+	}
+	message.From = "other@example.com"
+	if messageMatches(cfg, message, now) {
+		t.Fatal("sender filter not applied")
+	}
+	message.From = "client@example.com"
+	message.Subject = "会议邀请"
+	if messageMatches(cfg, message, now) {
+		t.Fatal("subject filter not applied")
+	}
+	message.Subject = "Q4 报价"
+	message.ReceivedAt = now.AddDate(0, 0, -30)
+	if messageMatches(cfg, message, now) {
+		t.Fatal("date filter not applied")
+	}
+}
+
+func TestMailboxListDefaultsAndDeduplicates(t *testing.T) {
+	if got := (Config{}).MailboxList(); len(got) != 1 || got[0] != "INBOX" {
+		t.Fatalf("default=%v", got)
+	}
+	got := (Config{Mailbox: "INBOX", Mailboxes: []string{"INBOX", "项目/客户", " "}}).MailboxList()
+	if len(got) != 2 || !contains(got, "INBOX") || !contains(got, "项目/客户") {
+		t.Fatalf("mailboxes=%v", got)
 	}
 }
 

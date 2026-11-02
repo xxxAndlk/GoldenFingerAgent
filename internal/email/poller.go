@@ -30,17 +30,47 @@ type Config struct {
 	Username     string
 	Password     string
 	Mailbox      string
+	Mailboxes    []string
 	TLS          bool
 	InitialFetch int
 	PollInterval time.Duration
+	// 服务端筛选：发件人、主题关键字与最近天数。为空时不限制。
+	Senders        []string
+	SubjectFilters []string
+	SinceDays      int
 }
 
 func (c Config) AccountKey() string {
-	return c.Username + "|" + c.Host + "|" + c.Mailbox
+	return c.AccountKeyFor(c.Mailbox)
+}
+
+func (c Config) AccountKeyFor(mailbox string) string {
+	return c.Username + "|" + c.Host + "|" + mailbox
+}
+
+func (c Config) MailboxList() []string {
+	seen := make(map[string]bool)
+	out := make([]string, 0, len(c.Mailboxes)+1)
+	for _, box := range c.Mailboxes {
+		box = strings.TrimSpace(box)
+		if box != "" && !seen[box] {
+			seen[box] = true
+			out = append(out, box)
+		}
+	}
+	box := strings.TrimSpace(c.Mailbox)
+	if box != "" && !seen[box] {
+		out = append(out, box)
+	}
+	if len(out) == 0 {
+		out = append(out, "INBOX")
+	}
+	return out
 }
 
 type Message struct {
 	Account     string
+	Mailbox     string
 	MessageID   string
 	ThreadKey   string
 	From        string
@@ -54,9 +84,15 @@ type Message struct {
 	UID         uint32
 }
 
+// Cursor 同时保存 UIDVALIDITY 与 UID；邮箱重置后 UIDVALIDITY 改变，不能继续按旧 UID 去重。
+type Cursor struct {
+	UIDValidity uint32 `json:"uid_validity,omitempty"`
+	UID         uint32 `json:"uid,omitempty"`
+}
+
 type CursorStore interface {
-	Get(ctx context.Context, account string) (uint32, error)
-	Set(ctx context.Context, account string, uid uint32) error
+	Get(ctx context.Context, account string) (Cursor, error)
+	Set(ctx context.Context, account string, cursor Cursor) error
 }
 
 type Poller struct {
@@ -98,10 +134,6 @@ func (p *Poller) PollOnce(ctx context.Context, cfg Config) error {
 	if port == 0 {
 		port = 993
 	}
-	mailbox := strings.TrimSpace(cfg.Mailbox)
-	if mailbox == "" {
-		mailbox = "INBOX"
-	}
 	addr := net.JoinHostPort(strings.TrimSpace(cfg.Host), strconv.Itoa(port))
 	var c *client.Client
 	var err error
@@ -118,6 +150,15 @@ func (p *Poller) PollOnce(ctx context.Context, cfg Config) error {
 	if err := c.Login(cfg.Username, cfg.Password); err != nil {
 		return fmt.Errorf("imap login failed")
 	}
+	for _, mailbox := range cfg.MailboxList() {
+		if err := p.pollMailbox(ctx, cfg, c, mailbox); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Poller) pollMailbox(ctx context.Context, cfg Config, c *client.Client, mailbox string) error {
 	mbox, err := c.Select(mailbox, true)
 	if err != nil {
 		return err
@@ -125,16 +166,21 @@ func (p *Poller) PollOnce(ctx context.Context, cfg Config) error {
 	if mbox.Messages == 0 {
 		return nil
 	}
-	uids, err := c.UidSearch(&imap.SearchCriteria{})
+	uids, err := c.UidSearch(searchCriteria(cfg))
 	if err != nil {
 		return err
 	}
 	sort.Slice(uids, func(i, j int) bool { return uids[i] < uids[j] })
-	cursor, err := p.Cursors.Get(ctx, cfg.AccountKey())
+	accountKey := cfg.AccountKeyFor(mailbox)
+	cursor, err := p.Cursors.Get(ctx, accountKey)
 	if err != nil {
 		return err
 	}
-	if cursor == 0 {
+	if cursor.UIDValidity != 0 && mbox.UidValidity != 0 && cursor.UIDValidity != mbox.UidValidity {
+		// 邮箱被重置：旧 UID 不再可信，按首次拉取策略重新建立游标。
+		cursor = Cursor{}
+	}
+	if cursor.UID == 0 {
 		initial := cfg.InitialFetch
 		if initial <= 0 {
 			initial = 20
@@ -145,7 +191,7 @@ func (p *Poller) PollOnce(ctx context.Context, cfg Config) error {
 	} else {
 		next := uids[:0]
 		for _, uid := range uids {
-			if uid > cursor {
+			if uid > cursor.UID {
 				next = append(next, uid)
 			}
 		}
@@ -182,22 +228,88 @@ func (p *Poller) PollOnce(ctx context.Context, cfg Config) error {
 	}
 	sort.Slice(fetched, func(i, j int) bool { return order[fetched[i].Uid] < order[fetched[j].Uid] })
 	for _, msg := range fetched {
-		parsed, err := parseMessage(cfg, msg, section)
+		parsed, err := parseMessage(cfg, mailbox, msg, section)
 		if err != nil {
 			return fmt.Errorf("parse uid %d: %w", msg.Uid, err)
 		}
-		if err := p.OnMessage(ctx, parsed); err != nil {
-			return fmt.Errorf("ingest uid %d: %w", msg.Uid, err)
+		if messageMatches(cfg, parsed, p.now()) {
+			if err := p.OnMessage(ctx, parsed); err != nil {
+				return fmt.Errorf("ingest uid %d: %w", msg.Uid, err)
+			}
 		}
-		if err := p.Cursors.Set(ctx, cfg.AccountKey(), msg.Uid); err != nil {
+		if err := p.Cursors.Set(ctx, accountKey, Cursor{UIDValidity: mbox.UidValidity, UID: msg.Uid}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func parseMessage(cfg Config, msg *imap.Message, section *imap.BodySectionName) (Message, error) {
-	out := Message{Account: cfg.Username, UID: msg.Uid}
+func (p *Poller) now() time.Time {
+	if p.Now != nil {
+		return p.Now()
+	}
+	return time.Now()
+}
+
+// searchCriteria 在服务端先缩小范围；解析后还会再做一次本地校验，避免服务器实现差异漏筛。
+func searchCriteria(cfg Config) *imap.SearchCriteria {
+	criteria := &imap.SearchCriteria{}
+	header := make(map[string][]string)
+	if len(cfg.Senders) > 0 {
+		header["From"] = cfg.Senders
+	}
+	if len(cfg.SubjectFilters) > 0 {
+		header["Subject"] = cfg.SubjectFilters
+	}
+	if len(header) > 0 {
+		criteria.Header = header
+	}
+	if cfg.SinceDays > 0 {
+		criteria.Since = startOfDay(time.Now().AddDate(0, 0, -cfg.SinceDays))
+	}
+	return criteria
+}
+
+func messageMatches(cfg Config, message Message, now time.Time) bool {
+	if cfg.SinceDays > 0 && message.ReceivedAt.Before(startOfDay(now.AddDate(0, 0, -cfg.SinceDays))) {
+		return false
+	}
+	if len(cfg.Senders) > 0 {
+		from := strings.ToLower(message.From)
+		matched := false
+		for _, sender := range cfg.Senders {
+			if strings.Contains(from, strings.ToLower(strings.TrimSpace(sender))) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	if len(cfg.SubjectFilters) > 0 {
+		subject := strings.ToLower(message.Subject)
+		matched := false
+		for _, keyword := range cfg.SubjectFilters {
+			if strings.Contains(subject, strings.ToLower(strings.TrimSpace(keyword))) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+func startOfDay(t time.Time) time.Time {
+	local := t.In(time.Local)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local)
+}
+
+func parseMessage(cfg Config, mailbox string, msg *imap.Message, section *imap.BodySectionName) (Message, error) {
+	out := Message{Account: cfg.Username, Mailbox: mailbox, UID: msg.Uid}
 	body := msg.GetBody(section)
 	if body == nil {
 		return out, fmt.Errorf("empty body")
@@ -224,7 +336,7 @@ func parseMessage(cfg Config, msg *imap.Message, section *imap.BodySectionName) 
 	}
 	messageID, _ := header.MessageID()
 	if messageID == "" {
-		messageID = fmt.Sprintf("%s-%d", cfg.AccountKey(), msg.Uid)
+		messageID = fmt.Sprintf("%s-%d", cfg.AccountKeyFor(mailbox), msg.Uid)
 	}
 	out.MessageID = messageID
 	refs, _ := header.MsgIDList("References")

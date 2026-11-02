@@ -37,6 +37,56 @@ func TestChannelPolicyDefaultsAndSourceOverride(t *testing.T) {
 	}
 }
 
+func TestChannelConfigDefaultsAndGlobalSwitches(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	repos := store.NewRepos(db)
+	u := superAgentUser(t, repos, "channel-config-user")
+
+	configs, err := repos.ChannelConfigs.List(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != len(store.GatedChannels) {
+		t.Fatalf("configs=%+v", configs)
+	}
+	for _, item := range configs {
+		if item.Enabled || item.SummaryEnabled || item.IndexEnabled ||
+			item.BriefEnabled || item.AutoWorkerEnabled {
+			t.Fatalf("channel must default closed: %+v", item)
+		}
+	}
+
+	global, err := repos.GlobalConfigs.Get(ctx, u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !global.RouterEnabled || !global.WorkerEnabled ||
+		!global.DailyBriefEnabled || !global.ProactiveNotifyEnabled {
+		t.Fatalf("global defaults=%+v", global)
+	}
+
+	if err := repos.ChannelConfigs.Save(ctx, store.ChannelConfig{
+		OwnerUserID: u.ID, Channel: "wechat", Enabled: true, SummaryEnabled: true,
+		BriefEnabled: true, AutoWorkerEnabled: true,
+	}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	item, err := repos.ChannelConfigs.Get(ctx, u.ID, store.ChannelWeChatDesktop)
+	if err != nil || !item.Enabled || !item.SummaryEnabled || !item.BriefEnabled || !item.AutoWorkerEnabled {
+		t.Fatalf("saved config=%+v err=%v", item, err)
+	}
+
+	global.WorkerEnabled = false
+	if err := repos.GlobalConfigs.Save(ctx, global, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	global, _ = repos.GlobalConfigs.Get(ctx, u.ID)
+	if global.WorkerEnabled {
+		t.Fatalf("worker switch not saved: %+v", global)
+	}
+}
+
 func TestChannelSkipAndDailyBriefVersions(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()

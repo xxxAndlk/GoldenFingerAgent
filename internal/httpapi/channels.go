@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
+	"goldenfinger/agent/internal/store"
 	"goldenfinger/agent/internal/superagent"
 )
 
@@ -46,8 +48,8 @@ func (s *Server) handleActivityEpisode(w http.ResponseWriter, r *http.Request) {
 	}
 	day := req.EndedAt.In(time.Local).Format("2006-01-02")
 	payload, _ := json.Marshal(req)
-	result, err := s.SuperAgent.Ingest(r.Context(), u.ID, superagent.TriggerInput{
-		Channel:          "activity",
+	s.ingestChannel(w, r, u.ID, store.ChannelActivity, firstNonEmpty(req.App, "activity"), superagent.TriggerInput{
+		Channel:          store.ChannelActivity,
 		ExternalID:       "episode:" + req.EpisodeID,
 		ThreadExternalID: "activity:" + day,
 		Kind:             "episode",
@@ -56,15 +58,6 @@ func (s *Server) handleActivityEpisode(w http.ResponseWriter, r *http.Request) {
 		Payload:          payload,
 		ReceivedAt:       req.EndedAt,
 	})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	status := http.StatusOK
-	if result.Created {
-		status = http.StatusCreated
-	}
-	writeJSON(w, status, result)
 }
 
 type emailMessageRequest struct {
@@ -114,8 +107,8 @@ func (s *Server) handleEmailMessage(w http.ResponseWriter, r *http.Request) {
 		"to": req.To, "cc": req.Cc, "snippet": req.Snippet,
 		"attachments": req.Attachments, "raw_ref": req.RawRef,
 	})
-	s.ingestChannel(w, r, u.ID, "email", req.Account, superagent.TriggerInput{
-		Channel:          "email",
+	s.ingestChannel(w, r, u.ID, store.ChannelEmail, req.Account, superagent.TriggerInput{
+		Channel:          store.ChannelEmail,
 		ExternalID:       "email:" + req.Account + ":" + req.MessageID,
 		ThreadExternalID: "email:" + req.Account + ":" + threadKey,
 		Kind:             "email_message",
@@ -228,8 +221,8 @@ func (s *Server) handleWeChatMessage(w http.ResponseWriter, r *http.Request) {
 	payload, _ := json.Marshal(map[string]any{
 		"sender": req.Sender, "incomplete": req.Incomplete, "raw_ref": req.RawRef,
 	})
-	s.ingestChannel(w, r, u.ID, "wechat", req.Source, superagent.TriggerInput{
-		Channel:          "wechat",
+	s.ingestChannel(w, r, u.ID, store.ChannelWeChatDesktop, req.Source, superagent.TriggerInput{
+		Channel:          store.ChannelWeChatDesktop,
 		ExternalID:       "wechat:" + req.Source + ":" + req.MessageID,
 		ThreadExternalID: "wechat:" + req.Source,
 		Kind:             req.Kind,
@@ -241,6 +234,17 @@ func (s *Server) handleWeChatMessage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) ingestChannel(w http.ResponseWriter, r *http.Request, ownerID, channel, source string, input superagent.TriggerInput) {
+	enabled, err := s.channelEnabled(r.Context(), ownerID, channel)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !enabled {
+		_ = s.Repos.ChannelSkips.Increment(r.Context(), ownerID, channel,
+			s.Now().In(time.Local).Format("2006-01-02"), s.Now())
+		writeJSON(w, http.StatusAccepted, map[string]any{"filtered": true, "reason": "channel disabled"})
+		return
+	}
 	allowed, err := s.Repos.ChannelPolicies.Allowed(r.Context(), ownerID, channel, source)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -280,8 +284,20 @@ func (s *Server) handleChannelSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	configs, err := s.Repos.ChannelConfigs.List(r.Context(), u.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	global, err := s.Repos.GlobalConfigs.Get(r.Context(), u.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"configs": configs, "global": global,
 		"policies": policies, "skips_today": skips, "today": day,
+		"channels":       store.GatedChannels,
 		"wechat_default": "deny", "other_default": "allow",
 	})
 }
@@ -300,7 +316,7 @@ func (s *Server) handleUpdateChannelSettings(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "bad request body")
 		return
 	}
-	req.Channel = strings.TrimSpace(req.Channel)
+	req.Channel = store.NormalizeChannel(strings.TrimSpace(req.Channel))
 	req.Source = strings.TrimSpace(req.Source)
 	if req.Channel == "" {
 		writeError(w, http.StatusBadRequest, "channel 不能为空")
@@ -311,6 +327,87 @@ func (s *Server) handleUpdateChannelSettings(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"updated": true})
+}
+
+func (s *Server) handleUpdateChannelConfig(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(w, r)
+	if u == nil {
+		return
+	}
+	channel := store.NormalizeChannel(strings.TrimSpace(r.PathValue("channel")))
+	if !store.IsGatedChannel(channel) {
+		writeError(w, http.StatusBadRequest, "未知渠道")
+		return
+	}
+	var req struct {
+		Enabled           bool `json:"enabled"`
+		SummaryEnabled    bool `json:"summary_enabled"`
+		IndexEnabled      bool `json:"index_enabled"`
+		BriefEnabled      bool `json:"brief_enabled"`
+		AutoWorkerEnabled bool `json:"auto_worker_enabled"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad request body")
+		return
+	}
+	item := store.ChannelConfig{
+		OwnerUserID: u.ID, Channel: channel,
+		Enabled: req.Enabled, SummaryEnabled: req.SummaryEnabled,
+		IndexEnabled: req.IndexEnabled, BriefEnabled: req.BriefEnabled,
+		AutoWorkerEnabled: req.AutoWorkerEnabled,
+	}
+	if err := s.Repos.ChannelConfigs.Save(r.Context(), item, s.Now()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	item, err := s.Repos.ChannelConfigs.Get(r.Context(), u.ID, channel)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) handleUpdateGlobalConfig(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(w, r)
+	if u == nil {
+		return
+	}
+	var req struct {
+		RouterEnabled          bool `json:"router_enabled"`
+		WorkerEnabled          bool `json:"worker_enabled"`
+		DailyBriefEnabled      bool `json:"daily_brief_enabled"`
+		ProactiveNotifyEnabled bool `json:"proactive_notify_enabled"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad request body")
+		return
+	}
+	item := store.GlobalConfig{
+		OwnerUserID: u.ID, RouterEnabled: req.RouterEnabled, WorkerEnabled: req.WorkerEnabled,
+		DailyBriefEnabled: req.DailyBriefEnabled, ProactiveNotifyEnabled: req.ProactiveNotifyEnabled,
+	}
+	if err := s.Repos.GlobalConfigs.Save(r.Context(), item, s.Now()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	item, err := s.Repos.GlobalConfigs.Get(r.Context(), u.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Server) channelEnabled(ctx context.Context, ownerID, channel string) (bool, error) {
+	channel = store.NormalizeChannel(channel)
+	if !store.IsGatedChannel(channel) {
+		return true, nil
+	}
+	if s.Repos == nil || s.Repos.ChannelConfigs == nil {
+		return false, nil
+	}
+	return s.Repos.ChannelConfigs.Enabled(ctx, ownerID, channel)
 }
 
 func firstNonEmpty(values ...string) string {

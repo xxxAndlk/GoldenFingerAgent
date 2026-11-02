@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"goldenfinger/agent/internal/inbox"
@@ -77,12 +79,59 @@ func (s *Server) handleInboxIngest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad json: "+err.Error())
 		return
 	}
-	n, err := svc.Ingest(r.Context(), user.ID, req.Events)
+	events, filtered, err := s.filterInboxInputs(r.Context(), user.ID, req.Events)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"ingested": n})
+	n, err := svc.Ingest(r.Context(), user.ID, events)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"ingested": n, "filtered": filtered})
+}
+
+// filterInboxInputs 在写入旧通知中心前应用手机微信开关和来源策略。
+// 通知中心仍服务其他应用；微信通知不能绕过渠道隐私边界。
+func (s *Server) filterInboxInputs(ctx context.Context, ownerID string, inputs []inbox.Input) ([]inbox.Input, int, error) {
+	out := make([]inbox.Input, 0, len(inputs))
+	filtered := 0
+	for _, input := range inputs {
+		if !isWeChatPackage(input.SourcePkg) {
+			out = append(out, input)
+			continue
+		}
+		source := firstNonEmpty(input.Title, input.AppName, "微信")
+		enabled, err := s.channelEnabled(ctx, ownerID, store.ChannelWeChatMobile)
+		if err != nil {
+			return nil, filtered, err
+		}
+		allowed := false
+		if enabled {
+			allowed, err = s.Repos.ChannelPolicies.Allowed(ctx, ownerID, store.ChannelWeChatMobile, source)
+			if err != nil {
+				return nil, filtered, err
+			}
+		}
+		if !enabled || !allowed {
+			filtered++
+			_ = s.Repos.ChannelSkips.Increment(ctx, ownerID, store.ChannelWeChatMobile,
+				s.Now().In(time.Local).Format("2006-01-02"), s.Now())
+			continue
+		}
+		indexEnabled, err := s.Repos.ChannelConfigs.IndexEnabled(ctx, ownerID, store.ChannelWeChatMobile)
+		if err != nil {
+			return nil, filtered, err
+		}
+		input.NoIndex = !indexEnabled
+		out = append(out, input)
+	}
+	return out, filtered, nil
+}
+
+func isWeChatPackage(pkg string) bool {
+	return strings.EqualFold(strings.TrimSpace(pkg), "com.tencent.mm")
 }
 
 // GET /api/inbox/events?kind=normal|clue|all&limit=50

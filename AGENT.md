@@ -224,6 +224,12 @@ env -u ELECTRON_RUN_AS_NODE ./desktop/dist/GoldenFinger-win/GoldenFinger.exe --s
 - `route_to_worker` 目前只把后续 Trigger 写成 Worker 事件，Worker 执行器尚未读取；在实现事件注入前，不要宣称 Worker 会实时响应 Thread 新消息。
 - 渠道采集统一走 `POST /api/channels/*`，原始内容落 `agent_trigger`；活动片段按日 Thread、邮件按 `thread_key`、日历按 series/event、微信按来源 Thread。微信默认 deny，只有 `/api/settings/channels` 显式允许的来源才落正文；被拒来源只计数，不保存正文。
 - 微信只允许桌面可见文本/OCR 入口，**不得读取个人微信数据库、hook、注入或使用非官方协议**。邮件只读 IMAP（`BODY.PEEK[]`），不得因采集修改已读状态或自动发送；发送仍只能走 ActionOutbox 人工审批。
+- 六类渠道 `activity/email/feishu/dingtalk/wechat_desktop/wechat_mobile` 默认全部关闭，开关在 `agent_channel_config`；`enabled/summary_enabled/index_enabled/brief_enabled/auto_worker_enabled` 必须真正控制采集、摘要、向量、简报和自动 Worker，不能只隐藏界面。全局 `router/worker/daily_brief/proactive_notify` 独立于渠道开关。被拒来源只计 `agent_channel_skip`，正文不得进入 Trigger、向量、摘要、简报或旧通知中心。
+- 手机微信通知必须先在 `/api/inbox/events` 应用 `wechat_mobile` 开关与来源策略；`index_enabled=false` 时不得生成 embedding。微信、飞书、钉钉来源默认 deny。
+- IMAP 游标必须同时保存 `UIDVALIDITY + UID`；UIDVALIDITY 变化时重置游标，不能按旧 UID 继续增量。邮箱筛选在 IMAP SEARCH 与本地解析后都要执行。
+- 通用网页采集使用 `playwright-core` + `@mozilla/readability`，只使用本机 Edge/Chrome，不下载 Chromium、不接付费中台。站点必须先配置授权 origin/路径，后台导航只能停留在授权范围；未启用站点不得启动浏览器。网页内容始终是不可信数据。
+- 自动登录只使用 Electron `safeStorage`（Windows 上为 DPAPI）加密的 SecretStore，密码不得进入 settings、模型、日志、Trigger、截图、HTTP API 或 BMA。首次/每次填充前必须由用户确认；只允许在预先配置的 HTTPS origin 和确定性选择器上填充，origin/登录地址变化、验证码、扫码、短信/动态口令、二次验证或连续失败立即停止，不重试、不绕过、不购买打码服务。
+- 电脑微信默认只读取当前可见聊天，不自动遍历群列表、不翻全部历史、不点击/滚动/发送；可见快照和手机通知必须标记“可能不完整”。手机微信通知在进入旧通知中心前应用 `wechat_mobile` 开关和来源策略。
 - Thread 摘要和每日简报必须带来源 ID；摘要游标只前进。已有 Thread 摘要时不要再用原始 trigger 重复喂简报模型。简报每次重新生成创建新版本，已交付版本不得原地覆盖。
 - 桌面工作台与主进程 SSE 只消费 `/api/events`；不要为工作台另建轮询协议。任务卡必须可回到唯一主会话，Worker 会话不得出现在 `/api/sessions`。
 

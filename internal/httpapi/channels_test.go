@@ -1,14 +1,48 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"goldenfinger/agent/internal/store"
 )
+
+func enableChannel(t *testing.T, srv *Server, channel string, flags ...string) {
+	t.Helper()
+	u, err := srv.resolveUser(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := store.ChannelConfig{
+		OwnerUserID: u.ID, Channel: channel,
+		Enabled: true, SummaryEnabled: true, BriefEnabled: true,
+	}
+	for _, flag := range flags {
+		switch flag {
+		case "enabled":
+			item.Enabled = true
+		case "summary":
+			item.SummaryEnabled = true
+		case "index":
+			item.IndexEnabled = true
+		case "brief":
+			item.BriefEnabled = true
+		case "auto_worker":
+			item.AutoWorkerEnabled = true
+		}
+	}
+	if err := srv.Repos.ChannelConfigs.Save(context.Background(), item, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestActivityEpisodeIngestDedupes(t *testing.T) {
 	srv, _ := newTestServer(t)
+	enableChannel(t, srv, store.ChannelActivity)
 	h := srv.Handler()
 	body := `{"episode_id":"ep-1","started_at":"2026-11-01T09:00:00+08:00","ended_at":"2026-11-01T09:12:00+08:00","app":"VS Code","title":"修复登录","summary":"定位并修复了登录接口的空指针，提交了改动。","status":"completed","outputs":["login.go"],"evidence_ids":["obs-1"]}`
 	first := postJSON(t, h, "/api/channels/activity/episodes", body)
@@ -28,6 +62,7 @@ func TestActivityEpisodeIngestDedupes(t *testing.T) {
 
 func TestEmailMessagesShareThread(t *testing.T) {
 	srv, _ := newTestServer(t)
+	enableChannel(t, srv, store.ChannelEmail)
 	h := srv.Handler()
 	first := postJSON(t, h, "/api/channels/email/messages", `{
 		"account":"me@example.com","mailbox":"INBOX","message_id":"m1","thread_key":"quote",
@@ -68,8 +103,62 @@ func TestCalendarEventIngest(t *testing.T) {
 	}
 }
 
+func TestChannelDisabledBlocksBeforePersistence(t *testing.T) {
+	srv, _ := newTestServer(t)
+	h := srv.Handler()
+	rec := postJSON(t, h, "/api/channels/email/messages", `{
+		"account":"me@example.com","message_id":"disabled-1","subject":"不应入库","text":"正文"}`)
+	if rec.Code != http.StatusAccepted || !decodeMap(t, rec)["filtered"].(bool) {
+		t.Fatalf("disabled=%d %s", rec.Code, rec.Body)
+	}
+	triggers := getJSON(t, h, "/api/triggers")
+	if len(decodeMap(t, triggers)["triggers"].([]any)) != 0 {
+		t.Fatalf("disabled channel body persisted: %s", triggers.Body)
+	}
+	settings := decodeMap(t, getJSON(t, h, "/api/settings/channels"))
+	skips := settings["skips_today"].([]any)
+	if len(skips) != 1 || skips[0].(map[string]any)["channel"] != store.ChannelEmail {
+		t.Fatalf("skips=%v", settings["skips_today"])
+	}
+}
+
+func TestChannelConfigAPIUpdatesFlags(t *testing.T) {
+	srv, _ := newTestServer(t)
+	h := srv.Handler()
+	body := `{"enabled":true,"summary_enabled":false,"index_enabled":true,"brief_enabled":false,"auto_worker_enabled":true}`
+	req := httptest.NewRequest(http.MethodPut,
+		"/api/settings/channels/config/wechat_mobile", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("config=%d %s", rec.Code, rec.Body)
+	}
+	item := decodeMap(t, rec)
+	if item["enabled"] != true || item["index_enabled"] != true ||
+		item["summary_enabled"] != false || item["brief_enabled"] != false {
+		t.Fatalf("config=%s", rec.Body)
+	}
+	settings := decodeMap(t, getJSON(t, h, "/api/settings/channels"))
+	configs := settings["configs"].([]any)
+	found := false
+	for _, raw := range configs {
+		config := raw.(map[string]any)
+		if config["channel"] == store.ChannelWeChatMobile {
+			found = true
+			if config["enabled"] != true || config["auto_worker_enabled"] != true {
+				t.Fatalf("settings config=%v", config)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("wechat_mobile missing: %s", settings)
+	}
+}
+
 func TestWeChatPolicyDeniesBeforePersistence(t *testing.T) {
 	srv, _ := newTestServer(t)
+	enableChannel(t, srv, store.ChannelWeChatDesktop)
 	h := srv.Handler()
 	message := `{"source":"项目群","message_id":"wx1","sender":"张总","text":"周五发版","received_at":"2026-11-01T10:00:00+08:00"}`
 	denied := postJSON(t, h, "/api/channels/wechat/messages", message)

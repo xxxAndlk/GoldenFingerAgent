@@ -172,6 +172,9 @@ func (s *Service) applyDecision(ctx context.Context, ownerID string, trigger *st
 		if s.Workers == nil {
 			decision.Action = ActionNotify
 			decision.Reason = joinReason(decision.Reason, "WorkerManager 未启用，降级为通知")
+		} else if !s.autoWorkerEnabledFor(ctx, ownerID, trigger) {
+			decision.Action = ActionNotify
+			decision.Reason = joinReason(decision.Reason, "渠道或全局自动 Worker 已关闭，降级为通知")
 		} else if decision.Action == ActionCreateWorker {
 			id, err := s.Workers.CreateWorker(ctx, ownerID, trigger, decision)
 			if err != nil {
@@ -206,7 +209,8 @@ func (s *Service) applyDecision(ctx context.Context, ownerID string, trigger *st
 	if err != nil {
 		return RouteResult{}, err
 	}
-	if s.OnNotify != nil && (decision.Action == ActionNotify || decision.Action == ActionReply || decision.Action == ActionAskUser) {
+	if s.OnNotify != nil && (decision.Action == ActionNotify || decision.Action == ActionReply || decision.Action == ActionAskUser) &&
+		s.notifyEnabled(ctx, ownerID) {
 		s.OnNotify(ctx, ownerID, trigger, decision)
 	}
 	return RouteResult{

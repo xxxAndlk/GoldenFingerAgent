@@ -10,15 +10,15 @@ import (
 	"time"
 )
 
-type memoryCursors struct{ value uint32 }
+type memoryCursors struct{ value Cursor }
 
-func (m *memoryCursors) Get(context.Context, string) (uint32, error) { return m.value, nil }
-func (m *memoryCursors) Set(_ context.Context, _ string, uid uint32) error {
-	m.value = uid
+func (m *memoryCursors) Get(context.Context, string) (Cursor, error) { return m.value, nil }
+func (m *memoryCursors) Set(_ context.Context, _ string, cursor Cursor) error {
+	m.value = cursor
 	return nil
 }
 
-func serveFakeIMAP(t *testing.T, listener net.Listener, raw string) {
+func serveFakeIMAP(t *testing.T, listener net.Listener, raw string, uidValidity uint32) {
 	t.Helper()
 	go func() {
 		conn, err := listener.Accept()
@@ -46,7 +46,7 @@ func serveFakeIMAP(t *testing.T, listener net.Listener, raw string) {
 			case strings.Contains(upper, " LOGIN "):
 				fmt.Fprintf(writer, "%s OK LOGIN completed\r\n", tag)
 			case strings.Contains(upper, " SELECT ") || strings.Contains(upper, " EXAMINE "):
-				fmt.Fprintf(writer, "* 1 EXISTS\r\n* OK [UIDVALIDITY 1] UIDs valid\r\n%s OK [READ-ONLY] SELECT completed\r\n", tag)
+				fmt.Fprintf(writer, "* 1 EXISTS\r\n* OK [UIDVALIDITY %d] UIDs valid\r\n%s OK [READ-ONLY] SELECT completed\r\n", uidValidity, tag)
 			case strings.Contains(upper, " UID SEARCH "):
 				fmt.Fprintf(writer, "* SEARCH 1\r\n%s OK SEARCH completed\r\n", tag)
 			case strings.Contains(upper, " UID FETCH "):
@@ -79,7 +79,7 @@ func TestPollOnceFetchesAndAdvancesCursor(t *testing.T) {
 		"Date: Sat, 01 Nov 2026 10:00:00 +0800\r\n" +
 		"Content-Type: text/plain; charset=utf-8\r\n\r\n" +
 		"请周五前提交报价单。\r\n"
-	serveFakeIMAP(t, listener, raw)
+	serveFakeIMAP(t, listener, raw, 1)
 
 	cursors := &memoryCursors{}
 	var got []Message
@@ -102,7 +102,46 @@ func TestPollOnceFetchesAndAdvancesCursor(t *testing.T) {
 	if got[0].MessageID != "imap-1@example.com" || !strings.Contains(got[0].Text, "周五") {
 		t.Fatalf("message=%+v", got[0])
 	}
-	if cursors.value != 1 {
-		t.Fatalf("cursor=%d", cursors.value)
+	if cursors.value.UID != 1 || cursors.value.UIDValidity != 1 {
+		t.Fatalf("cursor=%+v", cursors.value)
+	}
+}
+
+func TestPollOnceResetsCursorWhenUIDValidityChanges(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	raw := "From: Client <client@example.com>\r\n" +
+		"To: Me <me@example.com>\r\n" +
+		"Subject: 重置后的邮件\r\n" +
+		"Message-Id: <imap-reset@example.com>\r\n" +
+		"Date: Sat, 01 Nov 2026 10:00:00 +0800\r\n" +
+		"Content-Type: text/plain; charset=utf-8\r\n\r\n" +
+		"邮箱重建后仍应拉取。\r\n"
+	serveFakeIMAP(t, listener, raw, 2)
+
+	// 旧游标 UIDVALIDITY=1、UID=1；新邮箱 UIDVALIDITY=2，UID 不能继续比较。
+	cursors := &memoryCursors{value: Cursor{UIDValidity: 1, UID: 1}}
+	var got []Message
+	poller := NewPoller(nil, cursors, func(_ context.Context, message Message) error {
+		got = append(got, message)
+		return nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := poller.PollOnce(ctx, Config{
+		Host: "127.0.0.1", Port: port, Username: "me@example.com", Password: "secret",
+		Mailbox: "INBOX", InitialFetch: 10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0].Text, "邮箱重建") {
+		t.Fatalf("messages=%+v", got)
+	}
+	if cursors.value.UIDValidity != 2 || cursors.value.UID != 1 {
+		t.Fatalf("cursor=%+v", cursors.value)
 	}
 }

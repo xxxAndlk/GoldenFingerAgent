@@ -25,9 +25,20 @@ type ChannelPolicyRepo struct{ q Querier }
 func NewChannelPolicyRepo(q Querier) *ChannelPolicyRepo { return &ChannelPolicyRepo{q: q} }
 func (d *DB) ChannelPolicies() *ChannelPolicyRepo       { return NewChannelPolicyRepo(d) }
 
-// Allowed 返回来源是否允许采集。WeChat 默认拒绝，直到用户显式配置允许来源；
+// DefaultDeniedChannel 表示新群、联系人、会话默认拒绝，必须显式允许。
+func DefaultDeniedChannel(channel string) bool {
+	switch NormalizeChannel(channel) {
+	case ChannelWeChatDesktop, ChannelWeChatMobile, ChannelFeishu, ChannelDingTalk:
+		return true
+	default:
+		return false
+	}
+}
+
+// Allowed 返回来源是否允许采集。微信、飞书、钉钉默认拒绝，直到用户显式配置允许来源；
 // 其他渠道默认允许，避免普通聊天/提醒被误拦。
 func (r *ChannelPolicyRepo) Allowed(ctx context.Context, ownerID, channel, source string) (bool, error) {
+	channel = NormalizeChannel(channel)
 	if source != "" {
 		var allowed int
 		err := r.q.QueryRowContext(ctx, `SELECT allowed FROM agent_channel_policy
@@ -48,10 +59,11 @@ func (r *ChannelPolicyRepo) Allowed(ctx context.Context, ownerID, channel, sourc
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
-	return channel != "wechat", nil
+	return !DefaultDeniedChannel(channel), nil
 }
 
 func (r *ChannelPolicyRepo) Set(ctx context.Context, ownerID, channel, source string, allowed bool, at time.Time) error {
+	channel = NormalizeChannel(channel)
 	value := 0
 	if allowed {
 		value = 1

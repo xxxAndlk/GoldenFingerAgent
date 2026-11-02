@@ -141,6 +141,66 @@ func (workerRouter) Decide(_ context.Context, _ string, triggers []store.Trigger
 	return out, nil
 }
 
+type countingWorkers struct{ created int }
+
+func (w *countingWorkers) CreateWorker(context.Context, string, *store.Trigger, superagent.Decision) (string, error) {
+	w.created++
+	return "worker-1", nil
+}
+func (w *countingWorkers) RouteToWorker(context.Context, string, *store.Trigger, superagent.Decision) error {
+	w.created++
+	return nil
+}
+
+func TestRouteAutoWorkerGateFallsBackToNotify(t *testing.T) {
+	svc, _, u := newTestService(t)
+	workers := &countingWorkers{}
+	svc.Workers = workers
+	svc.AutoWorkerAllowed = func(context.Context, string, string) (bool, error) { return false, nil }
+	var notified atomic.Int32
+	svc.OnNotify = func(context.Context, string, *store.Trigger, superagent.Decision) {
+		notified.Add(1)
+	}
+	if _, err := svc.Ingest(context.Background(), u.ID, superagent.TriggerInput{
+		Channel: "email", ExternalID: "mail-gate", Kind: "email", Title: "delivery",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := svc.RoutePending(context.Background(), u.ID, workerRouter{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if workers.created != 0 {
+		t.Fatalf("worker must not be created: %d", workers.created)
+	}
+	if len(results) != 1 || results[0].Action != superagent.ActionNotify {
+		t.Fatalf("results=%+v", results)
+	}
+	if notified.Load() != 1 {
+		t.Fatalf("notify=%d", notified.Load())
+	}
+}
+
+func TestNotifyGateSuppressesOutboxCallback(t *testing.T) {
+	svc, _, u := newTestService(t)
+	svc.NotifyAllowed = func(context.Context, string) (bool, error) { return false, nil }
+	var notified atomic.Int32
+	svc.OnNotify = func(context.Context, string, *store.Trigger, superagent.Decision) {
+		notified.Add(1)
+	}
+	if _, err := svc.Ingest(context.Background(), u.ID, superagent.TriggerInput{
+		Channel: "notification", ExternalID: "notify-gate", Kind: "notification", Title: "提醒",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RoutePending(context.Background(), u.ID, nil, 10); err != nil {
+		t.Fatal(err)
+	}
+	if notified.Load() != 0 {
+		t.Fatalf("proactive notify must be suppressed, got %d", notified.Load())
+	}
+}
+
 func TestRouteFallsBackWhenWorkerManagerMissing(t *testing.T) {
 	svc, _, u := newTestService(t)
 	if _, err := svc.Ingest(context.Background(), u.ID, superagent.TriggerInput{

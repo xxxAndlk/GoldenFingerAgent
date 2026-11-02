@@ -218,7 +218,8 @@ func deterministicThreadSummary(previous string, triggers []store.Trigger) strin
 
 func shouldSummarizeThread(channel string) bool {
 	switch channel {
-	case "activity", "email", "wechat", "calendar":
+	case "activity", "email", "wechat", "wechat_desktop", "wechat_mobile",
+		"feishu", "dingtalk", "calendar", "web": // web 已包含
 		return true
 	default:
 		return false

@@ -10,6 +10,35 @@ import (
 	"goldenfinger/agent/internal/superagent"
 )
 
+func TestBriefGeneratorHonorsChannelSwitch(t *testing.T) {
+	svc, db, u := newTestService(t)
+	ctx := context.Background()
+	for _, input := range []superagent.TriggerInput{
+		{Channel: "activity", ExternalID: "episode:gate-1", ThreadExternalID: "activity:2026-11-01",
+			Kind: "episode", Title: "活动事项", Body: "完成活动任务", ReceivedAt: testNow},
+		{Channel: "email", ExternalID: "email:gate-1", ThreadExternalID: "email:gate",
+			Kind: "email_message", Title: "邮件事项", Body: "邮件正文", ReceivedAt: testNow},
+	} {
+		if _, err := svc.Ingest(ctx, u.ID, input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	generator := superagent.NewBriefGenerator(db, nil)
+	generator.ChannelEnabled = func(_ context.Context, _ string, channel string) (bool, error) {
+		return channel == "email", nil
+	}
+	brief, err := generator.Generate(ctx, u.ID, testNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(brief.ContentMD, "邮件事项") {
+		t.Fatalf("email missing: %q", brief.ContentMD)
+	}
+	if strings.Contains(brief.ContentMD, "活动事项") {
+		t.Fatalf("disabled channel leaked into brief: %q", brief.ContentMD)
+	}
+}
+
 func TestBriefGeneratorCombinesChannelsAndVersions(t *testing.T) {
 	svc, db, u := newTestService(t)
 	ctx := context.Background()

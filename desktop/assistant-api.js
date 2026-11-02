@@ -186,6 +186,42 @@ class AssistantApi {
     });
   }
 
+  updateChannelConfig(channel, config) {
+    return this.request(`/api/settings/channels/config/${encodeURIComponent(channel)}`, {
+      method: 'PUT',
+      body: JSON.stringify(config || {}),
+    });
+  }
+
+  updateGlobalConfig(config) {
+    return this.request('/api/settings/channels/global', {
+      method: 'PUT',
+      body: JSON.stringify(config || {}),
+    });
+  }
+
+  webSites() {
+    return this.request('/api/settings/web/sites', { method: 'GET' });
+  }
+
+  saveWebSite(site) {
+    return this.request(`/api/settings/web/sites/${encodeURIComponent(site.id || '')}`, {
+      method: 'PUT',
+      body: JSON.stringify(site || {}),
+    });
+  }
+
+  deleteWebSite(id) {
+    return this.request(`/api/settings/web/sites/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  captureWebItem(item) {
+    return this.request('/api/channels/web/items', {
+      method: 'POST',
+      body: JSON.stringify(item || {}),
+    });
+  }
+
   getEmailSettings() {
     return this.request('/api/settings/email', { method: 'GET' });
   }

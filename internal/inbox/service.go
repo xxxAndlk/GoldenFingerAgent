@@ -42,6 +42,8 @@ type Input struct {
 	Title     string    `json:"title"`
 	Text      string    `json:"text"`
 	PostedAt  time.Time `json:"posted_at"`
+	// NoIndex 由装配层在渠道索引开关关闭时设置，不参与 JSON 传输。
+	NoIndex bool `json:"-"`
 }
 
 // DueItem 是到期的稍后处理项，由调用方推送 Outbox。
@@ -92,7 +94,9 @@ func (s *Service) Ingest(ctx context.Context, ownerID string, inputs []Input) (i
 		}
 		inserted++
 		s.matchWatches(ctx, ownerID, ev, combined)
-		s.embedEvent(ctx, ev.ID, combined)
+		if !in.NoIndex {
+			s.embedEvent(ctx, ev.ID, combined)
+		}
 	}
 	return inserted, nil
 }

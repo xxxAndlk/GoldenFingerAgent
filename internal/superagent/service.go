@@ -30,6 +30,16 @@ type Service struct {
 	Workers WorkerSink
 	// Summarizer 维护渠道 Thread 的滚动摘要；为空时只保存原始事件。
 	Summarizer *Summarizer
+	// SummaryAllowed 是渠道摘要开关；为空时按允许处理（兼容旧装配）。
+	SummaryAllowed func(ctx context.Context, ownerID, channel string) (bool, error)
+	// TriggerSummaryAllowed 可按单条 Trigger（如网页站点）覆盖渠道开关。
+	TriggerSummaryAllowed func(ctx context.Context, ownerID string, trigger *store.Trigger) (bool, error)
+	// AutoWorkerAllowed 同时检查全局 Worker 与渠道自动 Worker 开关；为空时允许。
+	AutoWorkerAllowed func(ctx context.Context, ownerID, channel string) (bool, error)
+	// TriggerAutoWorkerAllowed 可按单条 Trigger（如网页站点）覆盖渠道开关。
+	TriggerAutoWorkerAllowed func(ctx context.Context, ownerID string, trigger *store.Trigger) (bool, error)
+	// NotifyAllowed 检查全局主动通知开关；为空时允许。
+	NotifyAllowed func(ctx context.Context, ownerID string) (bool, error)
 	// OnNotify 是内部通知回调（桌面 toast/工作台角标）；不负责外部发送。
 	OnNotify func(ctx context.Context, ownerID string, trigger *store.Trigger, decision Decision)
 }
@@ -94,7 +104,7 @@ func (s *Service) Ingest(ctx context.Context, ownerID string, in TriggerInput) (
 	if len(in.ExternalID) > 300 || len(in.ThreadExternalID) > 300 {
 		return nil, fmt.Errorf("%w: external id too long", ErrInvalid)
 	}
-	if len(in.Title) > 2000 || len(in.Body) > 64<<10 {
+	if len(in.Title) > 2000 || len(in.Body) > 512<<10 {
 		return nil, fmt.Errorf("%w: content too large", ErrInvalid)
 	}
 	if in.Title == "" && in.Body == "" {
@@ -200,10 +210,60 @@ func (s *Service) Ingest(ctx context.Context, ownerID string, in TriggerInput) (
 		return nil, err
 	}
 	if result.Created && s.Summarizer != nil && result.Trigger != nil &&
-		result.Trigger.ThreadID != "" && shouldSummarizeThread(result.Trigger.Channel) {
+		result.Trigger.ThreadID != "" && shouldSummarizeThread(result.Trigger.Channel) &&
+		s.summaryEnabledFor(ctx, ownerID, result.Trigger) {
 		s.Summarizer.Enqueue(ownerID, result.Trigger.ThreadID)
 	}
 	return result, nil
+}
+
+func (s *Service) summaryEnabledFor(ctx context.Context, ownerID string, trigger *store.Trigger) bool {
+	if s.TriggerSummaryAllowed != nil {
+		allowed, err := s.TriggerSummaryAllowed(ctx, ownerID, trigger)
+		return err == nil && allowed
+	}
+	return s.summaryEnabled(ctx, ownerID, trigger.Channel)
+}
+
+func (s *Service) summaryEnabled(ctx context.Context, ownerID, channel string) bool {
+	if s.SummaryAllowed == nil {
+		return true
+	}
+	allowed, err := s.SummaryAllowed(ctx, ownerID, channel)
+	if err != nil {
+		return false
+	}
+	return allowed
+}
+
+func (s *Service) autoWorkerEnabledFor(ctx context.Context, ownerID string, trigger *store.Trigger) bool {
+	if s.TriggerAutoWorkerAllowed != nil {
+		allowed, err := s.TriggerAutoWorkerAllowed(ctx, ownerID, trigger)
+		return err == nil && allowed
+	}
+	return s.autoWorkerEnabled(ctx, ownerID, trigger.Channel)
+}
+
+func (s *Service) autoWorkerEnabled(ctx context.Context, ownerID, channel string) bool {
+	if s.AutoWorkerAllowed == nil {
+		return true
+	}
+	allowed, err := s.AutoWorkerAllowed(ctx, ownerID, channel)
+	if err != nil {
+		return false
+	}
+	return allowed
+}
+
+func (s *Service) notifyEnabled(ctx context.Context, ownerID string) bool {
+	if s.NotifyAllowed == nil {
+		return true
+	}
+	allowed, err := s.NotifyAllowed(ctx, ownerID)
+	if err != nil {
+		return false
+	}
+	return allowed
 }
 
 func resolveThread(ctx context.Context, repos *store.Repos, ownerID string, in TriggerInput, now time.Time) (*store.Thread, error) {

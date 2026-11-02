@@ -1930,6 +1930,48 @@ body.child .panel-btn, body.child .adv { display: none; }
         </form>
       </section>
 
+      <details class="field adv">
+        <summary style="cursor:pointer;font-weight:600">渠道采集与每日简报</summary>
+        <div class="empty" style="margin:8px 0">六类渠道默认全部关闭；关闭采集时不会入库。手机微信只读取通知中实际出现的标题和正文，可能不完整。</div>
+        <div v-for="config in channelConfigs" :key="config.channel" style="padding:8px 0;border-top:1px solid var(--sep)">
+          <strong style="font-size:13px">{{ channelLabel(config.channel) }}</strong>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px">
+            <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="config.enabled"> 采集</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="config.summary_enabled"> 摘要</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="config.index_enabled"> 索引</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="config.brief_enabled"> 简报</label>
+            <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="config.auto_worker_enabled"> 自动 Worker</label>
+          </div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;margin:8px 0">
+          <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="channelGlobal.router_enabled"> Router</label>
+          <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="channelGlobal.worker_enabled"> 自动 Worker</label>
+          <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="channelGlobal.daily_brief_enabled"> 每日简报</label>
+          <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="channelGlobal.proactive_notify_enabled"> 主动通知</label>
+        </div>
+        <button class="btn ghost" type="button" style="width:100%" :disabled="channelSaving" @click="saveChannelConfigs">{{ channelSaving ? '保存中…' : '保存渠道与全局开关' }}</button>
+        <label style="margin-top:12px">允许 / 拒绝来源</label>
+        <select v-model="channelPolicyChannel">
+          <option value="wechat_mobile">微信（手机）</option>
+          <option value="wechat_desktop">微信（电脑）</option>
+          <option value="feishu">飞书</option>
+          <option value="dingtalk">钉钉</option>
+          <option value="email">邮箱账号</option>
+          <option value="activity">工作轨迹应用</option>
+        </select>
+        <input v-model.trim="channelPolicySource" placeholder="群名 / 联系人 / 邮箱账号 / 应用名">
+        <select v-model="channelPolicyAllowed">
+          <option :value="true">允许采集</option>
+          <option :value="false">禁止采集</option>
+        </select>
+        <button class="btn ghost" type="button" style="width:100%;margin-top:8px" :disabled="channelSaving" @click="saveChannelPolicy">保存来源策略</button>
+        <div v-if="channelPolicies.length" class="empty" style="margin-top:8px">
+          <div v-for="policy in channelPolicies" :key="policy.channel + ':' + policy.source">
+            {{ channelLabel(policy.channel) }} · {{ policy.source || '（默认）' }}：{{ policy.allowed ? '允许' : '禁止' }}
+          </div>
+        </div>
+      </details>
+
       <div class="field adv">
         <label>联网搜索 API Key（可留空，默认复用模型 Key）</label>
         <input v-model.trim="searchKey" type="password" :placeholder="searchHasKey ? '已保存单独密钥，留空不修改' : '留空则复用模型 Key'" autocomplete="new-password">
@@ -2088,6 +2130,13 @@ createApp({
       searchKey: '',
       searchSaving: false,
       searchHasKey: false,
+      channelConfigs: [],
+      channelGlobal: {},
+      channelPolicies: [],
+      channelPolicyChannel: 'wechat_mobile',
+      channelPolicySource: '',
+      channelPolicyAllowed: true,
+      channelSaving: false,
       models: [],
       activeModelId: '',
       themeMode: parseThemeMode(),
@@ -2919,6 +2968,86 @@ createApp({
     },
     statusLabel(s) {
       return { pending: '待处理', pending_confirm: '待确认', scheduled: '已排定', notified: '已提醒', done: '已完成', snoozed: '已推迟', cancelled: '已取消', expired: '已过期', draft: '草稿', armed: '生效中', fired: '已触发' }[s] || s;
+    },
+    channelLabel(channel) {
+      return {
+        activity: '工作轨迹', email: '邮箱', feishu: '飞书',
+        dingtalk: '钉钉', wechat_desktop: '微信（电脑）', wechat_mobile: '微信（手机）'
+      }[channel] || channel;
+    },
+    async loadChannelSettings() {
+      try {
+        const res = await apiFetch('/api/settings/channels');
+        if (!res.ok) return;
+        const data = await res.json();
+        this.channelConfigs = data.configs || [];
+        this.channelGlobal = data.global || {};
+        this.channelPolicies = data.policies || [];
+      } catch (e) {}
+    },
+    async saveChannelConfigs() {
+      this.channelSaving = true;
+      try {
+        for (const config of this.channelConfigs) {
+          const res = await apiFetch('/api/settings/channels/config/' + encodeURIComponent(config.channel), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              enabled: !!config.enabled,
+              summary_enabled: !!config.summary_enabled,
+              index_enabled: !!config.index_enabled,
+              brief_enabled: !!config.brief_enabled,
+              auto_worker_enabled: !!config.auto_worker_enabled
+            })
+          });
+          const body = await res.json();
+          if (!res.ok) throw new Error(body.error || '保存渠道开关失败');
+        }
+        const g = this.channelGlobal;
+        const gres = await apiFetch('/api/settings/channels/global', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            router_enabled: g.router_enabled !== false,
+            worker_enabled: g.worker_enabled !== false,
+            daily_brief_enabled: g.daily_brief_enabled !== false,
+            proactive_notify_enabled: g.proactive_notify_enabled !== false
+          })
+        });
+        const gbody = await gres.json();
+        if (!gres.ok) throw new Error(gbody.error || '保存全局开关失败');
+        this.settingsSaved = true;
+        await this.loadChannelSettings();
+      } catch (e) {
+        alert(e.message || '保存渠道开关失败');
+      } finally {
+        this.channelSaving = false;
+      }
+    },
+    async saveChannelPolicy() {
+      const source = String(this.channelPolicySource || '').trim();
+      if (!source) { alert('请填写来源，例如群名或联系人'); return; }
+      this.channelSaving = true;
+      try {
+        const res = await apiFetch('/api/settings/channels', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channel: this.channelPolicyChannel,
+            source,
+            allowed: this.channelPolicyAllowed
+          })
+        });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || '保存来源策略失败');
+        this.channelPolicySource = '';
+        this.settingsSaved = true;
+        await this.loadChannelSettings();
+      } catch (e) {
+        alert(e.message || '保存来源策略失败');
+      } finally {
+        this.channelSaving = false;
+      }
     }
   },
   mounted() {
@@ -2940,6 +3069,7 @@ createApp({
     this.loadPanel();
     this.loadMainSession();
     this.loadBrief();
+    this.loadChannelSettings();
     setInterval(() => this.loadBrief(), 60000);
     apiFetch('/api/me').then(r => r.json()).then(u => { this.me = u; this.online = true; this.adoptUserType(u); }).catch(() => { this.online = false; });
     setInterval(this.pollOutbox, 6000);

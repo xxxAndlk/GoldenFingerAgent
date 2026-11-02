@@ -28,10 +28,15 @@ type BriefSections struct {
 // BriefGenerator 按日期汇总活动、邮件、微信、Worker 与待审批事项。
 // 每次生成创建新版本，已交付的旧版本不被覆盖。
 type BriefGenerator struct {
-	DB      *store.DB
-	Client  SummaryClient
-	Now     func() time.Time
-	OnReady func(ctx context.Context, ownerID string, brief *store.DailyBrief)
+	DB     *store.DB
+	Client SummaryClient
+	Now    func() time.Time
+	// ChannelEnabled 控制某渠道是否进入简报；为空时兼容旧行为（全部纳入）。
+	ChannelEnabled func(ctx context.Context, ownerID, channel string) (bool, error)
+	// TriggerEnabled / ThreadEnabled 可按站点等来源覆盖渠道开关。
+	TriggerEnabled func(ctx context.Context, ownerID string, trigger *store.Trigger) bool
+	ThreadEnabled  func(ctx context.Context, ownerID string, thread *store.Thread) bool
+	OnReady        func(ctx context.Context, ownerID string, brief *store.DailyBrief)
 }
 
 func NewBriefGenerator(db *store.DB, client SummaryClient) *BriefGenerator {
@@ -43,6 +48,41 @@ func (g *BriefGenerator) now() time.Time {
 		return g.Now()
 	}
 	return time.Now()
+}
+
+// IncludesChannel 暴露渠道是否进入简报，供调度器判断“新事件”是否值得生成新版本。
+func (g *BriefGenerator) IncludesChannel(ctx context.Context, ownerID, channel string) bool {
+	return g.channelEnabled(ctx, ownerID, channel)
+}
+
+// IncludesTrigger 同时检查渠道开关和站点等单条来源开关。
+func (g *BriefGenerator) IncludesTrigger(ctx context.Context, ownerID string, trigger *store.Trigger) bool {
+	if !g.channelEnabled(ctx, ownerID, trigger.Channel) {
+		return false
+	}
+	if g.TriggerEnabled != nil && !g.TriggerEnabled(ctx, ownerID, trigger) {
+		return false
+	}
+	return true
+}
+
+func (g *BriefGenerator) channelEnabled(ctx context.Context, ownerID, channel string) bool {
+	if g.ChannelEnabled == nil {
+		return true
+	}
+	if channel == "wechat" {
+		desktop, err := g.ChannelEnabled(ctx, ownerID, "wechat_desktop")
+		if err != nil {
+			return false
+		}
+		mobile, err := g.ChannelEnabled(ctx, ownerID, "wechat_mobile")
+		if err != nil {
+			return false
+		}
+		return desktop || mobile
+	}
+	allowed, err := g.ChannelEnabled(ctx, ownerID, channel)
+	return err == nil && allowed
 }
 
 type briefSource struct {
@@ -69,7 +109,11 @@ func (g *BriefGenerator) Generate(ctx context.Context, ownerID string, day time.
 		if err != nil {
 			return err
 		}
-		for _, trigger := range triggers {
+		for i := range triggers {
+			trigger := &triggers[i]
+			if g.TriggerEnabled != nil && !g.TriggerEnabled(ctx, ownerID, trigger) {
+				continue
+			}
 			sources = append(sources, briefSource{
 				ref: "trigger:" + trigger.ID, channel: channel,
 				title:    firstNonEmpty(trigger.Title, trigger.Channel+" 事件"),
@@ -82,7 +126,13 @@ func (g *BriefGenerator) Generate(ctx context.Context, ownerID string, day time.
 		}
 		return nil
 	}
-	for _, channel := range []string{"activity", "email", "wechat", "calendar"} {
+	for _, channel := range []string{
+		"activity", "email", "wechat", "wechat_desktop", "wechat_mobile",
+		"feishu", "dingtalk", "calendar", "web",
+	} {
+		if !g.channelEnabled(ctx, ownerID, channel) {
+			continue
+		}
 		if err := appendTriggers(channel); err != nil {
 			return nil, err
 		}
@@ -91,6 +141,12 @@ func (g *BriefGenerator) Generate(ctx context.Context, ownerID string, day time.
 	for threadID := range threadIDs {
 		thread, err := repos.Threads.Get(ctx, ownerID, threadID)
 		if err != nil || strings.TrimSpace(thread.Summary) == "" {
+			continue
+		}
+		if !g.channelEnabled(ctx, ownerID, thread.Channel) {
+			continue
+		}
+		if g.ThreadEnabled != nil && !g.ThreadEnabled(ctx, ownerID, thread) {
 			continue
 		}
 		summarizedThreads[thread.ID] = true
@@ -163,7 +219,8 @@ func (g *BriefGenerator) Generate(ctx context.Context, ownerID string, day time.
 	for _, source := range sources {
 		if source.threadID != "" && summarizedThreads[source.threadID] && !strings.HasPrefix(source.ref, "thread:") {
 			switch source.channel {
-			case "activity", "email", "wechat", "calendar":
+			case "activity", "email", "wechat", "wechat_desktop", "wechat_mobile",
+				"feishu", "dingtalk", "calendar", "web":
 				continue
 			case "worker":
 				if strings.Contains(source.title, "completed") {
@@ -275,7 +332,8 @@ func deterministicBriefSections(sources []briefSource) BriefSections {
 			} else {
 				sections.NeedsAction = append(sections.NeedsAction, item)
 			}
-		case "activity", "email", "wechat", "calendar":
+		case "activity", "email", "wechat", "wechat_desktop", "wechat_mobile",
+			"feishu", "dingtalk", "calendar", "web":
 			if containsAny(source.body, "决定", "完成", "延迟", "改期", "阻塞") {
 				sections.ImportantChanges = append(sections.ImportantChanges, item)
 			} else {

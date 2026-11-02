@@ -4,7 +4,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
-const { app, BrowserWindow, ipcMain, screen, Notification, Tray, Menu, nativeImage, dialog, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Notification, Tray, Menu, nativeImage, dialog, shell, nativeTheme, safeStorage } = require('electron');
 const { AssistantApi } = require('./assistant-api');
 const { CollaborationMode } = require('./collaboration');
 const { readActiveWindow } = require('./active-window');
@@ -16,6 +16,9 @@ const { readGitEvidence } = require('./git-connector');
 const { ServerManager } = require('./server-manager');
 const { ScreenpipeSource } = require('./screenpipe-source');
 const { ScreenpipeShadow } = require('./screenpipe-shadow');
+const { BrowserSessionManager } = require('./browser-session');
+const { BrowserCollector } = require('./browser-collector');
+const { SecretStore } = require('./secret-store');
 const {
   clampBounds, snapBounds, dockEdge, nearestEdge, overflowEdge, edgeTabBounds, anchorExpandedBounds,
 } = require('./window-dock');
@@ -91,8 +94,95 @@ async function ensureServer() {
   return serverManager.ensure();
 }
 
+let browserCollector = null;
+let browserTimer = null;
+let secretStore = null;
+
+function ensureSecretStore() {
+  if (!secretStore) {
+    secretStore = new SecretStore({
+      filePath: path.join(app.getPath('userData'), 'secrets.json'),
+      safeStorage,
+    });
+  }
+  return secretStore;
+}
+
+// 浏览器采集只在用户打开网页站点或工作台时按需加载，未启用站点不启动浏览器。
+function ensureBrowserCollector() {
+  if (browserCollector) return browserCollector;
+  if (!api) throw new Error('本机服务尚未初始化');
+  // 低完整性/受限账户无法写默认 AppData 临时目录；Playwright 在模块加载时读取 os.tmpdir()。
+  const tmpDir = path.join(app.getPath('userData'), 'tmp');
+  fs.mkdirSync(tmpDir, { recursive: true });
+  process.env.TMP = tmpDir;
+  process.env.TEMP = tmpDir;
+  const { chromium } = require('playwright-core');
+  const sessions = new BrowserSessionManager({
+    rootDir: path.join(app.getPath('userData'), 'browser-profiles'),
+    chromium,
+    logger: console,
+  });
+  browserCollector = new BrowserCollector({
+    sessions,
+    captureItem: async item => {
+      await ensureServer();
+      return api.captureWebItem(item);
+    },
+    logger: console,
+  });
+  if (!browserTimer) {
+    browserTimer = setInterval(async () => {
+      try {
+        await ensureServer();
+        const data = await api.webSites();
+        await browserCollector.schedulerTick(data.sites || []);
+      } catch (error) {
+        console.error(`网页采集调度：${error.message}`);
+      }
+    }, 60_000);
+    browserTimer.unref?.();
+  }
+  return browserCollector;
+}
+
+async function browserSiteById(siteId) {
+  await ensureServer();
+  const data = await api.webSites();
+  const site = (data.sites || []).find(item => item.id === siteId);
+  if (!site) throw new Error('站点不存在');
+  return site;
+}
+
 // 主进程维护一条到本机服务的 SSE；所有窗口通过 IPC 收到同一事件流。
 let lastWeChatFingerprint = '';
+let channelCache = { loaded: false, wechatDesktopEnabled: false, policies: [] };
+
+async function refreshChannelCache() {
+  if (!api) return;
+  try {
+    const data = await api.channelSettings();
+    const config = (data.configs || []).find(item => item.channel === 'wechat_desktop');
+    channelCache = {
+      loaded: true,
+      wechatDesktopEnabled: Boolean(config && config.enabled),
+      policies: data.policies || [],
+    };
+  } catch {
+    channelCache.loaded = false;
+  }
+}
+
+// 采集端先按缓存停止；服务端仍会再次校验，避免配置尚未刷新时越界。
+function wechatSourceAllowed(source) {
+  if (!channelCache.loaded || !channelCache.wechatDesktopEnabled) return false;
+  const exact = channelCache.policies.find(item =>
+    item.channel === 'wechat_desktop' && item.source === source);
+  if (exact) return Boolean(exact.allowed);
+  const fallback = channelCache.policies.find(item =>
+    item.channel === 'wechat_desktop' && item.source === '');
+  return Boolean(fallback && fallback.allowed);
+}
 
 // 微信只转发当前窗口的可见文本；不读数据库、不注入、不绕过客户端。
 // 服务端默认拒绝微信来源，用户在“工作台 → 渠道采集”显式允许后才入库。
@@ -101,6 +191,7 @@ function forwardWeChatActivity(event) {
   const text = String(event.content || event.detail || '').trim();
   if (text.length < 8) return;
   const source = String(event.title || event.app || '微信').trim().slice(0, 80);
+  if (!wechatSourceAllowed(source)) return;
   const fingerprint = crypto.createHash('sha1').update(source + '\n' + text).digest('hex');
   if (fingerprint === lastWeChatFingerprint) return;
   lastWeChatFingerprint = fingerprint;
@@ -111,7 +202,8 @@ function forwardWeChatActivity(event) {
     text,
     kind: 'visible_content',
     received_at: new Date(event.at || Date.now()).toISOString(),
-    incomplete: !event.content,
+    // UIA/OCR 只能保证“当前可见区域”，永远按可能不完整处理，不能伪装成完整逐条消息。
+    incomplete: true,
     raw_ref: 'activity:' + String(event.id || fingerprint),
   }).catch(() => {});
 }
@@ -865,6 +957,8 @@ app.whenReady().then(async () => {
     baseUrl: process.env.GFA_SERVER_URL || 'http://127.0.0.1:8080',
   });
   try { await ensureServer(); } catch (error) { console.error(error.message); }
+  await refreshChannelCache();
+  setInterval(refreshChannelCache, 30_000).unref?.();
   startEventStream();
   try {
     createTray();
@@ -1019,6 +1113,8 @@ app.on('before-quit', () => {
   if (activityHandleWindow && !activityHandleWindow.isDestroyed()) activityHandleWindow.destroy();
   if (activityTrail) activityTrail.stop();
   if (screenpipeShadow) screenpipeShadow.stop();
+  if (browserTimer) clearInterval(browserTimer);
+  if (browserCollector) browserCollector.stopAll().catch(() => {});
   if (serverManager) serverManager.stop();
 });
 
@@ -1085,7 +1181,12 @@ ipcMain.handle('assistant:outbox-reject', async (_event, id, version, reason) =>
 });
 ipcMain.handle('assistant:brief-latest', async (_event, date) => {
   await ensureServer();
-  return api.latestBrief(String(date || ''));
+  try {
+    return await api.latestBrief(String(date || ''));
+  } catch (error) {
+    if (/HTTP 404/.test(String(error && error.message || ''))) return { brief: null };
+    throw error;
+  }
 });
 ipcMain.handle('assistant:brief-generate', async (_event, date) => {
   await ensureServer();
@@ -1103,6 +1204,19 @@ ipcMain.handle('assistant:channel-policy', async (_event, policy) => {
   await ensureServer();
   return api.updateChannelPolicy(policy || {});
 });
+ipcMain.handle('assistant:channel-config', async (_event, channel, config) => {
+  await ensureServer();
+  return api.updateChannelConfig(String(channel || ''), config || {});
+});
+ipcMain.handle('assistant:global-config', async (_event, config) => {
+  await ensureServer();
+  return api.updateGlobalConfig(config || {});
+});
+ipcMain.handle('channels:refresh-cache', async () => {
+  await ensureServer();
+  await refreshChannelCache();
+  return channelCache;
+});
 ipcMain.handle('assistant:email-settings', async () => {
   await ensureServer();
   return api.getEmailSettings();
@@ -1110,6 +1224,84 @@ ipcMain.handle('assistant:email-settings', async () => {
 ipcMain.handle('assistant:email-save', async (_event, email) => {
   await ensureServer();
   return api.saveEmailSettings(email || {});
+});
+ipcMain.handle('browser:list-sites', async () => {
+  await ensureServer();
+  return api.webSites();
+});
+ipcMain.handle('browser:save-site', async (_event, site) => {
+  await ensureServer();
+  return api.saveWebSite(site || {});
+});
+ipcMain.handle('browser:delete-site', async (_event, id) => {
+  await ensureServer();
+  return api.deleteWebSite(String(id || ''));
+});
+ipcMain.handle('browser:read-current', async (_event, siteId, url) => {
+  const site = await browserSiteById(String(siteId || ''));
+  return ensureBrowserCollector().readCurrent(site, String(url || ''));
+});
+ipcMain.handle('browser:run-site', async (_event, siteId) => {
+  const site = await browserSiteById(String(siteId || ''));
+  return ensureBrowserCollector().runSite(site);
+});
+ipcMain.handle('browser:login-site', async (_event, siteId, url) => {
+  const site = await browserSiteById(String(siteId || ''));
+  if (site.auto_login_enabled && site.credential_ref) {
+    let credential = null;
+    try {
+      credential = ensureSecretStore().get(site.credential_ref);
+    } catch {
+      credential = null;
+    }
+    if (credential) {
+      const parent = BrowserWindow.getFocusedWindow() ||
+        (workbenchWindow && !workbenchWindow.isDestroyed() ? workbenchWindow : null);
+      const options = {
+        type: 'question',
+        buttons: ['填充凭据', '改为人工登录'],
+        defaultId: 1,
+        cancelId: 1,
+        title: '自动登录确认',
+        message: `是否向 ${new URL(site.login_url).origin} 填充已保存的账号凭据？`,
+        detail: `站点：${site.id}\n账号：${credential.username}\n仅在本次登录使用，密码不会进入模型、日志或存储配置。`,
+      };
+      const choice = parent
+        ? await dialog.showMessageBox(parent, options)
+        : await dialog.showMessageBox(options);
+      if (choice.response === 0) {
+        return ensureBrowserCollector().autoLogin(site, credential);
+      }
+    }
+  }
+  return ensureBrowserCollector().loginSite(site, String(url || ''));
+});
+ipcMain.handle('browser:save-credential', async (_event, ref, payload) => {
+  await ensureServer();
+  const data = await api.webSites();
+  const site = (data.sites || []).find(item => item.credential_ref === String(ref || ''));
+  if (!site) throw new Error('没有站点引用该 credential_ref');
+  if (!site.login_url) throw new Error('请先保存站点的登录 URL');
+  const loginUrl = new URL(site.login_url);
+  return ensureSecretStore().save(site.credential_ref, {
+    origin: loginUrl.origin,
+    loginUrl: site.login_url,
+    username: payload && payload.username,
+    password: payload && payload.password,
+  });
+});
+ipcMain.handle('browser:credential-list', async () => ensureSecretStore().list());
+ipcMain.handle('browser:delete-credential', async (_event, ref) =>
+  ensureSecretStore().delete(String(ref || '')));
+ipcMain.handle('browser:stop', async (_event, siteId) => {
+  if (!browserCollector) return false;
+  return browserCollector.stop(String(siteId || ''));
+});
+ipcMain.handle('browser:status', async (_event, siteId) => {
+  if (!browserCollector) {
+    return { running: false, lastRunAt: 0, lastError: '', items: 0, loginRequired: false };
+  }
+  return browserCollector.statusFor(String(siteId || ''));
 });
 ipcMain.handle('assistant:use-session', (_event, id) => {
   chatSessionId = String(id || '');

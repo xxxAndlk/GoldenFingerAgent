@@ -52,15 +52,49 @@ type Relay struct {
 
 // Email 保存可选的 IMAP 收件配置；密码只落本地 settings.json，不写日志。
 type Email struct {
-	Enabled      bool   `json:"enabled,omitempty"`
-	Host         string `json:"host,omitempty"`
-	Port         int    `json:"port,omitempty"`
-	Username     string `json:"username,omitempty"`
-	Password     string `json:"password,omitempty"`
-	Mailbox      string `json:"mailbox,omitempty"`
-	TLS          bool   `json:"tls,omitempty"`
-	InitialFetch int    `json:"initial_fetch,omitempty"`
-	PollSeconds  int    `json:"poll_seconds,omitempty"`
+	Enabled        bool     `json:"enabled,omitempty"`
+	Host           string   `json:"host,omitempty"`
+	Port           int      `json:"port,omitempty"`
+	Username       string   `json:"username,omitempty"`
+	Password       string   `json:"password,omitempty"`
+	Mailbox        string   `json:"mailbox,omitempty"`
+	Mailboxes      []string `json:"mailboxes,omitempty"`
+	Senders        []string `json:"senders,omitempty"`
+	SubjectFilters []string `json:"subject_filters,omitempty"`
+	SinceDays      int      `json:"since_days,omitempty"`
+	TLS            bool     `json:"tls,omitempty"`
+	InitialFetch   int      `json:"initial_fetch,omitempty"`
+	PollSeconds    int      `json:"poll_seconds,omitempty"`
+}
+
+// WebSite 是授权网页采集的站点配置。只保存 credential_ref，不保存密码。
+type WebSite struct {
+	ID                  string   `json:"id"`
+	Account             string   `json:"account,omitempty"`
+	Enabled             bool     `json:"enabled"`
+	StartURLs           []string `json:"start_urls,omitempty"`
+	AllowedOrigins      []string `json:"allowed_origins,omitempty"`
+	AllowedPathPrefixes []string `json:"allowed_path_prefixes,omitempty"`
+	IntervalSeconds     int      `json:"interval_seconds,omitempty"`
+	MaxPages            int      `json:"max_pages,omitempty"`
+	MaxDepth            int      `json:"max_depth,omitempty"`
+	SummaryEnabled      bool     `json:"summary_enabled"`
+	IndexEnabled        bool     `json:"index_enabled"`
+	BriefEnabled        bool     `json:"brief_enabled"`
+	AutoWorkerEnabled   bool     `json:"auto_worker_enabled"`
+	NavigationEnabled   bool     `json:"navigation_enabled"`
+	SessionEnabled      bool     `json:"session_enabled"`
+	AutoLoginEnabled    bool     `json:"auto_login_enabled"`
+	CredentialRef       string   `json:"credential_ref,omitempty"`
+	LoginURL            string   `json:"login_url,omitempty"`
+	UsernameSelector    string   `json:"username_selector,omitempty"`
+	PasswordSelector    string   `json:"password_selector,omitempty"`
+	SubmitSelector      string   `json:"submit_selector,omitempty"`
+}
+
+// Web 保存授权网页采集的站点列表。
+type Web struct {
+	Sites []WebSite `json:"sites,omitempty"`
 }
 
 type fileShape struct {
@@ -69,6 +103,7 @@ type fileShape struct {
 	Search Search  `json:"search,omitempty"`
 	Relay  Relay   `json:"relay,omitempty"`
 	Email  Email   `json:"email,omitempty"`
+	Web    Web     `json:"web,omitempty"`
 }
 
 // Shape 是全部设置的完整快照，供 Save 的回调直接编辑各分区。
@@ -159,6 +194,25 @@ func (s *Store) Email() Email {
 	return s.data.Email
 }
 
+// Web 返回授权网页采集的站点配置。
+func (s *Store) Web() Web {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reloadLocked()
+	return s.data.Web
+}
+
+// Site 按 ID 查找站点配置；不存在返回 false。
+func (s *Store) Site(id string) (WebSite, bool) {
+	web := s.Web()
+	for _, site := range web.Sites {
+		if site.ID == id {
+			return site, true
+		}
+	}
+	return WebSite{}, false
+}
+
 // Save 在锁内应用 mutate 并以原子方式持久化全部设置。
 func (s *Store) Save(mutate func(*fileShape)) error {
 	s.mu.Lock()
@@ -187,6 +241,44 @@ func (s *Store) SaveRelay(v Relay) error {
 // SaveEmail 替换 IMAP 收件配置。
 func (s *Store) SaveEmail(v Email) error {
 	return s.Save(func(f *fileShape) { f.Email = v })
+}
+
+// SaveWeb 替换站点列表。
+func (s *Store) SaveWeb(v Web) error {
+	return s.Save(func(f *fileShape) { f.Web = v })
+}
+
+// UpsertSite 新增或覆盖一个站点，保留其他站点。
+func (s *Store) UpsertSite(site WebSite) error {
+	return s.Save(func(f *fileShape) {
+		sites := make([]WebSite, 0, len(f.Web.Sites)+1)
+		found := false
+		for _, item := range f.Web.Sites {
+			if item.ID == site.ID {
+				sites = append(sites, site)
+				found = true
+				continue
+			}
+			sites = append(sites, item)
+		}
+		if !found {
+			sites = append(sites, site)
+		}
+		f.Web.Sites = sites
+	})
+}
+
+// DeleteSite 删除站点；不存在时仍成功。
+func (s *Store) DeleteSite(id string) error {
+	return s.Save(func(f *fileShape) {
+		sites := make([]WebSite, 0, len(f.Web.Sites))
+		for _, item := range f.Web.Sites {
+			if item.ID != id {
+				sites = append(sites, item)
+			}
+		}
+		f.Web.Sites = sites
+	})
 }
 
 func (s *Store) writeLocked(next fileShape) error {
