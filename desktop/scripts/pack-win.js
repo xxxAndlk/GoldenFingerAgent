@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 if (process.platform !== 'win32') {
   throw new Error('Windows 桌面包只能在 Windows 上生成');
@@ -23,7 +24,7 @@ const files = [
   'markdown.js', 'agent-panel.js', 'workbench.html', 'workbench.js',
   'browser-policy.js', 'browser-extract.js', 'browser-session.js', 'browser-collector.js',
   'secret-store.js', 'observation-envelope.js', 'observation-spool.js',
-  'wechat-window.js', 'wechat-parser.js', 'wechat-connector.js',
+  'wechat-db-connector.js',
   'tray-icon.png', 'tray-icon.ico', 'tray-icon-busy.png', 'tray-icon-busy.ico',
   'app-icon.png', 'app-icon.ico', 'app-icon.css',
 ];
@@ -36,8 +37,21 @@ fs.cpSync(electronDist, output, { recursive: true });
 // resources/app 存在时 Electron 会优先启动本应用，无需删除只读的默认应用包。
 fs.mkdirSync(appOutput, { recursive: true });
 for (const file of files) {
-  fs.copyFileSync(path.join(root, file), path.join(appOutput, file));
+  const target = path.join(appOutput, file);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(path.join(root, file), target);
 }
+// 只读数据库连接器是独立 Go 可执行文件，不再带 Python 运行时。
+const wechatConnector = path.join(root, '..', 'server-dist', 'wechat-db-connector.exe');
+if (!fs.existsSync(wechatConnector)) {
+  throw new Error('缺少 server-dist/wechat-db-connector.exe，请先构建 Go 连接器');
+}
+const connectorTarget = path.join(appOutput, 'connectors', 'wechat-db', 'wechat-db-connector.exe');
+fs.mkdirSync(path.dirname(connectorTarget), { recursive: true });
+fs.copyFileSync(wechatConnector, connectorTarget);
+try {
+  execFileSync('icacls', [connectorTarget, '/setintegritylevel', 'M'], { windowsHide: true, stdio: 'ignore' });
+} catch { /* 非管理员环境下保留原标签，运行时会明确报权限错误。 */ }
 // 网页采集依赖 playwright-core 与 Readability；只复制这两个运行时依赖，不带 devDependencies。
 for (const moduleName of ['playwright-core', '@mozilla/readability']) {
   const source = path.join(root, 'node_modules', moduleName);

@@ -5,7 +5,7 @@ const state = {
   tab: 'tasks', workTasks: [], taskDetail: null, taskEvents: [], busyTask: '',
   outbox: [], brief: null, briefError: '',
   channels: null, email: null, webSites: [], webStatus: {}, webError: '',
-  health: null, wechatTest: null,
+  health: null, wechatChats: [], wechatQuery: '', wechatPreview: null, wechatError: '',
 };
 let refreshTimer = null;
 let eventRefresh = null;
@@ -924,9 +924,45 @@ function renderWeb() {
 }
 
 const WECHAT_STATE_LABELS = {
-  off: '已关闭', waiting_window: '未检测到微信', waiting_conversation: '等待打开会话',
-  waiting_authorization: '等待授权', observing: '正在观察', degraded: '降级（有缺口）', error: '错误',
+  off: '已关闭', starting: '正在启动', needs_login: '等待微信登录',
+  needs_permission: '缺少读取权限', waiting_authorization: '等待授权',
+  observing: '正在观察数据库', degraded: '降级', unsupported_version: '版本不兼容', error: '错误',
 };
+
+function wechatPolicyAllows(sourceId) {
+  return Boolean((state.channels && state.channels.policies || []).find(item =>
+    item.channel === 'wechat_desktop' && item.source === sourceId && item.allowed));
+}
+
+async function loadWeChatChats() {
+  statusEl.textContent = '正在读取本机微信会话列表…';
+  try {
+    state.wechatChats = await api.listWeChatChats(state.wechatQuery, 50);
+    state.wechatError = '';
+  } catch (error) {
+    state.wechatError = error.message;
+  }
+  renderHealth();
+}
+
+async function setWeChatChatAllowed(chat, allowed) {
+  const current = (state.channels && state.channels.configs || [])
+    .find(item => item.channel === 'wechat_desktop') || {};
+  if (allowed) {
+    await api.updateChannelConfig('wechat_desktop', {
+      enabled: true,
+      summary_enabled: Boolean(current.summary_enabled),
+      index_enabled: Boolean(current.index_enabled),
+      brief_enabled: Boolean(current.brief_enabled),
+      auto_worker_enabled: Boolean(current.auto_worker_enabled),
+    });
+  }
+  await api.updateChannelPolicy({ channel: 'wechat_desktop', source: chat.source_id, allowed });
+  await api.refreshChannelCache?.();
+  statusEl.textContent = `${allowed ? '已授权' : '已撤销'}会话「${chat.display_name}」`;
+  await refresh();
+  await loadWeChatChats();
+}
 
 function renderHealth() {
   if (!healthPanel) return;
@@ -938,53 +974,65 @@ function renderHealth() {
   root.append(el('h3', '', '感知采集状态'));
   const stateLabel = WECHAT_STATE_LABELS[wechat.state] || wechat.state || '未知';
   const lines = [
-    `微信：${stateLabel}${wechat.currentSource ? ` · 当前会话「${wechat.currentSource}」` : ''}`,
-    `最近观察：${wechat.lastObservedAt ? new Date(wechat.lastObservedAt).toLocaleString() : '尚未观察'}`,
+    `微信：${stateLabel} · 数据源=本地数据库只读`,
+    `已授权会话：${wechat.authorizedChats || 0} · 最近读库：${wechat.lastObservedAt ? new Date(wechat.lastObservedAt).toLocaleString() : '尚未读取'}`,
+    `最近新消息：${wechat.lastEventAt ? new Date(wechat.lastEventAt).toLocaleString() : '尚未发现'}`,
     `最近入库：${wechat.lastDeliveredAt ? new Date(wechat.lastDeliveredAt).toLocaleString() : '尚未确认入库'}`,
-    `完整性：${wechat.completeness || 'unknown'} · 待发 ${wechat.pending || 0} · 过滤 ${wechat.filtered || 0} · 失败 ${wechat.failed || 0}`,
+    `待发 ${wechat.pending || 0} · 过滤 ${wechat.filtered || 0} · 失败 ${wechat.failed || 0} · 越权丢弃 ${wechat.denied || 0}`,
   ];
   if (wechat.lastError) lines.push(`最近错误：${wechat.lastError}`);
   root.append(el('div', 'body', lines.join('\n')));
 
   const actions = el('div', 'actions');
-  actions.append(actionButton('测试微信采集', async () => {
-    statusEl.textContent = '正在读取微信当前会话…';
-    const result = await api.testWeChatCapture();
-    state.wechatTest = result;
-    statusEl.textContent = result.ok
-      ? `采集测试成功：${result.title}，识别 ${result.messageCount} 条可见消息`
-      : `采集测试未通过：${result.error || '未知原因'}`;
+  actions.append(actionButton('加载授权会话', loadWeChatChats, 'secondary'));
+  actions.append(actionButton('测试数据库连接', async () => {
+    if (!state.wechatChats.length) await loadWeChatChats();
+    const chat = state.wechatChats.find(item => wechatPolicyAllows(item.source_id)) || state.wechatChats[0];
+    if (!chat) throw new Error('没有可测试的会话');
+    statusEl.textContent = '正在读取数据库最近一条消息…';
+    const result = await api.testWeChatDb({ chatKey: chat.chat_key, sourceId: chat.source_id });
+    state.wechatPreview = result;
+    statusEl.textContent = result.ok ? `数据库连接正常：${chat.display_name}` : '数据库连接测试失败';
     renderHealth();
   }, 'secondary'));
-  const title = (state.wechatTest && state.wechatTest.title) || wechat.currentSource;
-  if (title && (!wechat.enabled || !wechat.authorized)) {
-    actions.append(actionButton('启用并允许当前会话', async () => {
-      const current = (state.channels && state.channels.configs || [])
-        .find(item => item.channel === 'wechat_desktop') || {};
-      await api.updateChannelConfig('wechat_desktop', {
-        enabled: true,
-        summary_enabled: Boolean(current.summary_enabled),
-        index_enabled: Boolean(current.index_enabled),
-        brief_enabled: Boolean(current.brief_enabled),
-        auto_worker_enabled: Boolean(current.auto_worker_enabled),
-      });
-      await api.updateChannelPolicy({ channel: 'wechat_desktop', source: title, allowed: true });
-      await api.refreshChannelCache?.();
-      statusEl.textContent = `已启用微信采集，并允许会话「${title}」`;
-      await refresh();
-    }));
-  }
   root.append(actions);
 
-  if (state.wechatTest) {
-    const test = state.wechatTest;
-    const preview = el('div', 'body');
-    preview.append(el('div', 'meta',
-      `测试结果：${test.ok ? '通过' : '未通过'} · ${test.title || '未识别会话'} · ${test.authorized ? '已授权' : '未授权'} · ${test.messageCount || 0} 条可见消息`));
-    (test.messages || []).slice(0, 4).forEach(message => {
-      preview.append(el('div', 'hint', `[${message.direction}] ${message.text}`));
+  if (state.wechatError) root.append(el('div', 'hint', `读取会话失败：${state.wechatError}`));
+  if (state.wechatPreview && state.wechatPreview.preview) {
+    const preview = state.wechatPreview.preview;
+    root.append(el('div', 'body',
+      `测试消息：${preview.sender || '未知发送者'} · ${preview.direction} · ${preview.message_type}\n${preview.text || '（无正文）'}`));
+  }
+
+  const queryRow = el('div', 'row');
+  const query = el('input');
+  query.type = 'text';
+  query.placeholder = '按显示名搜索会话';
+  query.value = state.wechatQuery || '';
+  query.addEventListener('change', () => { state.wechatQuery = query.value.trim(); });
+  const search = actionButton('搜索会话', async () => {
+    state.wechatQuery = query.value.trim();
+    await loadWeChatChats();
+  }, 'secondary');
+  queryRow.append(query, search);
+  root.append(queryRow);
+
+  if (state.wechatChats.length) {
+    const list = el('div', 'task-detail');
+    state.wechatChats.forEach(chat => {
+      const allowed = wechatPolicyAllows(chat.source_id);
+      const row = el('div', 'row');
+      const text = el('div', 'body',
+        `${chat.display_name || chat.chat_key} · ${chat.chat_type} · 最近 ${chat.last_message_at ? new Date(chat.last_message_at).toLocaleString() : '无'}\n${chat.source_id}`);
+      const toggle = actionButton(allowed ? '撤销授权' : '授权', async () => {
+        await setWeChatChatAllowed(chat, !allowed);
+      }, allowed ? 'danger' : '');
+      row.append(text, toggle);
+      list.append(row);
     });
-    root.append(preview);
+    root.append(el('div', 'meta', '会话授权（按稳定 source_id，不按显示名）'), list);
+  } else {
+    root.append(el('div', 'hint', '点「加载授权会话」查看本机数据库中的会话，再逐个授权。'));
   }
 
   const browserSites = (health.browser && health.browser.sites || []).length;

@@ -225,6 +225,7 @@ func main() {
 
 	tools := append(agent.DefaultTools(), agent.SystemTools()...)
 	tools = append(tools, agent.SkillTools(skillPool)...)
+	tools = append(tools, agent.WeChatTools(repos)...)
 	tools = append(tools, agenthub.Tools(agentHub)...)
 	// 同名覆盖：delegate_agent 改为异步派发，并补充查询/取消工具。
 	tools = append(tools, agenthub.AsyncTools(jobQueue)...)

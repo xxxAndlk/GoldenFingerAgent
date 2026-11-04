@@ -178,7 +178,8 @@ func classifyToolName(name string) (RiskLevel, bool) {
 	case "get_datetime", "list_tasks", "search_memory", "query_person", "list_intents",
 		"get_weather", "read", "web_search", "web_fetch", "screen_observe",
 		"list_agents", "refresh_agents", "agent_provider_usage", "list_skills",
-		"load_skill", "list_agent_tasks", "get_agent_task":
+		"load_skill", "list_agent_tasks", "get_agent_task", "get_connector_health",
+		"list_wechat_chats", "read_wechat_messages", "search_wechat_messages":
 		return RiskRead, false
 	case "create_task", "set_alarm", "save_note", "save_fact", "update_task",
 		"create_intent", "cancel_intent", "wait", "tap", "input_text", "swipe",

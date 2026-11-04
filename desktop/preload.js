@@ -60,7 +60,8 @@ contextBridge.exposeInMainWorld('desktopAssistant', {
   browserStatus: siteId => ipcRenderer.invoke('browser:status', siteId),
   openWorkbench: () => ipcRenderer.invoke('ui:open-window', 'workbench'),
   connectorHealth: () => ipcRenderer.invoke('connectors:health'),
-  testWeChatCapture: () => ipcRenderer.invoke('wechat:test-capture'),
+  listWeChatChats: (query, limit) => ipcRenderer.invoke('wechat-db:list-chats', query || '', Number(limit) || 50),
+  testWeChatDb: options => ipcRenderer.invoke('wechat-db:test', options || {}),
   onAgentEvent: callback => {
     const listener = (_event, value) => callback(value);
     ipcRenderer.on('agent:event', listener);

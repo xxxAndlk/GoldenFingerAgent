@@ -196,24 +196,33 @@ func (s *Server) handleCalendarEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 type wechatMessageRequest struct {
-	Source       string     `json:"source"`
-	SourceID     string     `json:"source_id"`
-	DisplayName  string     `json:"display_name"`
-	MessageID    string     `json:"message_id"`
-	EventID      string     `json:"event_id"`
-	Sender       string     `json:"sender"`
-	Direction    string     `json:"direction"`
-	MessageType  string     `json:"message_type"`
-	Text         string     `json:"text"`
-	Kind         string     `json:"kind"`
-	ObservedAt   time.Time  `json:"observed_at"`
-	OccurredAt   *time.Time `json:"occurred_at"`
-	ReceivedAt   time.Time  `json:"received_at"`
-	ContentHash  string     `json:"content_hash"`
-	Completeness string     `json:"completeness"`
-	Incomplete   bool       `json:"incomplete"`
-	RawRef       string     `json:"raw_ref"`
-	Cursor       string     `json:"cursor"`
+	SchemaVersion int        `json:"schema_version"`
+	Source        string     `json:"source"`
+	SourceID      string     `json:"source_id"`
+	DisplayName   string     `json:"display_name"`
+	AccountID     string     `json:"account_id"`
+	ChatType      string     `json:"chat_type"`
+	MessageID     string     `json:"message_id"`
+	EventID       string     `json:"event_id"`
+	Sender        string     `json:"sender"`
+	SenderID      string     `json:"sender_id"`
+	ActorRole     string     `json:"actor_role"`
+	Direction     string     `json:"direction"`
+	MessageType   string     `json:"message_type"`
+	Text          string     `json:"text"`
+	Kind          string     `json:"kind"`
+	ObservedAt    time.Time  `json:"observed_at"`
+	OccurredAt    *time.Time `json:"occurred_at"`
+	ReceivedAt    time.Time  `json:"received_at"`
+	ContentHash   string     `json:"content_hash"`
+	Completeness  string     `json:"completeness"`
+	SyncScope     string     `json:"sync_scope"`
+	Incomplete    bool       `json:"incomplete"`
+	Shard         string     `json:"shard"`
+	LocalID       int64      `json:"local_id"`
+	SortSeq       int64      `json:"sort_seq"`
+	RawRef        string     `json:"raw_ref"`
+	Cursor        string     `json:"cursor"`
 }
 
 func (s *Server) handleWeChatMessage(w http.ResponseWriter, r *http.Request) {
@@ -273,27 +282,42 @@ func (s *Server) handleWeChatMessage(w http.ResponseWriter, r *http.Request) {
 	if !validCompleteness(req.Completeness) {
 		req.Completeness = "unknown"
 	}
+	if req.SyncScope == "" {
+		req.SyncScope = "unknown"
+	}
+	if req.ActorRole == "" {
+		req.ActorRole = "unknown"
+	}
 	body := req.Text
 	if req.Completeness == "current_visible" || req.Completeness == "partial" || req.Incomplete {
 		body += "\n（当前可见内容，不代表完整聊天记录）"
 	}
+	receivedAt := req.ObservedAt
+	if req.OccurredAt != nil && !req.OccurredAt.IsZero() {
+		receivedAt = *req.OccurredAt
+	}
 	payload, _ := json.Marshal(map[string]any{
-		"sender": req.Sender, "direction": req.Direction, "message_type": req.MessageType,
+		"schema_version": req.SchemaVersion, "sender": req.Sender, "sender_id": req.SenderID,
+		"actor_role": req.ActorRole, "direction": req.Direction, "message_type": req.MessageType,
 		"source_id": req.SourceID, "display_name": req.DisplayName,
+		"account_id": req.AccountID, "chat_type": req.ChatType,
 		"event_id": req.EventID, "content_hash": req.ContentHash,
 		"observed_at": req.ObservedAt, "occurred_at": req.OccurredAt,
-		"completeness": req.Completeness, "incomplete": req.Incomplete,
+		"completeness": req.Completeness, "sync_scope": req.SyncScope,
+		"incomplete": req.Incomplete, "shard": req.Shard,
+		"local_id": req.LocalID, "sort_seq": req.SortSeq,
 		"raw_ref": req.RawRef, "cursor": req.Cursor,
 	})
-	s.ingestChannel(w, r, u.ID, store.ChannelWeChatDesktop, req.Source, superagent.TriggerInput{
+	// 新链路按稳定 source_id 授权；显示名只用于展示，不参与权限判断。
+	s.ingestChannel(w, r, u.ID, store.ChannelWeChatDesktop, req.SourceID, superagent.TriggerInput{
 		Channel:          store.ChannelWeChatDesktop,
-		ExternalID:       "wechat:" + req.SourceID + ":" + req.MessageID,
+		ExternalID:       "wechat:" + req.MessageID,
 		ThreadExternalID: "wechat:" + req.SourceID,
 		Kind:             req.Kind,
 		Title:            req.DisplayName,
 		Body:             body,
 		Payload:          payload,
-		ReceivedAt:       req.ObservedAt,
+		ReceivedAt:       receivedAt,
 	})
 }
 

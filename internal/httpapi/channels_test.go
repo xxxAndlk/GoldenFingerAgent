@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -182,7 +183,7 @@ func TestWeChatVisibleMessageKeepsDirectionAndCompleteness(t *testing.T) {
 	enableChannel(t, srv, store.ChannelWeChatDesktop)
 	h := srv.Handler()
 	allowReq := httptest.NewRequest(http.MethodPut, "/api/settings/channels",
-		strings.NewReader(`{"channel":"wechat","source":"严胜易","allowed":true}`))
+		strings.NewReader(`{"channel":"wechat","source":"wechat-uia:严胜易","allowed":true}`))
 	allowReq.Header.Set("Content-Type", "application/json")
 	allow := httptest.NewRecorder()
 	h.ServeHTTP(allow, allowReq)
@@ -190,11 +191,13 @@ func TestWeChatVisibleMessageKeepsDirectionAndCompleteness(t *testing.T) {
 		t.Fatalf("allow=%d %s", allow.Code, allow.Body)
 	}
 	message := `{
-		"source":"严胜易","source_id":"wechat-uia:严胜易","display_name":"严胜易",
-		"message_id":"wx-visible-1","event_id":"wx-visible-1","sender":"严胜易",
-		"direction":"other","message_type":"visible_text","text":"你好",
-		"observed_at":"2026-11-03T09:30:00+08:00","occurred_at":null,
-		"content_hash":"abc","completeness":"current_visible","incomplete":true
+		"schema_version":2,"source":"严胜易","source_id":"wechat-uia:严胜易","display_name":"严胜易",
+		"account_id":"acct","chat_type":"private","message_id":"wx-visible-1","event_id":"wx-visible-1",
+		"sender":"严胜易","sender_id":"wxid_x","actor_role":"contact",
+		"direction":"other","message_type":"text","text":"你好",
+		"observed_at":"2026-11-03T09:30:02+08:00","occurred_at":"2026-11-03T09:30:00+08:00",
+		"content_hash":"abc","completeness":"complete","sync_scope":"local_incremental",
+		"shard":"message_0.db","local_id":123,"sort_seq":456
 	}`
 	accepted := postJSON(t, h, "/api/channels/wechat/messages", message)
 	if accepted.Code != http.StatusCreated {
@@ -208,12 +211,17 @@ func TestWeChatVisibleMessageKeepsDirectionAndCompleteness(t *testing.T) {
 	if trigger["title"] != "严胜易" {
 		t.Fatalf("title=%v", trigger["title"])
 	}
-	if body, _ := trigger["body"].(string); !strings.Contains(body, "当前可见内容") {
-		t.Fatalf("body=%v", trigger["body"])
+	if body, _ := trigger["body"].(string); strings.Contains(body, "当前可见内容") {
+		t.Fatalf("complete message got visible-content note: %v", trigger["body"])
 	}
 	payload, _ := trigger["payload"].(map[string]any)
-	if payload["direction"] != "other" || payload["source_id"] != "wechat-uia:严胜易" {
+	if payload["direction"] != "other" || payload["source_id"] != "wechat-uia:严胜易" ||
+		payload["actor_role"] != "contact" || payload["sync_scope"] != "local_incremental" ||
+		payload["completeness"] != "complete" {
 		t.Fatalf("payload=%v", payload)
+	}
+	if !strings.HasPrefix(fmt.Sprint(trigger["received_at"]), "2026-11-03T09:30:00") {
+		t.Fatalf("received_at=%v", trigger["received_at"])
 	}
 }
 

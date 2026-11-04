@@ -282,15 +282,15 @@ WorkTask 跨多条消息、多个执行段和多个渠道保存目标、实时�
 |---|---|
 | `POST /api/channels/activity/episodes` | 桌面工作片段：`episode_id/context_key/started_at/ended_at/app/apps/project_candidates/title/summary/status/outputs/evidence_ids/cursor/association_confidence`；有 `context_key` 时归入 `activity:project:*` / `activity:web:*` / `activity:unassigned:*`，否则按日期 |
 | `POST /api/channels/email/messages` | 单封邮件：`account/message_id/thread_key/from/to/subject/text/received_at`；同一 `thread_key` 复用 Thread |
-| `POST /api/channels/wechat/messages` | 可见微信内容：`source/source_id/display_name/message_id/event_id/sender/direction/message_type/text/observed_at/occurred_at/content_hash/completeness/incomplete`；默认拒绝，来源需显式允许 |
+| `POST /api/channels/wechat/messages` | 微信数据库消息：`schema_version/source/source_id/display_name/account_id/chat_type/message_id/event_id/sender/sender_id/actor_role/direction/message_type/text/observed_at/occurred_at/content_hash/completeness/sync_scope/shard/local_id/sort_seq`；按稳定 `source_id` 授权，默认拒绝 |
 | `POST /api/channels/calendar/events` | 日历事件：`calendar/event_id/series_id/title/description/location/start_at/end_at/attendees/status`；按 series/event 归 Thread |
 | `GET /api/settings/channels` | 返回渠道策略、今日跳过计数；微信默认 deny，其他渠道默认 allow |
 | `PUT /api/settings/channels` | `{"channel":"wechat","source":"项目群","allowed":true}`；拒绝来源不落正文，只增加跳过计数 |
 | `GET/PUT /api/settings/email` | IMAP 收件配置（host/port/username/password/mailbox/tls/initial_fetch/poll_seconds）；GET 密码打码，空密码表示保留原值 |
 
-微信字段语义：`source_id` 是会话稳定键，`display_name` 是用户可见名称；`direction` 只能是 `self/other/system/unknown`；`completeness` 为 `complete/current_visible/partial/unknown`；不知道真实发送时间时 `occurred_at=null`，只写 `observed_at`。`event_id` 用于幂等，`content_hash` 只用于内容变化判断。`current_visible`/`partial` 会在正文末尾标注“当前可见内容，不代表完整聊天记录”。
+微信字段语义：`source_id` 是稳定会话键（`wechat-db:<account_key>:<chat_key>`），也是唯一授权依据；`display_name` 只用于展示。`message_id` 必须包含分片与 `local_id`，不能只用 `(chat, local_id)`；`event_id` 由它确定性派生，服务端按它幂等。`direction` 只能是 `self/other/system/unknown`；`actor_role` 为 `owner/contact/system/unknown`。`completeness=complete` 只表示单条消息完整，`sync_scope=local_incremental` 才描述覆盖范围；`occurred_at` 来自数据库，`observed_at` 是连接器观察时间。旧 OCR 的 `current_visible` 记录保留但不等于新链路历史。
 
-桌面端微信连接器只读取当前打开会话的可见屏幕；微信 4.x 的 Qt 窗口不提供消息气泡 UIA，因此消息边界来自截图 OCR 坐标。未授权会话不写检查点、不入队、不进入模型。桌面工作台「接入设置 → 感知采集状态」可见当前会话、最近观察/入库、完整性、待发/过滤/失败和错误；`wechat:test-capture` IPC 只做测试预览，不写入 Spool。
+桌面端微信连接器监督独立 Go 只读进程（`cmd/wechat-db-connector`），读取本机微信 SQLCipher 数据库；不操作微信 UI、不发送、不 hook/注入、不写原始库。密钥只在本机内存中用于解密，未授权来源不写检查点、不入队、不进入模型。桌面工作台「接入设置 → 感知采集状态」可见授权会话数、最近读库/新消息/入库、待发/过滤/失败和错误；`wechat-db:list-chats` 与 `wechat-db:test` IPC 只做会话列表/预览，不写入 Spool。模型通过 `get_connector_health/list_wechat_chats/read_wechat_messages/search_wechat_messages` 只读查询已入库数据。
 
 可选 IMAP 采集器只读取正文（`BODY.PEEK[]`），不标记已读、不发送邮件；游标保存在 `agent_channel_cursor`，重启不重复拉取。
 

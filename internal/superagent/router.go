@@ -3,6 +3,7 @@ package superagent
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -221,6 +222,15 @@ func (s *Service) applyDecision(ctx context.Context, ownerID string, trigger *st
 		}
 	}
 
+	if isWeChatContactTrigger(trigger) {
+		switch decision.Action {
+		case ActionCreateTask, ActionCreateWorker, ActionRouteToWorker, ActionUpdateTask,
+			ActionPrepareTask, ActionPauseTask, ActionResumeTask, ActionCancelTask:
+			decision.Action = ActionNotify
+			decision.Reason = joinReason(decision.Reason, "微信联系人消息没有机主指令权，已降级为通知")
+		}
+	}
+
 	switch decision.Action {
 	case ActionCreateTask:
 		if s.Tasks == nil {
@@ -353,6 +363,17 @@ func triggerEventText(trigger *store.Trigger) string {
 	default:
 		return body
 	}
+}
+
+func isWeChatContactTrigger(trigger *store.Trigger) bool {
+	if trigger == nil || trigger.Channel != store.ChannelWeChatDesktop {
+		return false
+	}
+	var payload struct {
+		ActorRole string `json:"actor_role"`
+	}
+	_ = json.Unmarshal(trigger.Payload, &payload)
+	return payload.ActorRole != "owner"
 }
 
 func joinReason(a, b string) string {

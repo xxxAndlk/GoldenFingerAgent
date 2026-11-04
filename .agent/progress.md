@@ -16,17 +16,16 @@
 - 新增 `desktop/observation-spool.js`：本地 JSON 持久队列；先入队再上传；2xx 标记 delivered，202 filtered 或 4xx 丢弃正文并保留原因，5xx/网络错误指数退避；重启恢复 pending。
 - 新增客户端本地健康状态，工作台「接入设置 → 感知采集状态」显示：当前状态、当前会话、最近观察、最近入库、完整性、待发/过滤/失败、最近错误。
 
-### 0.2 电脑微信连接器（M1）
+### 0.2 电脑微信本地数据库连接器（M1）
 
-- 新增 `desktop/wechat-connector.js`、`wechat-window.js`、`wechat-parser.js`；移除 `main.js` 中依赖 `ActivityTrail.onEvent` 的 `forwardWeChatActivity`。
-- 微信 4.x 是 Qt 窗口，UIA 只暴露窗口壳。连接器通过 UIA 定位唯一的“微信”窗口，用 Electron `desktopCapturer` 抓后台窗口，再用 Windows OCR（新增每行坐标）解析当前会话标题和消息气泡。
-- 只观察当前打开会话，不读取微信数据库、不 hook、不注入、不遍历会话、不翻历史、不发送消息。
-- 逐会话授权：渠道开关和来源策略同时满足才截图；未授权会话不写检查点、不入队、不进入模型。
-- 每个会话持久化最近可见消息序列和 `event_id`；新快照与旧序列做模糊后缀/前缀对齐，只发射新增后缀；连续相同文本按出现次数保留为多条；OCR 抖动不会把历史重新导入。
-- 无法可靠对齐时标记 `degraded`、`completeness=partial` 和缺口，不批量重复导入，也不假装完整。
-- 发送者/方向：1:1 会话可确定“我/对方”，群聊或无法判断时保留 `unknown`；真实发送时间未知时 `occurred_at=null`，只记录实际 `observed_at`。
-- 新增 IPC `wechat:test-capture`；工作台可测试当前会话并显示标题、授权、识别条数和脱敏预览，测试不写入 Spool。
-- 真实环境验收：本机微信 4.x 当前会话「严胜易」→ 捕获 2 条可见消息 → `/api/channels/wechat/messages` 返回 201 → 同一 Thread 入库 2 条 Trigger；重启桌面端后数量仍为 2，未重复导入。当前会话是图片消息，OCR 对其中一条图片内文字存在误识别，已如实保留，不编造。
+- 新增 `desktop/wechat-db-connector.js`、`cmd/wechat-db-connector`、`internal/wechatdb`：Electron 监督独立 Go 只读进程，NDJSON 协议；Go 直接完成 Windows 进程取钥、SQLCipher 页解密、WAL 合并和 modernc SQLite 查询，无 Python 运行时、无 UIA/OCR/发送模块。
+- 微信 4.x 本地 SQLCipher 数据库按页只读解密到用户目录缓存；密钥从已登录微信进程内存只读提取，只保存在连接器进程内存中，不落盘；原始微信库不执行 checkpoint/VACUUM/写 SQL。
+- 按稳定 `source_id = wechat-db:<account_key>:<chat_key>` 授权，不再按窗口标题；`message_key = <account_key>:<chat>:<shard>:<local_id>` 派发确定性 `event_id`，`(chat, local_id)` 不作为身份。
+- 首版默认 `latest_only`：首次启用只记录当前高水位，不回灌历史；之后轮询授权会话最近 500 条，按稳定消息键增量发送。重复正文保留为多条，跨分片同 `local_id` 不覆盖。
+- 方向/发送者来自 `sender_username` 与本机账号比较；群聊按分片解析真实发送者；`occurred_at` 用数据库 `create_time`，`observed_at` 是连接器观察到的时间，`completeness=complete` 只表示单条完整。
+- 未授权来源不写检查点、不入队、不进入模型；旧 OCR Trigger 保留为历史数据，但不被新工具查询。
+- 删除旧 `wechat-window.js`、`wechat-parser.js`、`wechat-connector.js` 及对应测试；工作台改为「加载授权会话 / 按稳定 source_id 授权 / 测试数据库连接」。
+- 真实环境验收：本机微信 4.1.15.13、25 个库全部解密、0 个无密钥库；定位「严胜易」稳定 `wxid` 并读到 20 条真实消息。受控端到端补交后，`/api/channels/wechat/messages` 返回 201/Trigger，`source_id=wechat-db:...`、`occurred_at`、`completeness=complete` 正确；重启后数量不增长，未重复导入。
 
 ### 0.3 网页监听可靠性（M2）
 
@@ -43,9 +42,9 @@
 
 ### 0.5 验证与限制
 
-- 自动测试：桌面 148 项通过；`go test ./...` 通过；新增微信解析/增量、Spool、网页检查点、Episode 分段、上下文识别和健康 UI 测试。
-- 真实环境：微信 4.x 后台窗口截图 + Windows OCR 已实际入库；服务端日志出现两条 `POST /api/channels/wechat/messages → 201`。
-- 限制：OCR 对图片消息内文字可能误识别或漏行；当前只承诺“当前打开会话的可见内容”，不承诺完整历史；会话 `source_id` 第一版以标题为稳定键，改名或同名联系人需要后续引入更稳定标识；微信 4.x 不提供消息气泡 UIA，无法在 UIA 层判断图片/文件类型。
+- 自动测试：桌面 134 项通过（旧 OCR 测试已删除）、`go test ./...` 通过；新增 Go schema/稳定 ID/方向、Go NDJSON 连接器、Spool、授权会话 UI、微信只读工具和路由硬阻断测试。
+- 真实环境：微信 4.1.15.13 本地数据库读取成功，25 个库全部解密；`严胜易` 真实文本消息和既有动画消息均由 Go 连接器读取，event ID 与 Python 旧记录一致；切换 Go 后新文本消息经 Electron → Spool → Trigger 入库，重启不重复。Python 连接器与 venv 已删除，桌面包不再包含 Python。
+- 限制：数据库密钥提取依赖微信已登录和 Medium 及以上权限；连接器只承诺本机数据库已保存且已授权会话；首次历史回填、媒体下载、撤回/修订事件和真实发送器尚未实现；BMA/UI 不再作为隐式 fallback。
 
 ## 〇、2026-11-02 SuperAgent 完整修复（M0–M9）
 

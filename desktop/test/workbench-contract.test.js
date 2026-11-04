@@ -46,10 +46,14 @@ test('Workbench contract wires WorkTask, artifact and grant through preload and 
   assert.match(renderer, /addThinkingMessage/);
   assert.match(renderer, /thinking-dots/);
   assert.match(preload, /connectorHealth/);
-  assert.match(preload, /testWeChatCapture/);
+  assert.match(preload, /listWeChatChats/);
+  assert.match(preload, /testWeChatDb/);
   assert.match(main, /connectors:health/);
-  assert.match(main, /wechat:test-capture/);
+  assert.match(main, /wechat-db:list-chats/);
+  assert.match(main, /wechat-db:test/);
   assert.match(workbench, /感知采集状态/);
-  assert.match(workbench, /测试微信采集/);
+  assert.match(workbench, /本地数据库只读/);
+  assert.match(workbench, /加载授权会话/);
+  assert.match(workbench, /测试数据库连接/);
   assert.match(html, /panel-health/);
 });

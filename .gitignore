@@ -36,3 +36,5 @@ desktop/dist/
 /server-dist/
 /desktop/artifacts/
 /runtime/
+__pycache__/
+*.pyc

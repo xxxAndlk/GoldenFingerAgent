@@ -20,7 +20,7 @@ const { BrowserSessionManager } = require('./browser-session');
 const { BrowserCollector } = require('./browser-collector');
 const { SecretStore } = require('./secret-store');
 const { ObservationSpool } = require('./observation-spool');
-const { WeChatConnector } = require('./wechat-connector');
+const { WeChatDbConnector, chatKeyFromSource } = require('./wechat-db-connector');
 const {
   clampBounds, snapBounds, dockEdge, nearestEdge, overflowEdge, edgeTabBounds, anchorExpandedBounds,
 } = require('./window-dock');
@@ -82,7 +82,8 @@ let api = null;
 let serverManager = null;
 let screenpipeShadow = null;
 let observationSpool = null;
-let wechatConnector = null;
+let wechatDbConnector = null;
+let wechatConfigSignature = '';
 let spoolTimer = null;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -193,17 +194,60 @@ async function refreshChannelCache() {
   } catch {
     channelCache.loaded = false;
   }
+  if (channelCache.loaded) {
+    try {
+      await configureWeChatConnector();
+    } catch (error) {
+      console.error(`微信数据库连接器配置：${error.message}`);
+    }
+  }
 }
 
-// 采集端先按缓存停止；服务端仍会再次校验，避免配置尚未刷新时越界。
-function wechatSourceAllowed(source) {
-  if (!channelCache.loaded || !channelCache.wechatDesktopEnabled) return false;
-  const exact = channelCache.policies.find(item =>
-    item.channel === 'wechat_desktop' && item.source === source);
-  if (exact) return Boolean(exact.allowed);
-  const fallback = channelCache.policies.find(item =>
-    item.channel === 'wechat_desktop' && item.source === '');
-  return Boolean(fallback && fallback.allowed);
+function resolveWeChatConnector() {
+  const candidates = [
+    process.env.GFA_WECHAT_CONNECTOR,
+    path.join(__dirname, 'connectors', 'wechat-db', 'wechat-db-connector.exe'),
+    path.resolve(__dirname, '..', 'runtime', 'wechat-db', 'wechat-db-connector.exe'),
+    path.resolve(__dirname, '..', 'server-dist', 'wechat-db-connector.exe'),
+  ];
+  return candidates.find(candidate => candidate && fs.existsSync(candidate)) || '';
+}
+
+function ensureWeChatDbConnector() {
+  if (wechatDbConnector) return wechatDbConnector;
+  const connectorPath = resolveWeChatConnector();
+  if (!connectorPath) throw new Error('未找到微信数据库 Go 连接器');
+  const base = path.join(app.getPath('userData'), 'wechat-db');
+  const workDir = path.join(base, 'work');
+  fs.mkdirSync(workDir, { recursive: true });
+  wechatDbConnector = new WeChatDbConnector({
+    connectorPath,
+    workDir,
+    statePath: path.join(base, 'connector-state.json'),
+    spool: ensureObservationSpool(),
+    logger: console,
+  });
+  return wechatDbConnector;
+}
+
+// 只把稳定 source_id 传入连接器；显示名不参与授权。
+async function configureWeChatConnector() {
+  if (!channelCache.loaded) return;
+  const policies = (channelCache.policies || []).filter(item =>
+    item.channel === 'wechat_desktop' && item.allowed && item.source);
+  const chats = policies.map(item => ({
+    source_id: item.source,
+    chat_key: chatKeyFromSource(item.source),
+  })).filter(item => item.chat_key);
+  const enabled = Boolean(channelCache.wechatDesktopEnabled);
+  const signature = `${enabled}|${chats.map(item => item.source_id).sort().join(',')}`;
+  if (signature === wechatConfigSignature) return;
+  if (!enabled && !chats.length && !wechatDbConnector) {
+    wechatConfigSignature = signature;
+    return;
+  }
+  wechatConfigSignature = signature;
+  await ensureWeChatDbConnector().configure({ enabled, chats, intervalMs: 2000 });
 }
 
 function ensureObservationSpool() {
@@ -229,28 +273,13 @@ function ensureObservationSpool() {
   return observationSpool;
 }
 
-// 微信连接器独立于工作轨迹运行；渠道关闭或来源未授权时不会截图或入库。
-function ensureWeChatConnector() {
-  if (wechatConnector) return wechatConnector;
-  wechatConnector = new WeChatConnector({
-    statePath: path.join(app.getPath('userData'), 'wechat-connector-state.json'),
-    captureDir: path.join(app.getPath('userData'), 'wechat-capture'),
-    spool: ensureObservationSpool(),
-    isEnabled: async () => Boolean(channelCache.loaded && channelCache.wechatDesktopEnabled),
-    isSourceAllowed: async source => wechatSourceAllowed(source),
-    logger: console,
-  });
-  wechatConnector.start();
-  return wechatConnector;
-}
-
 function connectorHealth() {
   const spool = observationSpool ? observationSpool.status() : { queueLength: 0, pending: 0 };
   return {
-    wechat: wechatConnector ? wechatConnector.status() : {
+    wechat: wechatDbConnector ? wechatDbConnector.status() : {
       state: 'off', enabled: Boolean(channelCache.wechatDesktopEnabled), authorized: false,
-      currentSource: '', lastObservedAt: '', lastEventAt: '', completeness: 'unknown',
-      lastError: '', pending: spool.pending || 0,
+      authorizedChats: 0, currentSource: '', lastObservedAt: '', lastEventAt: '',
+      completeness: 'unknown', lastError: '', pending: spool.pending || 0,
     },
     browser: browserCollector ? browserCollector.health() : { sites: [], running: 0 },
     activity: {
@@ -1021,7 +1050,7 @@ app.whenReady().then(async () => {
   try { await ensureServer(); } catch (error) { console.error(error.message); }
   ensureObservationSpool();
   await refreshChannelCache();
-  ensureWeChatConnector();
+  await configureWeChatConnector();
   startBrowserScheduler();
   setInterval(refreshChannelCache, 30_000).unref?.();
   startEventStream();
@@ -1180,7 +1209,7 @@ app.on('before-quit', () => {
   if (screenpipeShadow) screenpipeShadow.stop();
   if (browserTimer) clearInterval(browserTimer);
   if (browserCollector) browserCollector.stopAll().catch(() => {});
-  if (wechatConnector) wechatConnector.stop();
+  if (wechatDbConnector) wechatDbConnector.stop().catch(() => {});
   if (spoolTimer) clearInterval(spoolTimer);
   if (serverManager) serverManager.stop();
 });
@@ -1194,10 +1223,15 @@ ipcMain.handle('ui:open-window', (_event, kind) => {
   return true;
 });
 ipcMain.handle('connectors:health', () => connectorHealth());
-ipcMain.handle('wechat:test-capture', async () => {
+ipcMain.handle('wechat-db:list-chats', async (_event, query, limit) => {
   await ensureServer();
   await refreshChannelCache();
-  return ensureWeChatConnector().testCapture();
+  return ensureWeChatDbConnector().listChats(String(query || ''), Number(limit) || 50);
+});
+ipcMain.handle('wechat-db:test', async (_event, options) => {
+  await ensureServer();
+  await refreshChannelCache();
+  return ensureWeChatDbConnector().test(options || {});
 });
 // 顶栏「设置」：打开管理窗口并直接切到设置页。
 ipcMain.handle('ui:open-settings', async () => {
