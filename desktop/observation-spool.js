@@ -41,11 +41,13 @@ class ObservationSpool {
   }
 
   persist() {
-    if (!this.filePath) return;
+    if (!this.filePath) return true;
     try {
       atomicWrite(this.filePath, this.records);
+      return true;
     } catch (error) {
       this.lastError = `待发队列保存失败：${error.message}`;
+      return false;
     }
   }
 
@@ -74,7 +76,7 @@ class ObservationSpool {
     };
     this.records.push(record);
     this.trim();
-    this.persist();
+    record.persisted = this.persist();
     return record;
   }
 
@@ -92,6 +94,28 @@ class ObservationSpool {
       reason: String(reason || '').slice(0, 300),
     };
     record.sourceKey = '';
+  }
+
+  // revokeSource 清除某个来源尚未投递的正文。授权撤销后这些消息
+  // 不该继续留在本地队列里等待投递。
+  revokeSource(sourceKey) {
+    const target = String(sourceKey || '');
+    if (!target) return 0;
+    let revoked = 0;
+    for (const record of this.records) {
+      if (record.status !== 'pending' || record.sourceKey !== target) continue;
+      record.status = 'filtered';
+      record.last_error = '授权已撤销';
+      record.filtered_at = this.now();
+      record.updated_at = record.filtered_at;
+      this.dropBody(record, '授权已撤销');
+      revoked += 1;
+    }
+    if (revoked > 0) {
+      this.trim();
+      this.persist();
+    }
+    return revoked;
   }
 
   async flush(limit = 20) {

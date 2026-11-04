@@ -49,7 +49,7 @@ func TestWorkTaskUpgradeBackfillsLegacyJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	if len(applied) != 3 {
+	if len(applied) != 5 {
 		t.Fatalf("applied=%v", applied)
 	}
 	repos := store.NewRepos(db)

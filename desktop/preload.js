@@ -72,6 +72,11 @@ contextBridge.exposeInMainWorld('desktopAssistant', {
   useSession: id => ipcRenderer.invoke('assistant:use-session', id || ''),
   setCollaboration: enabled => ipcRenderer.invoke('collaboration:set', enabled),
   collaborationStatus: () => ipcRenderer.invoke('collaboration:status'),
+  onCollaborationChanged: callback => {
+    const listener = (_event, value) => callback(value);
+    ipcRenderer.on('collaboration:changed', listener);
+    return () => ipcRenderer.removeListener('collaboration:changed', listener);
+  },
   summarizeNow: () => ipcRenderer.invoke('collaboration:summarize-now'),
   activityList: () => ipcRenderer.invoke('activity:list'),
   activitySummaries: (sessionId = '') => ipcRenderer.invoke('activity:summaries', sessionId),

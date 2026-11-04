@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -33,7 +34,12 @@ type Reader struct {
 	Files      []DBFile
 	Keys       map[string]KeyBlob
 	Unkeyed    []string
+
+	mu        sync.Mutex
+	candidates []Candidate
+	states     map[string]fileState
 	names      map[string]string
+	shards     []string
 }
 
 type Chat struct {
@@ -118,11 +124,13 @@ func Open(dbDir, workDir, preferredAccount string) (*Reader, error) {
 	}
 	accountDir := filepath.Join(dbDir, best.account)
 	workAccountDir := filepath.Join(workDir, best.account)
+	states := map[string]fileState{}
 	var unkeyed []string
 	for _, file := range best.files {
 		key, ok := best.keys[file.Rel]
 		if !ok {
 			unkeyed = append(unkeyed, file.Rel)
+			states[file.Rel] = fileState{}
 			continue
 		}
 		dst := filepath.Join(workAccountDir, filepath.FromSlash(file.Rel))
@@ -136,6 +144,9 @@ func Open(dbDir, workDir, preferredAccount string) (*Reader, error) {
 		if _, err := os.Stat(walPath); err == nil {
 			_ = mergeWAL(dst, walPath, key)
 		}
+		if state, err := probeFile(file.Path); err == nil {
+			states[file.Rel] = state
+		}
 	}
 	wxid := accountSuffix.ReplaceAllString(best.account, "")
 	key := accountKey(wxid)
@@ -143,7 +154,17 @@ func Open(dbDir, workDir, preferredAccount string) (*Reader, error) {
 		DBDir: dbDir, Account: best.account, AccountDir: accountDir,
 		WorkDir: workAccountDir, WXID: wxid, AccountKey: key,
 		Files: best.files, Keys: best.keys, Unkeyed: unkeyed,
+		candidates: candidates, states: states,
 	}, nil
+}
+
+// Refresh 把源库的最新内容同步到解密副本。微信写入先进 WAL，因此每次轮询前
+// 都要刷新，否则读到的永远是连接器启动那一刻的快照。
+func (r *Reader) Refresh() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refreshLocked()
+	return nil
 }
 
 func accountKey(wxid string) string {
@@ -170,7 +191,7 @@ func (r *Reader) decryptedPath(name string) string {
 	return found
 }
 
-func (r *Reader) contactNames() map[string]string {
+func (r *Reader) contactNamesLocked() map[string]string {
 	if r.names != nil {
 		return r.names
 	}
@@ -212,11 +233,13 @@ func (r *Reader) ListChats(query string, limit int) ([]Chat, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 50
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	path := r.decryptedPath("session.db")
 	if path == "" {
 		return nil, fmt.Errorf("session.db 未解密")
 	}
-	names := r.contactNames()
+	names := r.contactNamesLocked()
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -269,23 +292,15 @@ func (r *Reader) RecentMessages(chatKey string, limit int) ([]Message, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
-	names := r.contactNames()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	names := r.contactNamesLocked()
 	display := names[chatKey]
 	if display == "" {
 		display = chatKey
 	}
 	target := "Msg_" + md5Hex(chatKey)
-	var paths []string
-	_ = filepath.Walk(r.WorkDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info == nil || info.IsDir() {
-			return nil
-		}
-		name := info.Name()
-		if strings.HasPrefix(name, "message_") && strings.HasSuffix(strings.ToLower(name), ".db") {
-			paths = append(paths, path)
-		}
-		return nil
-	})
+	paths := r.shardPaths()
 	var all []Message
 	for _, path := range paths {
 		db, err := sql.Open("sqlite", path)
@@ -341,6 +356,26 @@ func (r *Reader) RecentMessages(chatKey string, limit int) ([]Message, error) {
 	return all, nil
 }
 
+// shardPaths 列出解密副本里的消息分片，刷新后缓存失效。
+func (r *Reader) shardPaths() []string {
+	if r.shards != nil {
+		return r.shards
+	}
+	var paths []string
+	_ = filepath.Walk(r.WorkDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil || info.IsDir() {
+			return nil
+		}
+		name := info.Name()
+		if strings.HasPrefix(name, "message_") && strings.HasSuffix(strings.ToLower(name), ".db") {
+			paths = append(paths, path)
+		}
+		return nil
+	})
+	r.shards = paths
+	return paths
+}
+
 func (r *Reader) messageFromRow(chatKey, display, shard string, localID, localType int64,
 	senderID string, createTime int64, content []byte, sortSeq int64) Message {
 	messageKey := fmt.Sprintf("%s:%s:%s:%d", r.AccountKey, chatKey, shard, localID)
@@ -351,7 +386,7 @@ func (r *Reader) messageFromRow(chatKey, display, shard string, localID, localTy
 	if senderID == r.WXID {
 		senderDisplay = "我"
 	} else if senderID != "" {
-		if name := r.contactNames()[senderID]; name != "" {
+		if name := r.contactNamesLocked()[senderID]; name != "" {
 			senderDisplay = name
 		}
 	}

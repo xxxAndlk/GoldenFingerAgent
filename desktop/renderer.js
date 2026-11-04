@@ -452,6 +452,7 @@ collabToggle.addEventListener('change', async () => {
 
 api.onExpanded(renderExpanded);
 api.onWidgetDock?.(renderDock);
+api.onCollaborationChanged?.(renderCollaboration);
 api.onSummary(summary => {
   if (summary.error) addMessage(summary.error, 'error', [], clockLabel(), new Date().toISOString());
   if (summary.reply) {

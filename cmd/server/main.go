@@ -19,6 +19,7 @@ import (
 
 	"goldenfinger/agent/internal/agent"
 	"goldenfinger/agent/internal/agenthub"
+	"goldenfinger/agent/internal/collection"
 	"goldenfinger/agent/internal/compliance"
 	"goldenfinger/agent/internal/config"
 	"goldenfinger/agent/internal/device"
@@ -223,9 +224,11 @@ func main() {
 		log.Printf("agent-jobs: 队列启动失败（异步派发不可用）: %v", err)
 	}
 
+	collectionManager := collection.New(repos, st)
 	tools := append(agent.DefaultTools(), agent.SystemTools()...)
 	tools = append(tools, agent.SkillTools(skillPool)...)
 	tools = append(tools, agent.WeChatTools(repos)...)
+	tools = append(tools, agent.CollectionTools(collectionManager)...)
 	tools = append(tools, agenthub.Tools(agentHub)...)
 	// 同名覆盖：delegate_agent 改为异步派发，并补充查询/取消工具。
 	tools = append(tools, agenthub.AsyncTools(jobQueue)...)
@@ -297,6 +300,7 @@ func main() {
 		Now:             time.Now,
 		Outbox:          outbox,
 		Settings:        st,
+		Collection:      collectionManager,
 		FallbackLLM:     settings.LLM{BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model},
 		Device:          deviceHub,
 		DeviceGuard:     deviceGuard,

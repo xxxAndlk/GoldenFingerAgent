@@ -77,6 +77,22 @@ func wechatAllowed(ctx context.Context, repos *store.Repos, ownerID, sourceID st
 	return repos.ChannelPolicies.Allowed(ctx, ownerID, store.ChannelWeChatDesktop, sourceID)
 }
 
+// wechatAllowedSources 返回当前仍然授权的微信来源。撤销授权后，
+// 历史消息仍留在库里，但没有授权就不能再被读出来。
+func wechatAllowedSources(ctx context.Context, repos *store.Repos, ownerID string) (map[string]bool, error) {
+	policies, err := repos.ChannelPolicies.List(ctx, ownerID, store.ChannelWeChatDesktop)
+	if err != nil {
+		return nil, err
+	}
+	allowed := map[string]bool{}
+	for _, policy := range policies {
+		if policy.Allowed && strings.HasPrefix(policy.Source, wechatDBPrefix) {
+			allowed[policy.Source] = true
+		}
+	}
+	return allowed, nil
+}
+
 func wechatMessageFromTrigger(trigger store.Trigger) wechatMessageView {
 	payload := decodeWechatPayload(trigger.Payload)
 	text := trigger.Body
@@ -120,8 +136,11 @@ func parseWechatTime(value string, fallback time.Time) time.Time {
 
 type getConnectorHealthTool struct{ repos *store.Repos }
 
+// connectorStaleAfter 超过这个时间没有心跳，就认为桌面端连接器不再运行。
+const connectorStaleAfter = 90 * time.Second
+
 func (t getConnectorHealthTool) Spec() llm.ToolSpec {
-	return toolSpec("get_connector_health", "查询微信数据库连接器的授权会话数、最近入库时间和采集覆盖范围。用户问“为什么看不到微信/怎么没有新消息”时先调用它，区分未授权、未采集和确实没有新消息。",
+	return toolSpec("get_connector_health", "查询微信数据库连接器的真实运行状态：是否在运行、授权了哪些会话、最近一次读库和入库时间、待发队列积压。用户问“为什么看不到微信/怎么没有新消息”时先调用它，区分未授权、连接器没跑、投递积压和确实没有新消息。",
 		map[string]any{"channel": map[string]any{"type": "string", "description": "目前只支持 wechat_desktop"}})
 }
 
@@ -129,37 +148,70 @@ func (t getConnectorHealthTool) Execute(ctx context.Context, args json.RawMessag
 	if tc == nil || tc.Session == nil || t.repos == nil {
 		return systemError(fmt.Errorf("微信工具未装配")), nil
 	}
-	policies, err := t.repos.ChannelPolicies.List(ctx, tc.Session.UserID, store.ChannelWeChatDesktop)
+	allowedSources, err := wechatAllowedSources(ctx, t.repos, tc.Session.UserID)
 	if err != nil {
 		return systemError(err), nil
 	}
-	allowed := 0
-	for _, policy := range policies {
-		if policy.Allowed && strings.HasPrefix(policy.Source, wechatDBPrefix) {
-			allowed++
-		}
-	}
+	allowed := len(allowedSources)
 	now := time.Now()
 	rows, _ := wechatTriggers(ctx, t.repos, tc.Session.UserID, now.Add(-365*24*time.Hour), now.Add(time.Minute), 2000)
-	lastEvent := ""
+	lastIngest := ""
 	if len(rows) > 0 {
 		last := rows[len(rows)-1]
 		payload := decodeWechatPayload(last.Payload)
-		lastEvent = firstNonEmpty(payload.ObservedAt, last.ReceivedAt.Format(time.RFC3339))
+		lastIngest = firstNonEmpty(payload.ObservedAt, last.ReceivedAt.Format(time.RFC3339))
+	}
+	data := map[string]any{
+		"channel": store.ChannelWeChatDesktop, "authorized_chats": allowed,
+		"ingested_messages": len(rows), "last_ingest_at": lastIngest,
+		"sync_scope":    "local_incremental",
+		"coverage_note": "只代表本机已授权、已入库的微信数据库记录，不代表微信服务器完整历史。",
 	}
 	state := "waiting_authorization"
 	if allowed > 0 {
-		state = "observing"
-		if lastEvent == "" {
-			state = "unknown"
-		}
+		state = "unknown"
 	}
-	return ToolResult{Status: StatusOK, Data: map[string]any{
-		"channel": store.ChannelWeChatDesktop, "state": state,
-		"authorized_chats": allowed, "last_event_at": lastEvent,
-		"sync_scope":    "local_incremental",
-		"coverage_note": "只代表本机已授权、已入库的微信数据库记录，不代表微信服务器完整历史。",
-	}}, nil
+	// 桌面端定期上报连接器状态；没有心跳或心跳过期都不能当成正在观察。
+	report, reported := t.connectorReport(ctx, tc.Session.UserID, now)
+	if reported {
+		state = report.State
+		if now.Sub(report.UpdatedAt) > connectorStaleAfter {
+			state = "stale"
+		}
+		for key, value := range report.Fields {
+			data[key] = value
+		}
+		data["reported_at"] = report.UpdatedAt.Format(time.RFC3339)
+	}
+	if allowed == 0 && state == "observing" {
+		// 桌面端说在采集，服务端却没有授权来源：消息会在入库时被过滤。
+		data["authorization_mismatch"] = true
+	}
+	data["state"] = state
+	return ToolResult{Status: StatusOK, Data: data}, nil
+}
+
+// connectorReport 读取桌面端上报的连接器状态摘要。
+func (t getConnectorHealthTool) connectorReport(ctx context.Context, ownerID string, now time.Time) (connectorReport, bool) {
+	item, err := t.repos.ConnectorStatuses.Get(ctx, ownerID, store.ChannelWeChatDesktop)
+	if err != nil {
+		return connectorReport{}, false
+	}
+	report := connectorReport{State: item.State, UpdatedAt: item.UpdatedAt, Fields: map[string]any{}}
+	var payload map[string]any
+	if err := json.Unmarshal(item.Payload, &payload); err != nil {
+		return report, true
+	}
+	for key, value := range payload {
+		report.Fields[key] = value
+	}
+	return report, true
+}
+
+type connectorReport struct {
+	State     string
+	UpdatedAt time.Time
+	Fields    map[string]any
 }
 
 // ---- list_wechat_chats ----
@@ -186,15 +238,9 @@ func (t listWeChatChatsTool) Execute(ctx context.Context, args json.RawMessage, 
 	if input.Limit <= 0 || input.Limit > 50 {
 		input.Limit = 20
 	}
-	policies, err := t.repos.ChannelPolicies.List(ctx, tc.Session.UserID, store.ChannelWeChatDesktop)
+	allowed, err := wechatAllowedSources(ctx, t.repos, tc.Session.UserID)
 	if err != nil {
 		return systemError(err), nil
-	}
-	allowed := map[string]bool{}
-	for _, policy := range policies {
-		if policy.Allowed && strings.HasPrefix(policy.Source, wechatDBPrefix) {
-			allowed[policy.Source] = true
-		}
 	}
 	now := time.Now()
 	rows, _ := wechatTriggers(ctx, t.repos, tc.Session.UserID, now.Add(-365*24*time.Hour), now.Add(time.Minute), 2000)
@@ -360,6 +406,10 @@ func (t searchWeChatMessagesTool) Execute(ctx context.Context, args json.RawMess
 			return systemError(fmt.Errorf("该微信会话未授权或不存在")), nil
 		}
 	}
+	allowedSources, err := wechatAllowedSources(ctx, t.repos, tc.Session.UserID)
+	if err != nil {
+		return systemError(err), nil
+	}
 	now := time.Now()
 	from := parseWechatTime(input.From, now.Add(-365*24*time.Hour))
 	to := parseWechatTime(input.To, now.Add(time.Minute))
@@ -371,6 +421,10 @@ func (t searchWeChatMessagesTool) Execute(ctx context.Context, args json.RawMess
 	results := []wechatMessageView{}
 	for index := len(rows) - 1; index >= 0; index-- {
 		message := wechatMessageFromTrigger(rows[index])
+		// 不论是否指定会话，都只返回当前仍然授权的来源。
+		if !allowedSources[message.SourceID] {
+			continue
+		}
 		if input.SourceID != "" && message.SourceID != input.SourceID {
 			continue
 		}

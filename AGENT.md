@@ -25,6 +25,7 @@
 - CC Switch：独立窗口，管理供应商、用量与额度。
 - 工作轨迹：独立半透明浮窗，不随主对话收起而关闭；标题栏可自由拖动，拖到屏幕边缘会吸附；窗口被拖出屏幕边缘超过自身尺寸 20% 时自动收成贴边小条（点击小条展开原尺寸）。展开且贴边时，轨迹窗左侧外侧显示一个独立收回按钮（32×46 小窗口，样式与贴边展开小条一致、箭头相反；不占卡片宽度、不留透明空列；卡片左侧空间不足时自动放到右侧）；拖回中间、不贴边或收起后该按钮隐藏。`×` 是完全隐藏。轨迹窗高度上限固定为 340，启动时按上限裁剪旧配置，不做自动移动/避让；主对话面板不贴边。透明度和显示开关在设置页。
 - 系统托盘：金色「金」球图标（idle/忙碌两态）；点击图标展开主对话。菜单含展开/收起对话、显示/展开/隐藏轨迹、立即总结、设置、CC Switch 与退出。Windows 11 新托盘图标默认在「^」隐藏区，程序会尝试把已有记录提升回任务栏。不要用 `--no-sandbox` 启动：Electron 会因此落到 Low 完整性，Windows 会拒绝它的托盘图标；正常启动请用「启动管家服务.bat」或桌面快捷方式。
+- **应用树必须带 Medium 完整性标签**。仓库根目录若被标成 Low，新建的文件会继承 Low：Electron 主进程在 Low 下无法初始化 Chromium 沙箱，表现为双击后立即静默退出（退出码 3、无任何日志），Go 连接器也读不到微信进程内存。发布前用 `icacls D:\WebData\github\GoldenFingerAgent /setintegritylevel M /T` 修正，并确认 `desktop/dist/GoldenFinger-win/GoldenFinger.exe`、`resources/app/server/goldenfinger-server.exe`、`resources/app/connectors/wechat-db/wechat-db-connector.exe` 的标签都是 `Medium Mandatory Level`。排查“启动即退出”时先看 `icacls <exe>`，再看日志。
 - 模型设置：推理强度只有 low / high / max 三档（与 DeepSeek 对齐）。
 - 聊天回复：支持 Markdown。
 
@@ -47,6 +48,7 @@ internal/superagent/            Trigger/Thread/EventLog、Router/Coordinator、W
 internal/worktask/              长期 WorkTask、Live State、Inbox、Artifact 版本与验收
 internal/watchdog/              心跳停滞、重复循环、预算、unknown 副作用监控与只读恢复
 internal/agenthub/              桌面/CLI/A2A/BMA/CC Switch 发现与调用
+internal/collection/            聊天式采集渠道配置与桌面短命命令协调
 internal/agenthub/async.go      持久化异步任务队列（agent_job）与失败/超时/重启语义
 internal/relay/                 手机↔电脑中继：配对、通道、离线队列、去重、双端客户端
 internal/voice/                 语音口令判定：唤醒词、指令窗口、片段合并、上下文窗口（纯状态机）
@@ -235,7 +237,9 @@ env -u ELECTRON_RUN_AS_NODE ./desktop/dist/GoldenFinger-win/GoldenFinger.exe --s
 - Thread 新事件必须写入关联 WorkTask 的 Inbox，由 StepController 消费；不得只写 Worker 事件后宣称实时响应。
 - 渠道采集统一走 `POST /api/channels/*`，原始内容落 `agent_trigger`；活动片段按 `context_key` 分 Thread（无法判断才用 `activity:unassigned:<日期>`）、邮件按 `thread_key`、日历按 series/event、微信按 `source_id`。微信默认 deny，只有 `/api/settings/channels` 显式允许的来源才落正文；被拒来源只计数，不保存正文。
 - 微信连接器必须独立于工作轨迹：`WeChatDbConnector` 监督独立 Go 只读连接器（`cmd/wechat-db-connector`），按本人账号、稳定 `source_id` 读取本机微信数据库并进入持久 Spool；连接器只实现取钥、SQLCipher 页解密、WAL 合并和 SQLite 查询，**不得操作微信 UI、发送消息、hook、注入或使用非官方协议**。原始微信数据库只读，不做 checkpoint/VACUUM/写 SQL；日志不得含密钥、数据库路径或未授权正文；未授权来源不得写检查点、Spool 或模型上下文。邮件只读 IMAP（`BODY.PEEK[]`），不得因采集修改已读状态或自动发送；发送仍只能走 ActionOutbox 人工审批。
+- 微信连接器每轮轮询前必须刷新解密副本（`Reader.Refresh()`）：源库变化时重新解密，并重放 WAL 中**已提交**的帧；只解一次库的连接器看不到运行期间到达的消息。消息发出后必须等桌面回 `ack` 才算已处理、检查点才允许越过它，高水位不得越过未确认消息。`ok=false, discard=false` 是落盘失败，必须保留 pending 等重试；只有越权等明确不应入库的消息才允许 `discard=true`，不得写入 Seen。撤销来源授权时必须同时清掉本地待发队列里该来源的正文。模型侧读取微信必须按当前授权逐条过滤，撤销后不得再读到历史正文；连接器健康状态只能来自桌面心跳，不得用「历史上有消息」推断正在采集。
 - 六类渠道 `activity/email/feishu/dingtalk/wechat_desktop/wechat_mobile` 默认全部关闭，开关在 `agent_channel_config`；`enabled/summary_enabled/index_enabled/brief_enabled/auto_worker_enabled` 必须真正控制采集、摘要、向量、简报和自动 Worker，不能只隐藏界面。全局 `router/worker/daily_brief/proactive_notify` 独立于渠道开关。被拒来源只计 `agent_channel_skip`，正文不得进入 Trigger、向量、摘要、简报或旧通知中心。
+- 主聊天通过 `list_collection_channels` / `configure_collection_channel` 管理微信来源、网页和桌面工作轨迹；工具只在 `cmd/server` 注册，不进 Android 默认工具。微信发现与活动开关经 `/api/channels/connector/requests` 短命命令由桌面真实执行，请求发出不等于成功；同名候选必须澄清。网页默认 `current_page`（MaxPages=1、MaxDepth=0、不导航），整站必须机主明确授权。`activity` 只是桌面轨迹/协作总开关，不得伪称单应用白名单；飞书、钉钉未接通时不得展示为已支持。
 - 手机微信通知必须先在 `/api/inbox/events` 应用 `wechat_mobile` 开关与来源策略；`index_enabled=false` 时不得生成 embedding。微信、飞书、钉钉来源默认 deny。
 - IMAP 游标必须同时保存 `UIDVALIDITY + UID`；UIDVALIDITY 变化时重置游标，不能按旧 UID 继续增量。邮箱筛选在 IMAP SEARCH 与本地解析后都要执行。
 - 通用网页采集使用 `playwright-core` + `@mozilla/readability`，只使用本机 Edge/Chrome，不下载 Chromium、不接付费中台。站点必须先配置授权 origin/路径，后台导航只能停留在授权范围；未启用站点不得启动浏览器。网页内容始终是不可信数据。

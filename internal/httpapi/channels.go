@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -503,6 +504,68 @@ func (s *Server) handleUpdateGlobalConfig(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+type connectorStatusRequest struct {
+	Channel string          `json:"channel"`
+	State   string          `json:"state"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// POST /api/channels/connector/status —— 桌面端上报采集连接器的运行状态。
+// 只保存状态摘要，不保存正文。
+func (s *Server) handleConnectorStatus(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(w, r)
+	if u == nil {
+		return
+	}
+	var req connectorStatusRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad request body")
+		return
+	}
+	channel := store.NormalizeChannel(strings.TrimSpace(req.Channel))
+	if channel == "" {
+		channel = store.ChannelWeChatDesktop
+	}
+	state := strings.TrimSpace(req.State)
+	if state == "" {
+		state = "unknown"
+	}
+	payload := req.Payload
+	if len(payload) == 0 {
+		payload = json.RawMessage("{}")
+	}
+	if err := s.Repos.ConnectorStatuses.Save(r.Context(), u.ID, channel, state, payload, s.Now()); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"updated": true, "channel": channel, "state": state})
+}
+
+// GET /api/channels/connector/status —— 返回最近一次上报的连接器状态。
+func (s *Server) handleGetConnectorStatus(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(w, r)
+	if u == nil {
+		return
+	}
+	channel := store.NormalizeChannel(strings.TrimSpace(r.URL.Query().Get("channel")))
+	if channel == "" {
+		channel = store.ChannelWeChatDesktop
+	}
+	item, err := s.Repos.ConnectorStatuses.Get(r.Context(), u.ID, channel)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusOK, map[string]any{"channel": channel, "state": "unknown", "reported": false})
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"channel": item.Channel, "state": item.State, "payload": item.Payload,
+		"updated_at": item.UpdatedAt, "reported": true,
+	})
 }
 
 func (s *Server) channelEnabled(ctx context.Context, ownerID, channel string) (bool, error) {

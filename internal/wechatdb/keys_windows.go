@@ -315,31 +315,39 @@ func hexNibble(b byte) byte {
 	}
 }
 
+// findKeyForFile 用候选密钥校验某个库文件的第一页。校验通过才说明密钥可用。
+func findKeyForFile(candidates []Candidate, file DBFile) (KeyBlob, bool) {
+	page1 := make([]byte, PageSize)
+	fileHandle, err := os.Open(file.Path)
+	if err != nil {
+		return KeyBlob{}, false
+	}
+	_, err = fileHandle.ReadAt(page1, 0)
+	fileHandle.Close()
+	if err != nil {
+		return KeyBlob{}, false
+	}
+	return findKeyForPage(candidates, page1)
+}
+
+func findKeyForPage(candidates []Candidate, page1 []byte) (KeyBlob, bool) {
+	for _, cand := range candidates {
+		if verifyKey(cand.Key, page1, nil) {
+			return KeyBlob{Key: cand.Key}, true
+		}
+		if len(cand.Salt) == 16 && verifyKey(cand.Key, page1, cand.Salt) {
+			return KeyBlob{Key: cand.Key, Salt: cand.Salt}, true
+		}
+	}
+	return KeyBlob{}, false
+}
+
 func FindKeys(candidates []Candidate, files []DBFile) map[string]KeyBlob {
 	keys := map[string]KeyBlob{}
 	debugf("find_keys candidates=%d files=%d", len(candidates), len(files))
-	for _, cand := range candidates {
-		for _, file := range files {
-			if _, exists := keys[file.Rel]; exists {
-				continue
-			}
-			page1 := make([]byte, PageSize)
-			fileHandle, err := os.Open(file.Path)
-			if err != nil {
-				continue
-			}
-			_, err = fileHandle.ReadAt(page1, 0)
-			fileHandle.Close()
-			if err != nil {
-				continue
-			}
-			if verifyKey(cand.Key, page1, nil) {
-				keys[file.Rel] = KeyBlob{Key: cand.Key}
-				continue
-			}
-			if len(cand.Salt) == 16 && verifyKey(cand.Key, page1, cand.Salt) {
-				keys[file.Rel] = KeyBlob{Key: cand.Key, Salt: cand.Salt}
-			}
+	for _, file := range files {
+		if key, ok := findKeyForFile(candidates, file); ok {
+			keys[file.Rel] = key
 		}
 	}
 	return keys

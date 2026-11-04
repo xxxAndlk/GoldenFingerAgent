@@ -14,6 +14,7 @@ type LongTermEpisode struct {
 	OwnerUserID   string
 	Text          string
 	Source        string
+	Role          string
 	ReferenceTime time.Time
 	Status        string
 	Attempts      int
@@ -64,11 +65,11 @@ func NewLongTermRepo(q Querier) *LongTermEdgeRepo { return &LongTermEdgeRepo{q: 
 func (r *LongTermEdgeRepo) InsertEpisode(ctx context.Context, e *LongTermEpisode) (bool, error) {
 	now := nowForDB()
 	res, err := r.q.ExecContext(ctx, `
-		INSERT INTO mem_episode (source_id, owner_user_id, text, source, reference_time,
+		INSERT INTO mem_episode (source_id, owner_user_id, text, source, role, reference_time,
 			status, attempts, last_error, embedding, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, 0, '', ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', ?, ?, ?)
 		ON CONFLICT(source_id) DO NOTHING`,
-		e.SourceID, e.OwnerUserID, e.Text, e.Source, e.ReferenceTime,
+		e.SourceID, e.OwnerUserID, e.Text, e.Source, e.Role, e.ReferenceTime,
 		LongTermStatusPending, vecToBlob(e.Embedding), now, now)
 	if err != nil {
 		return false, err
@@ -91,7 +92,7 @@ func (r *LongTermEdgeRepo) PendingEpisodes(ctx context.Context, limit int) ([]Lo
 		limit = 10
 	}
 	rows, err := r.q.QueryContext(ctx, `
-		SELECT source_id, owner_user_id, text, source, reference_time, status, attempts,
+		SELECT source_id, owner_user_id, text, source, role, reference_time, status, attempts,
 			last_error, created_at, updated_at
 		FROM mem_episode WHERE status = ? ORDER BY reference_time LIMIT ?`,
 		LongTermStatusPending, limit)
@@ -102,7 +103,7 @@ func (r *LongTermEdgeRepo) PendingEpisodes(ctx context.Context, limit int) ([]Lo
 	var out []LongTermEpisode
 	for rows.Next() {
 		var e LongTermEpisode
-		if err := rows.Scan(&e.SourceID, &e.OwnerUserID, &e.Text, &e.Source, &e.ReferenceTime,
+		if err := rows.Scan(&e.SourceID, &e.OwnerUserID, &e.Text, &e.Source, &e.Role, &e.ReferenceTime,
 			&e.Status, &e.Attempts, &e.LastError, &e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -123,10 +124,10 @@ func (r *LongTermEdgeRepo) MarkEpisode(ctx context.Context, sourceID, status, la
 func (r *LongTermEdgeRepo) Episode(ctx context.Context, sourceID string) (LongTermEpisode, error) {
 	var e LongTermEpisode
 	err := r.q.QueryRowContext(ctx, `
-		SELECT source_id, owner_user_id, text, source, reference_time, status, attempts,
+		SELECT source_id, owner_user_id, text, source, role, reference_time, status, attempts,
 			last_error, created_at, updated_at
 		FROM mem_episode WHERE source_id = ?`, sourceID).
-		Scan(&e.SourceID, &e.OwnerUserID, &e.Text, &e.Source, &e.ReferenceTime,
+		Scan(&e.SourceID, &e.OwnerUserID, &e.Text, &e.Source, &e.Role, &e.ReferenceTime,
 			&e.Status, &e.Attempts, &e.LastError, &e.CreatedAt, &e.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return e, ErrNotFound

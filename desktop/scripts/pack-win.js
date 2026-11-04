@@ -24,7 +24,7 @@ const files = [
   'markdown.js', 'agent-panel.js', 'workbench.html', 'workbench.js',
   'browser-policy.js', 'browser-extract.js', 'browser-session.js', 'browser-collector.js',
   'secret-store.js', 'observation-envelope.js', 'observation-spool.js',
-  'wechat-db-connector.js',
+  'wechat-db-connector.js', 'connector-requests.js',
   'tray-icon.png', 'tray-icon.ico', 'tray-icon-busy.png', 'tray-icon-busy.ico',
   'app-icon.png', 'app-icon.ico', 'app-icon.css',
 ];
@@ -64,7 +64,13 @@ for (const moduleName of ['playwright-core', '@mozilla/readability']) {
 const projectRoot = path.resolve(root, '..');
 const serverOutput = path.join(appOutput, 'server');
 fs.mkdirSync(serverOutput, { recursive: true });
-fs.copyFileSync(path.join(projectRoot, 'server-dist', 'goldenfinger-server.exe'), path.join(serverOutput, 'goldenfinger-server.exe'));
+const serverTarget = path.join(serverOutput, 'goldenfinger-server.exe');
+fs.copyFileSync(path.join(projectRoot, 'server-dist', 'goldenfinger-server.exe'), serverTarget);
+// Electron 主进程与服务端都必须以 Medium 完整性运行：Low 标签下 Chromium 沙箱
+// 无法初始化（启动即静默退出），Low 进程也读不到微信进程内存。
+try {
+  execFileSync('icacls', [serverTarget, '/setintegritylevel', 'M'], { windowsHide: true, stdio: 'ignore' });
+} catch { /* 非管理员环境下保留原标签，运行时会明确报权限错误。 */ }
 fs.cpSync(path.join(projectRoot, 'web'), path.join(serverOutput, 'web'), { recursive: true });
 fs.cpSync(path.join(projectRoot, 'skills'), path.join(serverOutput, 'skills'), { recursive: true });
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -75,4 +81,9 @@ fs.writeFileSync(path.join(appOutput, 'package.json'), JSON.stringify({
   main: 'main.js',
 }, null, 2));
 fs.renameSync(path.join(output, 'electron.exe'), path.join(output, 'GoldenFinger.exe'));
+// 主进程可执行文件必须带 Medium 标签：Low 标签下 Chromium 沙箱无法初始化，
+// 表现为启动后立即静默退出（退出码 3），没有任何日志。
+try {
+  execFileSync('icacls', [path.join(output, 'GoldenFinger.exe'), '/setintegritylevel', 'M'], { windowsHide: true, stdio: 'ignore' });
+} catch { /* 非管理员环境下保留原标签，运行时会明确报权限错误。 */ }
 console.log(`DESKTOP_PACKAGE_OK ${output}`);

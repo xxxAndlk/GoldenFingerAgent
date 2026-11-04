@@ -21,6 +21,7 @@ const { BrowserCollector } = require('./browser-collector');
 const { SecretStore } = require('./secret-store');
 const { ObservationSpool } = require('./observation-spool');
 const { WeChatDbConnector, chatKeyFromSource } = require('./wechat-db-connector');
+const { ConnectorRequestRunner } = require('./connector-requests');
 const {
   clampBounds, snapBounds, dockEdge, nearestEdge, overflowEdge, edgeTabBounds, anchorExpandedBounds,
 } = require('./window-dock');
@@ -84,6 +85,7 @@ let screenpipeShadow = null;
 let observationSpool = null;
 let wechatDbConnector = null;
 let wechatConfigSignature = '';
+let connectorRequestRunner = null;
 let spoolTimer = null;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -248,6 +250,32 @@ async function configureWeChatConnector() {
   }
   wechatConfigSignature = signature;
   await ensureWeChatDbConnector().configure({ enabled, chats, intervalMs: 2000 });
+  await reportConnectorStatus();
+}
+
+// 把连接器的真实运行状态上报给服务端。模型侧只有拿到这份心跳，
+// 才能区分“没有授权”“连接器没在跑”和“确实没有新消息”。
+async function reportConnectorStatus() {
+  if (!api || !wechatDbConnector) return;
+  const status = wechatDbConnector.status();
+  try {
+    await api.reportConnectorStatus('wechat_desktop', status.state, {
+      enabled: status.enabled,
+      authorized_chats: status.authorizedChats,
+      sources: status.sources,
+      last_observed_at: status.lastObservedAt,
+      last_event_at: status.lastEventAt,
+      last_delivered_at: status.lastDeliveredAt,
+      pending: status.pending,
+      filtered: status.filtered,
+      failed: status.failed,
+      denied: status.denied,
+      revoked: status.revoked,
+      last_error: status.lastError,
+    });
+  } catch (error) {
+    console.error(`微信连接器状态上报：${error.message}`);
+  }
 }
 
 function ensureObservationSpool() {
@@ -1051,8 +1079,16 @@ app.whenReady().then(async () => {
   ensureObservationSpool();
   await refreshChannelCache();
   await configureWeChatConnector();
+  connectorRequestRunner = new ConnectorRequestRunner({
+    api,
+    refreshChannels: refreshChannelCache,
+    listWeChatChats: (query, limit) => ensureWeChatDbConnector().listChats(query, limit),
+    setActivityEnabled: setCollaborationEnabled,
+  });
+  connectorRequestRunner.start();
   startBrowserScheduler();
   setInterval(refreshChannelCache, 30_000).unref?.();
+  setInterval(() => { reportConnectorStatus(); }, 15_000).unref?.();
   startEventStream();
   try {
     createTray();
@@ -1210,6 +1246,7 @@ app.on('before-quit', () => {
   if (browserTimer) clearInterval(browserTimer);
   if (browserCollector) browserCollector.stopAll().catch(() => {});
   if (wechatDbConnector) wechatDbConnector.stop().catch(() => {});
+  if (connectorRequestRunner) connectorRequestRunner.stop();
   if (spoolTimer) clearInterval(spoolTimer);
   if (serverManager) serverManager.stop();
 });
@@ -1592,13 +1629,17 @@ ipcMain.handle('activity:set-visible', (_event, value) => {
   if (visible && activityCollapsed) setActivityCollapsed(false);
   return visible;
 });
-ipcMain.handle('collaboration:set', async (_event, enabled) => {
+async function setCollaborationEnabled(enabled) {
   const status = await collaboration.setEnabled(enabled);
   await syncActivityRecording();
   saveSettings({ collaborationEnabled: status.enabled, workspace });
   refreshTrayMenu();
-  return { ...status, ...activityTrail.status() };
-});
+  const combined = { ...status, ...activityTrail.status() };
+  broadcast('collaboration:changed', combined);
+  return combined;
+}
+
+ipcMain.handle('collaboration:set', (_event, enabled) => setCollaborationEnabled(enabled));
 ipcMain.handle('collaboration:status', () => ({ ...collaboration.status(), ...activityTrail.status(), workspace }));
 ipcMain.handle('collaboration:summarize-now', () => runSummarize());
 ipcMain.handle('activity:list', () => activityTrail.list());

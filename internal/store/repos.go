@@ -43,6 +43,7 @@ type Repos struct {
 	ToolInvocations     *ToolInvocationRepo
 	PersonalPolicies    *PersonalPolicyRepo
 	Devices             *DeviceRepo
+	ConnectorStatuses   *ConnectorStatusRepo
 }
 
 // NewRepos 在一个 Querier 之上构建仓储（用 WithTx 可得到事务范围的仓储）。
@@ -92,5 +93,6 @@ func NewRepos(q Querier) *Repos {
 		ToolInvocations:     NewToolInvocationRepo(q),
 		PersonalPolicies:    NewPersonalPolicyRepo(q),
 		Devices:             NewDeviceRepo(q),
+		ConnectorStatuses:   NewConnectorStatusRepo(q),
 	}
 }

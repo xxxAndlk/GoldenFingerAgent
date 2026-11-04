@@ -18,6 +18,10 @@ type Episode struct {
 	Text          string
 	ReferenceTime time.Time
 	Source        string
+	// Role 说明这段话是谁说的：owner 是机主本人，contact 是联系人，
+	// system 是系统提示。抽取长期记忆时必须区分，否则会把别人的话
+	// 记成机主自己的意愿。
+	Role string
 }
 
 // MemoryQuery 是与后端无关的长期记忆检索条件。

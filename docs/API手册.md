@@ -286,11 +286,13 @@ WorkTask 跨多条消息、多个执行段和多个渠道保存目标、实时�
 | `POST /api/channels/calendar/events` | 日历事件：`calendar/event_id/series_id/title/description/location/start_at/end_at/attendees/status`；按 series/event 归 Thread |
 | `GET /api/settings/channels` | 返回渠道策略、今日跳过计数；微信默认 deny，其他渠道默认 allow |
 | `PUT /api/settings/channels` | `{"channel":"wechat","source":"项目群","allowed":true}`；拒绝来源不落正文，只增加跳过计数 |
+| `POST /api/channels/connector/status` | 桌面端上报采集连接器心跳：`channel/state/payload`；只保存状态摘要，不保存正文 |
+| `GET /api/channels/connector/status` | 返回最近一次上报的连接器状态；从未上报时 `reported=false` |
 | `GET/PUT /api/settings/email` | IMAP 收件配置（host/port/username/password/mailbox/tls/initial_fetch/poll_seconds）；GET 密码打码，空密码表示保留原值 |
 
 微信字段语义：`source_id` 是稳定会话键（`wechat-db:<account_key>:<chat_key>`），也是唯一授权依据；`display_name` 只用于展示。`message_id` 必须包含分片与 `local_id`，不能只用 `(chat, local_id)`；`event_id` 由它确定性派生，服务端按它幂等。`direction` 只能是 `self/other/system/unknown`；`actor_role` 为 `owner/contact/system/unknown`。`completeness=complete` 只表示单条消息完整，`sync_scope=local_incremental` 才描述覆盖范围；`occurred_at` 来自数据库，`observed_at` 是连接器观察时间。旧 OCR 的 `current_visible` 记录保留但不等于新链路历史。
 
-桌面端微信连接器监督独立 Go 只读进程（`cmd/wechat-db-connector`），读取本机微信 SQLCipher 数据库；不操作微信 UI、不发送、不 hook/注入、不写原始库。密钥只在本机内存中用于解密，未授权来源不写检查点、不入队、不进入模型。桌面工作台「接入设置 → 感知采集状态」可见授权会话数、最近读库/新消息/入库、待发/过滤/失败和错误；`wechat-db:list-chats` 与 `wechat-db:test` IPC 只做会话列表/预览，不写入 Spool。模型通过 `get_connector_health/list_wechat_chats/read_wechat_messages/search_wechat_messages` 只读查询已入库数据。
+桌面端微信连接器监督独立 Go 只读进程（`cmd/wechat-db-connector`），读取本机微信 SQLCipher 数据库；不操作微信 UI、不发送、不 hook/注入、不写原始库。密钥只在本机内存中用于解密，未授权来源不写检查点、不入队、不进入模型。连接器每轮轮询前刷新解密副本（源库变化时重新解密，并重放 WAL 中已提交的帧），发出的消息要等桌面回 `ack` 才计入已处理，检查点高水位不会越过未确认消息；撤销来源授权时桌面同时清掉本地待发队列里该来源的正文。桌面工作台「接入设置 → 感知采集状态」可见授权会话数、最近读库/新消息/入库、待发/过滤/失败和错误；`wechat-db:list-chats` 与 `wechat-db:test` IPC 只做会话列表/预览，不写入 Spool。模型通过 `get_connector_health/list_wechat_chats/read_wechat_messages/search_wechat_messages` 只读查询已入库数据：健康状态来自桌面心跳（超过 90 秒未上报记为 `stale`），微信消息查询一律按当前授权过滤，撤销后不再返回历史正文。
 
 可选 IMAP 采集器只读取正文（`BODY.PEEK[]`），不标记已读、不发送邮件；游标保存在 `agent_channel_cursor`，重启不重复拉取。
 
@@ -396,7 +398,25 @@ WorkTask 跨多条消息、多个执行段和多个渠道保存目标、实时�
 
 自动抽取事实默认 `inferred`，不会覆盖 `confirmed`；冲突保留两条证据并标 `conflicted`。Worker 结论不得自动成为稳定 Personal Policy，必须用户确认后 `active`。工具执行还要同时满足 Profile、设备能力和 ActionGrant；任一失效都会拒绝并记录 denied 调用。
 
-## 五、其余既有端点（摘要）
+## 五、聊天式采集渠道配置
+
+主聊天新增两个工具，不开放给 Android 默认工具集：
+
+- `list_collection_channels`：只读查看真实支持的 `wechat_desktop/web/activity`、微信授权 `source_id`、网页 `site_id` 和工作轨迹配置状态。
+- `configure_collection_channel`：敏感配置工具，支持 `add/remove/enable/disable`。只有当前主对话机主的明确要求可以触发；WorkTask 中还需要有效 ActionGrant。
+
+桌面命令端点：
+
+| 方法 路径 | 用途 |
+|---|---|
+| `GET /api/channels/connector/requests?channel=` | 桌面端轮询当前机主的短命配置命令；不返回 `owner_user_id` |
+| `POST /api/channels/connector/requests/{id}/complete` | 回传真实执行结果；跨机主、未知或已完成 ID 返回 404 |
+
+`list_wechat_chats` 命令只回传 `source_id/chat_key/display_name/chat_type/account_id/last_message_at`，不回传正文、Summary、密钥或数据库路径。同名候选不唯一时工具要求机主选择，不能直接授权。`set_activity` 必须收到桌面真实开关状态后才保存服务端配置；12 秒未响应按失败处理。
+
+网页 `add` 只接受 http(s) URL，默认 `current_page`、`MaxPages=1`、`MaxDepth=0`、不导航，间隔 60–86400 秒；只有机主明确授权整站才可 `scope=site`。当前 `activity` 是整个桌面工作轨迹/协作模式总开关，不是单应用白名单。
+
+## 六、其余既有端点（摘要）
 
 | 方法 路径 | 功能 |
 |---|---|
@@ -424,6 +444,6 @@ WorkTask 跨多条消息、多个执行段和多个渠道保存目标、实时�
 
 ---
 
-## 六、错误格式
+## 七、错误格式
 
 统一：`{"error":"<message>"}`，常见状态码 400（请求/格式错误）、404（资源不存在）、500（服务端错误）、503（对应服务未装配，如 Inbox=nil）。

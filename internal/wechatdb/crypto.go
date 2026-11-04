@@ -17,6 +17,11 @@ const (
 	WalFrame  = 4120
 )
 
+const (
+	walMagicLE = 0x377f0682
+	walMagicBE = 0x377f0683
+)
+
 type KeyBlob struct {
 	Key  []byte
 	Salt []byte
@@ -163,23 +168,60 @@ func decryptFile(src, dst string, key KeyBlob) error {
 	return out.Sync()
 }
 
+// walFrame 是一帧 WAL 数据。DbSize 非零表示该帧是一个事务的提交点。
+type walFrame struct {
+	Index  int
+	PageNo int
+	DbSize int
+	Data   []byte
+}
+
+// selectWalFrames 只返回已提交事务的帧。WAL 里未提交的帧不能落到解密副本上，
+// 否则会读到事务中间状态；盐值不匹配说明 WAL 被重置，后续帧全部作废。
+func selectWalFrames(data []byte) ([]walFrame, bool) {
+	if len(data) < WalHeader {
+		return nil, false
+	}
+	magic := binary.BigEndian.Uint32(data[:4])
+	if magic != walMagicLE && magic != walMagicBE {
+		return nil, false
+	}
+	salt := data[16:24]
+	count := (len(data) - WalHeader) / WalFrame
+	frames := make([]walFrame, 0, count)
+	lastCommit := -1
+	for index := 0; index < count; index++ {
+		offset := WalHeader + index*WalFrame
+		header := data[offset : offset+24]
+		if !hmac.Equal(header[8:16], salt) {
+			break
+		}
+		pageNo := int(binary.BigEndian.Uint32(header[:4]))
+		if pageNo <= 0 {
+			break
+		}
+		dbSize := int(binary.BigEndian.Uint32(header[4:8]))
+		frames = append(frames, walFrame{
+			Index: index, PageNo: pageNo, DbSize: dbSize,
+			Data: data[offset+24 : offset+24+PageSize],
+		})
+		if dbSize > 0 {
+			lastCommit = index
+		}
+	}
+	if lastCommit < 0 {
+		return nil, false
+	}
+	return frames[:lastCommit+1], true
+}
+
 func mergeWAL(dst, walPath string, key KeyBlob) error {
-	wal, err := os.Open(walPath)
-	if err != nil {
-		return nil
-	}
-	defer wal.Close()
-	header := make([]byte, WalHeader)
-	if _, err := wal.Read(header); err != nil {
-		return nil
-	}
-	walSalt := append([]byte(nil), header[16:24]...)
-	info, err := wal.Stat()
+	data, err := os.ReadFile(walPath)
 	if err != nil {
 		return err
 	}
-	frames := (info.Size() - WalHeader) / WalFrame
-	if frames <= 0 {
+	frames, ok := selectWalFrames(data)
+	if !ok {
 		return nil
 	}
 	out, err := os.OpenFile(dst, os.O_RDWR, 0)
@@ -188,30 +230,13 @@ func mergeWAL(dst, walPath string, key KeyBlob) error {
 	}
 	defer out.Close()
 	maxPage := 0
-	for i := int64(0); i < frames; i++ {
-		if _, err := wal.Seek(WalHeader+i*WalFrame, 0); err != nil {
-			break
-		}
-		frameHeader := make([]byte, 24)
-		page := make([]byte, PageSize)
-		if _, err := wal.Read(frameHeader); err != nil {
-			break
-		}
-		if _, err := wal.Read(page); err != nil {
-			break
-		}
-		if !hmac.Equal(frameHeader[8:16], walSalt) {
-			continue
-		}
-		pgno := int(binary.BigEndian.Uint32(frameHeader[:4]))
-		if pgno <= 0 {
-			continue
-		}
-		plain, err := decryptPage(key, page, pgno)
+	commitSize := 0
+	for _, frame := range frames {
+		plain, err := decryptPage(key, frame.Data, frame.PageNo)
 		if err != nil {
 			continue
 		}
-		if pgno == 1 {
+		if frame.PageNo == 1 {
 			if len(key.Key) == 48 {
 				if len(plain) < PageSize || plain[16] != 1 {
 					continue
@@ -222,22 +247,26 @@ func mergeWAL(dst, walPath string, key KeyBlob) error {
 		} else if !validPageType(plain[0]) {
 			continue
 		}
-		if _, err := out.Seek(int64(pgno-1)*PageSize, 0); err != nil {
+		if _, err := out.WriteAt(plain, int64(frame.PageNo-1)*PageSize); err != nil {
 			break
 		}
-		if _, err := out.Write(plain); err != nil {
-			break
+		if frame.PageNo > maxPage {
+			maxPage = frame.PageNo
 		}
-		if pgno > maxPage {
-			maxPage = pgno
+		if frame.DbSize > 0 {
+			commitSize = frame.DbSize
 		}
 	}
-	if maxPage > 0 {
+	pages := commitSize
+	if pages == 0 {
+		pages = maxPage
+	}
+	if pages > 0 {
 		page1 := make([]byte, PageSize)
 		if _, err := out.ReadAt(page1, 0); err == nil {
-			pages := int(binary.BigEndian.Uint32(page1[28:32]))
-			if maxPage > pages {
-				binary.BigEndian.PutUint32(page1[28:32], uint32(maxPage))
+			current := int(binary.BigEndian.Uint32(page1[28:32]))
+			if pages > current {
+				binary.BigEndian.PutUint32(page1[28:32], uint32(pages))
 				_, _ = out.WriteAt(page1, 0)
 			}
 		}

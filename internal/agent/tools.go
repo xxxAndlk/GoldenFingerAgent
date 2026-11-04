@@ -179,7 +179,7 @@ func classifyToolName(name string) (RiskLevel, bool) {
 		"get_weather", "read", "web_search", "web_fetch", "screen_observe",
 		"list_agents", "refresh_agents", "agent_provider_usage", "list_skills",
 		"load_skill", "list_agent_tasks", "get_agent_task", "get_connector_health",
-		"list_wechat_chats", "read_wechat_messages", "search_wechat_messages":
+		"list_wechat_chats", "read_wechat_messages", "search_wechat_messages", "list_collection_channels":
 		return RiskRead, false
 	case "create_task", "set_alarm", "save_note", "save_fact", "update_task",
 		"create_intent", "cancel_intent", "wait", "tap", "input_text", "swipe",
@@ -187,7 +187,7 @@ func classifyToolName(name string) (RiskLevel, bool) {
 		return RiskPrepare, false
 	case "write":
 		return RiskPrepare, false
-	case "bash", "delegate_agent":
+	case "bash", "delegate_agent", "configure_collection_channel":
 		return RiskSensitive, true
 	case "switch_claude_provider":
 		return RiskExternalWrite, true

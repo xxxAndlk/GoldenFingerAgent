@@ -11,3 +11,7 @@ func ExtractKeyCandidates() ([]Candidate, error) {
 func FindKeys(candidates []Candidate, files []DBFile) map[string]KeyBlob {
 	return nil
 }
+
+func findKeyForFile(candidates []Candidate, file DBFile) (KeyBlob, bool) {
+	return KeyBlob{}, false
+}

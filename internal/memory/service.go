@@ -204,7 +204,7 @@ func (s *Service) SaveFact(ctx context.Context, in SaveFactInput) (Outcome, *sto
 		return "", nil, err
 	}
 	s.mirrorEpisode(ctx, "fact:"+f.ID, in.OwnerUserID,
-		fmt.Sprintf("%s 的 %s：%s", in.PersonName, in.FactType, in.ValueText), "person_fact", now)
+		fmt.Sprintf("%s 的 %s：%s", in.PersonName, in.FactType, in.ValueText), "person_fact", RoleOwner, now)
 	owner := in.OwnerUserID
 	detail, _ := json.Marshal(map[string]any{"fact_id": f.ID, "status": status})
 	_ = s.audit.Append(ctx, &owner, in.Actor, "fact_write", f.ID, detail)
@@ -326,7 +326,7 @@ func (s *Service) SaveNote(ctx context.Context, ownerID, text, rawRef string, so
 	if err := s.eps.Create(ctx, e); err != nil {
 		return nil, err
 	}
-	s.mirrorEpisode(ctx, "episode:"+e.ID, ownerID, e.Summary, "note", e.CreatedAt)
+	s.mirrorEpisode(ctx, "episode:"+e.ID, ownerID, e.Summary, "note", RoleOwner, e.CreatedAt)
 	owner := ownerID
 	_ = s.audit.Append(ctx, &owner, "agent", "note_save", e.ID, nil)
 	return e, nil
@@ -339,7 +339,7 @@ func (s *Service) SaveWorkerResult(ctx context.Context, ownerID, text, rawRef st
 	if err := s.eps.Create(ctx, e); err != nil {
 		return nil, err
 	}
-	s.mirrorEpisode(ctx, rawRef, ownerID, text, "worker", e.CreatedAt)
+	s.mirrorEpisode(ctx, rawRef, ownerID, text, "worker", RoleOwner, e.CreatedAt)
 	if s.embed != nil {
 		go func(id, text string) {
 			embedCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

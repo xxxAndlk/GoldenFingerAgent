@@ -106,7 +106,7 @@ func (n *Native) Append(ctx context.Context, episode Episode) error {
 	}
 	inserted, err := n.cfg.Repos.LongTerm.InsertEpisode(ctx, &store.LongTermEpisode{
 		SourceID: episode.SourceID, OwnerUserID: episode.OwnerID, Text: episode.Text,
-		Source: episode.Source, ReferenceTime: at, Embedding: embedding,
+		Source: episode.Source, Role: episode.Role, ReferenceTime: at, Embedding: embedding,
 	})
 	if err != nil {
 		return err
@@ -161,7 +161,7 @@ func (n *Native) RunOnce(ctx context.Context) int {
 }
 
 func (n *Native) processEpisode(ctx context.Context, ep store.LongTermEpisode) error {
-	facts, err := ExtractFacts(ctx, n.cfg.LLM, n.cfg.Model, ep.Text, ep.ReferenceTime)
+	facts, err := ExtractFacts(ctx, n.cfg.LLM, n.cfg.Model, ep.Text, ep.ReferenceTime, ep.Role)
 	if err != nil {
 		attempts := ep.Attempts + 1
 		status := store.LongTermStatusPending

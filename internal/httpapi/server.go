@@ -18,6 +18,7 @@ import (
 
 	"goldenfinger/agent/internal/agent"
 	"goldenfinger/agent/internal/agenthub"
+	"goldenfinger/agent/internal/collection"
 	"goldenfinger/agent/internal/device"
 	"goldenfinger/agent/internal/inbox"
 	"goldenfinger/agent/internal/settings"
@@ -74,6 +75,8 @@ type Server struct {
 	Tasks *worktask.Service
 	// Artifacts 管理不可变交付物版本与验收；nil 时相关端点返回 503。
 	Artifacts *worktask.ArtifactService
+	// Collection 协调聊天配置工具与桌面真实采集开关。
+	Collection *collection.Manager
 }
 
 // Outbox 是已投递提醒文本的小型内存队列（开发 MVP）。
@@ -163,6 +166,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/channels/activity/episodes", s.handleActivityEpisode)
 	mux.HandleFunc("POST /api/channels/email/messages", s.handleEmailMessage)
 	mux.HandleFunc("POST /api/channels/wechat/messages", s.handleWeChatMessage)
+	mux.HandleFunc("POST /api/channels/connector/status", s.handleConnectorStatus)
+	mux.HandleFunc("GET /api/channels/connector/status", s.handleGetConnectorStatus)
+	mux.HandleFunc("GET /api/channels/connector/requests", s.handleConnectorRequests)
+	mux.HandleFunc("POST /api/channels/connector/requests/{id}/complete", s.handleCompleteConnectorRequest)
 	mux.HandleFunc("POST /api/channels/calendar/events", s.handleCalendarEvent)
 	mux.HandleFunc("POST /api/channels/web/items", s.handleWebItem)
 	mux.HandleFunc("GET /api/settings/web/sites", s.handleWebSites)

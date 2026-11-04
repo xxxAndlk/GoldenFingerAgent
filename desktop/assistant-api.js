@@ -293,6 +293,29 @@ class AssistantApi {
     return this.request('/api/settings/channels', { method: 'GET' });
   }
 
+  reportConnectorStatus(channel, state, payload) {
+    return this.request('/api/channels/connector/status', {
+      method: 'POST',
+      body: JSON.stringify({ channel, state, payload: payload || {} }),
+    });
+  }
+
+  connectorStatus(channel) {
+    const query = channel ? `?channel=${encodeURIComponent(channel)}` : '';
+    return this.request(`/api/channels/connector/status${query}`, { method: 'GET' });
+  }
+
+  pendingConnectorRequests(channel = '') {
+    const query = channel ? `?channel=${encodeURIComponent(channel)}` : '';
+    return this.request(`/api/channels/connector/requests${query}`, { method: 'GET' });
+  }
+
+  completeConnectorRequest(id, result) {
+    return this.request(`/api/channels/connector/requests/${encodeURIComponent(id)}/complete`, {
+      method: 'POST', body: JSON.stringify(result || {}),
+    });
+  }
+
   updateChannelPolicy(policy) {
     return this.request('/api/settings/channels', {
       method: 'PUT',

@@ -64,7 +64,8 @@ func TestUpgradeFromLegacySchema(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	want := []string{"0005_agent_jobs.sql", "0006_longterm_memory.sql", "0007_superagent.sql", "0008_single_main_session.sql", "0009_channels_briefs.sql", "0010_channel_configs.sql",
-		"0011_work_tasks.sql", "0012_execution_control.sql", "0013_memory_policy_devices.sql"}
+		"0011_work_tasks.sql", "0012_execution_control.sql", "0013_memory_policy_devices.sql",
+		"0014_connector_status.sql", "0015_longterm_role.sql"}
 	if strings.Join(applied, ",") != strings.Join(want, ",") {
 		t.Fatalf("applied=%v want %v", applied, want)
 	}

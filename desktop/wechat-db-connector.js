@@ -51,6 +51,7 @@ class WeChatDbConnector {
     this.lastEventAt = '';
     this.startedAt = 0;
     this.denied = 0;
+    this.revoked = 0;
     this.healthTimer = null;
   }
 
@@ -76,6 +77,7 @@ class WeChatDbConnector {
       failed: spool.failed || 0,
       lastError: this.lastError || spool.lastError || '',
       denied: this.denied,
+      revoked: this.revoked,
       sources: this.config.chats.map(item => item.source_id).filter(Boolean),
     };
   }
@@ -180,20 +182,31 @@ class WeChatDbConnector {
   async handleMessage(message) {
     if (Number(message.schema_version) !== 2) return;
     const sourceId = String(message.source_id || '');
+    const messageId = String(message.message_id || '');
     if (!sourceId || !this.allowedSources.has(sourceId)) {
       this.denied += 1;
+      // 越权消息明确丢弃，不进入队列；这与临时落盘失败必须重试不同。
+      this.ack(messageId, false, true);
       return;
     }
     const eventId = String(message.event_id || message.message_id || '');
     if (!eventId) throw new Error('微信消息缺少稳定 event_id');
     this.lastEventAt = new Date(this.now()).toISOString();
-    this.spool.enqueue({
+    const record = this.spool.enqueue({
       endpoint: '/api/channels/wechat/messages',
       event: eventId,
       kind: 'wechat_db_message',
       sourceKey: sourceId,
       payload: message,
     });
+    // 只有真正落盘才算投递成功，否则连接器不能推进检查点。
+    this.ack(messageId, !record || record.persisted !== false);
+  }
+
+  ack(messageId, ok, discard = false) {
+    if (!messageId) return;
+    this.send({ type: 'ack', message_id: messageId, ok: Boolean(ok), discard: Boolean(discard) })
+      .catch(() => { /* 连接器退出时无需回执 */ });
   }
 
   handleExit(code, signal) {
@@ -262,6 +275,7 @@ class WeChatDbConnector {
   }
 
   async configure({ enabled, chats, intervalMs = 2000 }) {
+    const previous = new Set(this.config.chats.map(item => item.source_id).filter(Boolean));
     this.config = {
       enabled: Boolean(enabled),
       chats: (chats || []).filter(item => item && item.chat_key).map(item => ({
@@ -273,6 +287,12 @@ class WeChatDbConnector {
     };
     await this.ensureStarted();
     await this.sendConfigure();
+    // 授权被撤销的来源立即清掉待发正文，不再等服务端过滤。
+    const current = new Set(this.config.chats.map(item => item.source_id).filter(Boolean));
+    for (const sourceId of previous) {
+      if (current.has(sourceId)) continue;
+      this.revoked += this.spool.revokeSource(sourceId);
+    }
     if (!this.healthTimer) {
       this.healthTimer = setInterval(() => {
         this.send({ type: 'health' }, 10_000).catch(() => {});
