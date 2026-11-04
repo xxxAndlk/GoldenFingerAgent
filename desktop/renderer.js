@@ -15,6 +15,8 @@ const themeToggle = document.querySelector('#theme-toggle');
 const chatStatus = document.querySelector('#chat-status');
 const chatStatusText = document.querySelector('#chat-status-text');
 const historyToggle = document.querySelector('#history-toggle');
+const clearScreenButton = document.querySelector('#clear-screen');
+const clearHint = document.querySelector('#clear-hint');
 const historyPanel = document.querySelector('#history-panel');
 const historyList = document.querySelector('#history-list');
 const historyDate = document.querySelector('#history-date');
@@ -25,6 +27,8 @@ const workbenchDot = document.querySelector('#workbench-dot');
 const pendingStrip = document.querySelector('#pending-strip');
 const pendingStripText = document.querySelector('#pending-strip-text');
 const briefCard = document.querySelector('#brief-card');
+const briefCardOpen = document.querySelector('#brief-card-open');
+const briefCardClose = document.querySelector('#brief-card-close');
 const briefCardText = document.querySelector('#brief-card-text');
 const historyClearDate = document.querySelector('#history-clear-date');
 const attachButton = document.querySelector('#attach');
@@ -50,6 +54,12 @@ let oldestMessageId = '';
 let messageHasMore = false;
 let loadingOlderMessages = false;
 let allowOlderLoad = false;
+let clearedActive = false;
+let clearedCutoff = 0;
+let clearSettleUntil = 0;
+let clearToken = 0;
+let dismissedBriefId = '';
+let currentBriefId = '';
 
 // ---- 对话状态：思考中 / 调用工具 / 等待 Agent ----
 const TOOL_LABELS = {
@@ -136,7 +146,27 @@ function renderExpanded(next) {
   document.body.dataset.expanded = next ? '1' : '0';
   if (!next) orbDot.hidden = true;
   if (!next) closeHistory();
-  if (next) setTimeout(() => input.focus(), 180);
+  if (next) {
+    // 重新打开只保留最近一页，并落在最底部；清屏状态不跨窗口保留。
+    resetCleared();
+    reloadLatestMessages();
+    setTimeout(() => input.focus(), 180);
+  }
+}
+
+// 面板重新打开时重新拉最近一页：清屏、翻页加载过的旧消息都不再留在窗口里。
+async function reloadLatestMessages() {
+  if (!conversationSession || pendingReply) return;
+  const token = clearToken;
+  try {
+    const page = await api.sessionMessages(conversationSession, '', MESSAGE_PAGE_SIZE);
+    if (!Array.isArray(page)) return;
+    // 请求期间用户清过屏就不要再重绘，否则刚隐藏的内容又回来了。
+    if (token !== clearToken) return;
+    renderConversation(page, { hasMore: page.length >= MESSAGE_PAGE_SIZE });
+  } catch {
+    // 拉取失败就保留当前内容，不要把正在看的内容清掉。
+  }
 }
 
 // 贴边状态由主进程在拖动停下后通知：收口圆角并显示边缘滑轨。
@@ -272,16 +302,17 @@ function clockLabel(date = new Date()) {
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 }
 
-function buildTimeLabel(at) {
+function buildTimeLabel(at, role = '') {
   const label = document.createElement('div');
-  label.className = 'message-time';
+  // 时间贴着自己那侧：机主消息在右上方，回复在左上方。
+  label.className = role === 'user' ? 'message-time user' : 'message-time';
   label.textContent = at;
   return label;
 }
 
 function buildMessageEntry(text, role = 'assistant', attachments = [], at = '', createdAt = '') {
   const fragment = document.createDocumentFragment();
-  if (at) fragment.appendChild(buildTimeLabel(at));
+  if (at) fragment.appendChild(buildTimeLabel(at, role));
   const element = buildMessage(text, role, attachments);
   if (createdAt) element.dataset.createdAt = createdAt;
   fragment.appendChild(element);
@@ -416,6 +447,13 @@ async function refreshBriefCard() {
     const result = await api.latestBrief(localDateString());
     const brief = result && result.brief;
     if (!brief) throw new Error('not ready');
+    const id = String(brief.id || '');
+    currentBriefId = id;
+    // 用户关掉的那一版简报不再自动冒出来；出了新版本才重新显示。
+    if (id && id === dismissedBriefId) {
+      briefCard.hidden = true;
+      return;
+    }
     const text = String(brief.content_md || '')
       .split('\n')
       .map(line => line.replace(/^#+\s*/, '').trim())
@@ -430,7 +468,12 @@ async function refreshBriefCard() {
 
 workbenchToggle?.addEventListener('click', () => api.openWorkbench());
 pendingStrip?.addEventListener('click', () => api.openWorkbench());
-briefCard?.addEventListener('click', () => api.openWorkbench());
+briefCardOpen?.addEventListener('click', () => api.openWorkbench());
+briefCardClose?.addEventListener('click', event => {
+  event.stopPropagation();
+  dismissedBriefId = currentBriefId;
+  briefCard.hidden = true;
+});
 api.onAgentEvent?.(() => {
   clearTimeout(refreshWorkbenchBadge.timer);
   refreshWorkbenchBadge.timer = setTimeout(refreshWorkbenchBadge, 600);
@@ -499,16 +542,74 @@ function renderConversation(list, { hasMore = false } = {}) {
   messageHasMore = hasMore;
   messages.replaceChildren();
   allowOlderLoad = false;
-  const items = conversationItems(raw);
+  // 清屏期间只显示清屏之后产生的新消息。
+  const items = conversationItems(raw).filter(item => !isClearedItem(item));
   if (!items.length) {
-    addMessage(WELCOME, 'assistant');
+    if (!clearedActive) addMessage(WELCOME, 'assistant');
   } else {
     for (const item of items) {
       addMessage(item.content || '', item.role, [], item.at || '', item.created_at || '');
     }
   }
   renderSummaryMarker();
-  requestAnimationFrame(() => { allowOlderLoad = true; });
+  requestAnimationFrame(() => {
+    allowOlderLoad = true;
+    scrollToBottom();
+  });
+}
+
+// 落到底部。CSS 的 smooth 会把 scrollTop 赋值变成动画，连着渲染多条消息时
+// 动画会被后续内容顶掉，最后停在中间；这里强制瞬时定位。
+function scrollToBottom() {
+  const behavior = messages.style.scrollBehavior;
+  messages.style.scrollBehavior = 'auto';
+  messages.scrollTop = messages.scrollHeight;
+  requestAnimationFrame(() => { messages.style.scrollBehavior = behavior; });
+}
+
+// 清屏：只把当前这一屏消息从视口摘掉，服务端内容不动；向上滚动即可恢复。
+// 用时间点而不是 DOM 快照来记录，这样中途重绘也不会把清掉的内容放回来。
+function clearScreen() {
+  const entries = Array.from(messages.children).filter(child =>
+    child.classList.contains('message')
+    || child.classList.contains('message-time')
+    || child.classList.contains('summary-flow'));
+  if (!entries.length) return;
+  clearedActive = true;
+  clearedCutoff = Date.now();
+  clearToken += 1;
+  for (const entry of entries) entry.classList.add('cleared-hidden');
+  // 清屏后不留占位：界面保持干净，新消息直接贴在顶部，不会悬在空白中间。
+  clearSettleUntil = Date.now() + 400;
+  messages.scrollTop = 0;
+  if (clearHint) clearHint.hidden = false;
+}
+
+function isClearedItem(item) {
+  if (!clearedActive) return false;
+  const at = Date.parse(String(item.created_at || ''));
+  return Number.isFinite(at) && at <= clearedCutoff;
+}
+
+function restoreCleared() {
+  if (!clearedActive) return;
+  clearedActive = false;
+  clearedCutoff = 0;
+  if (clearHint) clearHint.hidden = true;
+  // 先把当前节点放回来：会话还没加载出来时也要能恢复。
+  for (const entry of messages.querySelectorAll('.cleared-hidden')) {
+    entry.classList.remove('cleared-hidden');
+  }
+  // 再重新拉最近一页，刚才被藏起的消息按时间回到窗口里。
+  reloadLatestMessages();
+}
+
+// 切换会话时清掉清屏状态：新会话不应该沿用上一段对话的隐藏。
+function resetCleared() {
+  clearedActive = false;
+  clearedCutoff = 0;
+  clearSettleUntil = 0;
+  if (clearHint) clearHint.hidden = true;
 }
 
 // 滚到顶部时加载更早一页；只插入旧消息，不重绘已有 DOM，保留当前滚动位置。
@@ -546,8 +647,25 @@ async function loadOlderMessages() {
 }
 
 messages.addEventListener('scroll', () => {
-  if (allowOlderLoad && messages.scrollTop <= 24) loadOlderMessages();
+  if (!allowOlderLoad) return;
+  // 清屏状态下拉回顶部才恢复；刚清完时浏览器会把位置夹回顶部，那不算用户上滑。
+  if (clearedActive) {
+    if (Date.now() < clearSettleUntil) return;
+    if (messages.scrollTop > 4) return;
+    restoreCleared();
+    return;
+  }
+  if (messages.scrollTop <= 24) loadOlderMessages();
 });
+
+// 清屏后内容常常撑不满一屏，没有滚动条可拉；这时用向上的滚轮手势恢复。
+messages.addEventListener('wheel', event => {
+  if (!clearedActive || event.deltaY >= 0) return;
+  if (Date.now() < clearSettleUntil) return;
+  if (messages.scrollHeight - messages.clientHeight > 4) return;
+  event.preventDefault();
+  restoreCleared();
+}, { passive: false });
 
 function setHistoryMessage(text) {
   historyList.replaceChildren();
@@ -625,6 +743,7 @@ async function openSession(id) {
     await api.useSession(id);
     localStorage.setItem(SESSION_KEY, id);
     conversationSession = id;
+    resetCleared();
     await loadSummaries();
     const page = await api.sessionMessages(id, '', MESSAGE_PAGE_SIZE);
     renderConversation(page, { hasMore: page.length >= MESSAGE_PAGE_SIZE });
@@ -644,6 +763,7 @@ async function startNewChat() {
 
 // 桌面与手机共用同一条主会话；旧聊天记录只作为历史查看。
 async function restoreMainSession() {
+  resetCleared();
   try {
     const result = await api.mainSession();
     const id = result && result.session && result.session.id;
@@ -666,6 +786,10 @@ async function restoreMainSession() {
 }
 
 historyToggle.addEventListener('click', openHistory);
+clearScreenButton.addEventListener('click', () => {
+  clearScreen();
+  input.focus();
+});
 historyClose.addEventListener('click', closeHistory);
 historyNew.addEventListener('click', startNewChat);
 historyClearDate.addEventListener('click', () => {

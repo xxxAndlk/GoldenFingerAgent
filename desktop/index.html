@@ -30,6 +30,9 @@
         <button id="history-toggle" class="icon-button" aria-label="对话历史" title="对话历史">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.3"/><path d="M12 7.4V12l3.2 2"/></svg>
         </button>
+        <button id="clear-screen" class="icon-button" aria-label="清屏" title="清屏：只隐藏当前消息，不删除；向上滚动可恢复">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.6 16.1 12.9 7.8l3.6 3.6-8.3 8.3H4.6v-3.6Z"/><path d="m14.1 6.6 3.5-3.5 3.6 3.6-3.5 3.5"/></svg>
+        </button>
         <button id="workbench-toggle" class="icon-button workbench-button" aria-label="打开工作台" title="工作台：任务进度、待处理、今日简报">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h9"/></svg>
           <span class="workbench-label">工作台</span>
@@ -55,11 +58,14 @@
         <span class="pending-strip-arrow" aria-hidden="true">›</span>
       </button>
 
-      <button id="brief-card" class="brief-card" type="button" hidden>
-        <span class="brief-card-label">今日简报</span>
-        <span id="brief-card-text"></span>
-        <span class="pending-strip-arrow" aria-hidden="true">›</span>
-      </button>
+      <div id="brief-card" class="brief-card" hidden>
+        <button id="brief-card-open" class="brief-card-open" type="button">
+          <span class="brief-card-label">今日简报</span>
+          <span id="brief-card-text"></span>
+          <span class="pending-strip-arrow" aria-hidden="true">›</span>
+        </button>
+        <button id="brief-card-close" class="brief-card-close" type="button" aria-label="关闭今日简报" title="关闭今日简报">×</button>
+      </div>
     </div>
 
     <span id="main-collab-status" class="visually-hidden" role="status">未授权，不会观察</span>
@@ -84,6 +90,7 @@
         <section id="messages" class="messages" aria-live="polite">
           <article class="message assistant"><p>我是金手指管家，可以对话、记录和调度其他 Agent。要安排长期任务时，点右上角「工作台」；待办和验收也会在那里提醒你。</p></article>
         </section>
+        <div id="clear-hint" class="clear-hint" hidden>已清屏 · 向上滚动可恢复之前的消息</div>
         <button id="summary-line" class="summary-line" type="button" hidden>
           <span class="summary-line-dot" aria-hidden="true"></span>
           <span>已产生 <strong id="summary-count">0</strong> 条总结，点击查看</span>

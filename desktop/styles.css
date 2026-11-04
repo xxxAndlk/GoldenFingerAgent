@@ -479,15 +479,28 @@ body[data-expanded="1"][data-dock="bottom"] .panel { border-bottom-left-radius: 
   background-color: var(--label-4);
 }
 
-/* 消息时间：像聊天流一样居中显示在消息上方 */
+/* 清屏：只是把这一屏消息从视口里摘掉，服务端内容不动，向上滚动即可恢复。 */
+.messages .cleared-hidden { display: none !important; }
+.messages .clear-spacer { pointer-events: none; }
+
+.clear-hint {
+  padding: 6px 14px 8px;
+  color: var(--label-3);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+/* 消息时间：贴着自己那侧显示——机主消息在右上方，回复在左上方 */
 .message-time {
   margin: 3px 0 5px;
   color: var(--label-3);
   font-size: 10px;
   line-height: 1.4;
-  text-align: center;
+  text-align: left;
   letter-spacing: .02em;
 }
+.message-time.user { text-align: right; }
 
 /* 总结单行入口：作为对话流节点插入 */
 .summary-line {
@@ -948,10 +961,10 @@ body[data-expanded="1"][data-dock="bottom"] .panel { border-bottom-left-radius: 
 .brief-card {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
   width: calc(100% - 24px);
   margin: 8px 12px 0;
-  padding: 8px 12px;
+  padding: 4px 6px 4px 12px;
   border: 1px solid rgba(10, 132, 255, .22);
   border-radius: 12px;
   background: rgba(10, 132, 255, .1);
@@ -959,8 +972,36 @@ body[data-expanded="1"][data-dock="bottom"] .panel { border-bottom-left-radius: 
   font: inherit;
   font-size: 12px;
   text-align: left;
-  cursor: pointer;
 }
 .brief-card[hidden] { display: none; }
+.brief-card-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.brief-card-close {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--label-3, #98989d);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.brief-card-close:hover { background: rgba(10, 132, 255, .18); color: var(--label-1, #f5f5f7); }
 .brief-card-label { flex: 0 0 auto; color: var(--blue, #0a84ff); font-weight: 600; }
 #brief-card-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--label-2, #c7c7cc); }

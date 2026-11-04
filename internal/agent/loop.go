@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -155,7 +156,7 @@ func Run(ctx context.Context, s *Session, userText string, rt *Runtime) (*TurnRe
 		resp, err := rt.LLM.Chat(ctx, req)
 		if err != nil {
 			log.Printf("[agent] llm chat failed (step %d/%d, session=%s): %v", step, steps, s.ID, err)
-			return &TurnResult{Reply: withIntentNotice("我这边有点卡住了，我们稍后再试好吗？", fired)}, nil
+			return &TurnResult{Reply: withIntentNotice(failureReply(err), fired)}, nil
 		}
 
 		if rate, ok := resp.Usage.CacheHitRate(); ok {
@@ -220,7 +221,34 @@ func Run(ctx context.Context, s *Session, userText string, rt *Runtime) (*TurnRe
 		return &TurnResult{Reply: withIntentNotice(reply, fired), Trace: s.Trace}, nil
 	}
 	rt.emit(Event{Kind: "done", Step: steps})
-	return &TurnResult{Reply: withIntentNotice("我这边有点卡住了，我们稍后再试好吗？", fired)}, nil
+	return &TurnResult{Reply: withIntentNotice(
+		fmt.Sprintf("这次没能收尾：工具调用用完了 %d 步，模型还在继续发起工具调用。可以把任务拆小一点再试，或直接说要我做到哪一步。", steps),
+		fired)}, nil
+}
+
+// failureReply 把失败原因直接带回对话，用户能据此排查（模型地址、密钥、限流、网络），
+// 而不是只看到一句“稍后再试”。
+func failureReply(err error) string {
+	detail := sanitizeFailure(err)
+	if detail == "" {
+		return "我这边有点卡住了，我们稍后再试好吗？"
+	}
+	return fmt.Sprintf("这次回答失败了：%s\n\n可以检查模型配置或稍后再试；如果一直失败，把这条原因发给我继续排查。", detail)
+}
+
+var apiKeyPattern = regexp.MustCompile(`(?i)sk-[a-z0-9_-]{8,}`)
+
+// sanitizeFailure 折叠空白、去掉密钥、限制长度，避免把整段上游响应塞进对话。
+func sanitizeFailure(err error) string {
+	if err == nil {
+		return ""
+	}
+	text := strings.Join(strings.Fields(err.Error()), " ")
+	text = apiKeyPattern.ReplaceAllString(text, "sk-***")
+	if runes := []rune(text); len(runes) > 300 {
+		text = string(runes[:300]) + "…"
+	}
+	return text
 }
 
 func applyStepController(ctx context.Context, rt *Runtime, s *Session, step int, messages *[]llm.Message) (bool, bool, error) {

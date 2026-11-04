@@ -55,7 +55,7 @@ func resolveTaskConfirm(ctx context.Context, s *Session, rt *Runtime, p *nlu.Pen
 		s.Pending = nil
 		u, err := userOf(&ToolContext{Session: s, Runtime: rt})
 		if err != nil {
-			return &TurnResult{Reply: "我这边有点卡住了，稍后再试好吗？"}, true
+			return &TurnResult{Reply: failureReply(err)}, true
 		}
 		var absTime *time.Time
 		if tp.TimeExprRaw != "" {
@@ -70,7 +70,7 @@ func resolveTaskConfirm(ctx context.Context, s *Session, rt *Runtime, p *nlu.Pen
 		}
 		res, err := scheduleTask(ctx, &ToolContext{Session: s, Runtime: rt}, u, tp, tp.PersonID, absTime, tp.Confidence, nil, true)
 		if err != nil {
-			return &TurnResult{Reply: "记的时候出了点问题，再说一次好吗？"}, true
+			return &TurnResult{Reply: "记的时候出了点问题："+sanitizeFailure(err)+"。再说一次好吗？"}, true
 		}
 		return resultFromTool(res), true
 	case nlu.MatchNone:
@@ -101,7 +101,7 @@ func resolvePersonDisambig(ctx context.Context, s *Session, rt *Runtime, p *nlu.
 
 	u, err := userOf(&ToolContext{Session: s, Runtime: rt})
 	if err != nil {
-		return &TurnResult{Reply: "我这边有点卡住了，稍后再试好吗？"}, true
+		return &TurnResult{Reply: failureReply(err)}, true
 	}
 
 	if opt.Ref == "none" {
@@ -134,7 +134,7 @@ func resolvePersonDisambig(ctx context.Context, s *Session, rt *Runtime, p *nlu.
 		}
 		res, err := scheduleTask(ctx, &ToolContext{Session: s, Runtime: rt}, u, tp, personID, absTime, tp.Confidence, nil, true)
 		if err != nil {
-			return &TurnResult{Reply: "记的时候出了点问题，再说一次好吗？"}, true
+			return &TurnResult{Reply: "记的时候出了点问题："+sanitizeFailure(err)+"。再说一次好吗？"}, true
 		}
 		return resultFromTool(res), true
 
@@ -144,14 +144,14 @@ func resolvePersonDisambig(ctx context.Context, s *Session, rt *Runtime, p *nlu.
 		}
 		res, err := saveFactFlow(ctx, &ToolContext{Session: s, Runtime: rt}, u, *dp.Fact, personID)
 		if err != nil {
-			return &TurnResult{Reply: "记的时候出了点问题，再说一次好吗？"}, true
+			return &TurnResult{Reply: "记的时候出了点问题："+sanitizeFailure(err)+"。再说一次好吗？"}, true
 		}
 		return resultFromTool(res), true
 
 	case "query_person":
 		view, err := rt.Tools.Memory.GetPersonView(ctx, u.ID, personID)
 		if err != nil {
-			return &TurnResult{Reply: "我这边查不到了，稍后再试好吗？"}, true
+			return &TurnResult{Reply: "这次没查到："+sanitizeFailure(err)+"。稍后再试，或者换个问法。"}, true
 		}
 		reply := fmt.Sprintf("关于%s，我记着这些：", view.Person.CanonicalName)
 		for i, f := range view.Facts {
@@ -183,12 +183,12 @@ func resolveFactConfirm(ctx context.Context, s *Session, rt *Runtime, p *nlu.Pen
 		s.Pending = nil
 		u, err := userOf(&ToolContext{Session: s, Runtime: rt})
 		if err != nil {
-			return &TurnResult{Reply: "我这边有点卡住了，稍后再试好吗？"}, true
+			return &TurnResult{Reply: failureReply(err)}, true
 		}
 		fp.Confidence = 0.95 // 用户已确认
 		res, err := saveFactFlow(ctx, &ToolContext{Session: s, Runtime: rt}, u, fp, fp.PersonID)
 		if err != nil {
-			return &TurnResult{Reply: "记的时候出了点问题，再说一次好吗？"}, true
+			return &TurnResult{Reply: "记的时候出了点问题："+sanitizeFailure(err)+"。再说一次好吗？"}, true
 		}
 		return resultFromTool(res), true
 	default:
@@ -212,7 +212,7 @@ func resolveTimeMissing(ctx context.Context, s *Session, rt *Runtime, p *nlu.Pen
 
 	u, err := userOf(&ToolContext{Session: s, Runtime: rt})
 	if err != nil {
-		return &TurnResult{Reply: "我这边有点卡住了，稍后再试好吗？"}, true
+		return &TurnResult{Reply: failureReply(err)}, true
 	}
 	tr, ok := parseTime(&ToolContext{Session: s, Runtime: rt}, userText, now, loadLocation(u.TZ))
 	if !ok {
@@ -235,7 +235,7 @@ func resolveTimeMissing(ctx context.Context, s *Session, rt *Runtime, p *nlu.Pen
 	}
 	res, err := scheduleTask(ctx, &ToolContext{Session: s, Runtime: rt}, u, tp, tp.PersonID, &absTime, score, nil, true)
 	if err != nil {
-		return &TurnResult{Reply: "记的时候出了点问题，再说一次好吗？"}, true
+		return &TurnResult{Reply: "记的时候出了点问题："+sanitizeFailure(err)+"。再说一次好吗？"}, true
 	}
 	return resultFromTool(res), true
 }

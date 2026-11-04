@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -240,9 +241,34 @@ func TestLoopMaxStepsBailsOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(res.Reply, "卡住") {
+	if !strings.Contains(res.Reply, "工具调用用完了") {
 		t.Errorf("bail-out reply = %q", res.Reply)
 	}
+}
+
+func TestLoopLLMFailureShowsReason(t *testing.T) {
+	sess, rt, _ := testHarness(t)
+	rt.LLM = failingLLM{err: errors.New("llm stream: HTTP 401: {\"error\":{\"message\":\"invalid api key sk-abcdef123456\"}}")}
+	res, err := Run(context.Background(), sess, "你好", rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Reply, "HTTP 401") {
+		t.Fatalf("失败原因没有带回对话: %q", res.Reply)
+	}
+	if strings.Contains(res.Reply, "sk-abcdef123456") {
+		t.Fatalf("回复泄漏了密钥: %q", res.Reply)
+	}
+}
+
+type failingLLM struct{ err error }
+
+func (f failingLLM) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	return nil, f.err
+}
+
+func (f failingLLM) Stream(context.Context, llm.ChatRequest, func(string)) (*llm.ChatResponse, error) {
+	return nil, f.err
 }
 
 func TestLoopMaxStepsReturnsFinalAnswerWithoutTools(t *testing.T) {

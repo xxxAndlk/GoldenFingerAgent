@@ -16,6 +16,12 @@
 - **验证证据**：`go test ./... -count=1` 全部通过，`go vet ./...` 通过；桌面 `npm test` 143 项通过，`npm run check` 通过；`git diff --check` 通过。测试覆盖网页默认边界与启停删除、微信唯一/歧义候选、撤权、桌面请求 owner 隔离和超时、活动真实确认、工具风险分类、桌面安全字段及防重入。
 - **尚待真机验收**：尚未用真实模型在主聊天执行“增加某联系人/某网页”，也未重新做真实微信新消息持续监听与桌面启停联调；自动测试通过不等于这些真机路径已经验收。
 - **启动失败根因（打包启动时发现）**：仓库根目录被标成 Low 完整性，应用树整体继承 Low，Electron 主进程在 Low 下无法初始化 Chromium 沙箱——启动即静默退出（退出码 3，无任何日志），最小 Electron 空应用同样复现，与本次代码无关。用 `icacls D:\WebData\github\GoldenFingerAgent /setintegritylevel M /T` 修正后应用正常启动（5 个 GoldenFinger 进程 + 服务端 + 连接器），健康心跳 `observing`，待发/失败/拒绝均为 0，微信 Trigger 稳定在清理后的 38 条。打包脚本已补：主程序、服务端、连接器三个 exe 都显式设为 Medium。
+- **聊天窗口：重新打开只留最近 50 条并落在底部**：`.messages` 的 `scroll-behavior: smooth` 让连着渲染 50 条时的滚动动画停在中间；改成 `scrollToBottom()` 瞬时定位，面板展开时 `reloadLatestMessages()` 重新拉最近一页（`MESSAGE_PAGE_SIZE=50`），清屏和翻页加载过的旧内容不再留在窗口里。
+- **聊天窗口：清屏按钮**：标题栏新增「清屏」（橡皮擦图标）。清屏只把当前这一屏消息从视口摘掉（加 `cleared-hidden`），服务端内容一律不动。清屏后不留等高空位——界面保持干净，新消息直接贴在顶部，不会悬在空白中间；内容撑不满一屏时用向上的滚轮手势恢复，能滚动时滚到顶部恢复。清屏范围用时间点（`clearedCutoff`）记录而不是 DOM 快照，中途重绘也不会把清掉的内容放回来；刚清完时浏览器会把滚动位置夹回顶部，用 `clearSettleUntil` 排除这一次误判。切换会话或重新打开窗口会清掉清屏状态。
+- **聊天窗口：今日简报可关闭**：简报卡片拆成「打开工作台」按钮 + 独立「×」按钮（避免按钮嵌套）。关闭后记录 `dismissedBriefId`，同一版简报不再自动出现；出了新版本（新 `id`）才重新显示。
+- **聊天窗口：时间贴边**：消息时间不再居中，机主消息右对齐（右上方），回复左对齐（左上方）。
+- **回答失败给出具体原因**：LLM 调用失败不再只回一句“稍后再试”。`failureReply` 把上游错误（HTTP 状态、限流、网络、解析失败等）折叠空白、脱敏 `sk-***`、限长 300 字后直接写进回复；工具步数用尽也会说明“用完了 N 步”。待办解析里的建档/查询失败同样带上原因。
+- **验证**：`desktop/scripts/widget-smoke.js` 用 Playwright 驱动真实 Electron 窗口验证：打开后距底 0px、今日简报可关闭、清屏后可见消息 0 条且内容不被撑高、向上滚轮恢复 50 条、关闭再打开后仍是最近一页且在底部（`WIDGET_SMOKE_OK time=right/left brief=dismissed messages=50 cleared=0 restored=50 grown=52 reopened=50`）；截图见 `desktop/artifacts/widget-opened.png`、`widget-cleared.png`。桌面 `npm test` 146 项通过（含 `test/chat-clear-contract.test.js`）。
 
 ## 〇、2026-11-03 感知采集层重设计（M0–M4）
 
