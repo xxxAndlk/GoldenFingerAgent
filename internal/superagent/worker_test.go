@@ -10,6 +10,7 @@ import (
 
 	"goldenfinger/agent/internal/store"
 	"goldenfinger/agent/internal/superagent"
+	"goldenfinger/agent/internal/worktask"
 )
 
 type fakeWorkerRunner struct {
@@ -274,6 +275,105 @@ func TestWorkerManagerLeavesWaitingWorkerPaused(t *testing.T) {
 	}
 	if runner.calls.Load() != 0 {
 		t.Fatal("waiting job must not be claimed")
+	}
+}
+
+func waitTaskStatus(t *testing.T, tasks *worktask.Service, ownerID, taskID, want string) *worktask.Detail {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		detail, err := tasks.Get(context.Background(), ownerID, taskID)
+		if err == nil && detail.Task.Status == want {
+			return detail
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	detail, _ := tasks.Get(context.Background(), ownerID, taskID)
+	t.Fatalf("task %s did not reach %s: %+v", taskID, want, detail)
+	return nil
+}
+
+func TestWorkerManagerCreatesWorkTaskAndPendingAcceptance(t *testing.T) {
+	svc, db, u := newTestService(t)
+	tasks := worktask.New(db)
+	svc.Tasks = tasks
+	ingested, err := svc.Ingest(context.Background(), u.ID, superagent.TriggerInput{
+		Channel: "email", ExternalID: "worktask-mail", ThreadExternalID: "worktask-thread",
+		Kind: "email", Title: "交付报告", Body: "请整理报告",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeWorkerRunner{}
+	manager := superagent.NewWorkerManager(db, runner)
+	manager.Tasks = tasks
+	manager.MaxWorkers = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id, err := manager.CreateWorker(context.Background(), u.ID, ingested.Trigger,
+		superagent.Decision{Action: superagent.ActionCreateWorker, Goal: "整理报告", Profile: "internal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := waitJobStatus(t, db, u.ID, id, store.AgentJobCompleted)
+	if job.WorkTaskID == "" {
+		t.Fatalf("job missing work_task_id: %+v", job)
+	}
+	detail := waitTaskStatus(t, tasks, u.ID, job.WorkTaskID, store.WorkTaskPendingAccept)
+	if len(detail.Jobs) == 0 || detail.Jobs[0].ID != job.ID {
+		t.Fatalf("task jobs=%+v", detail.Jobs)
+	}
+}
+
+type waitingRunner struct{}
+
+func (waitingRunner) RunWorker(context.Context, superagent.WorkerRequest) (*superagent.WorkerResult, error) {
+	return &superagent.WorkerResult{
+		Reply: "需要补充", Summary: "等待用户补充",
+		WaitingKind: store.WaitingUser, WaitingPayload: json.RawMessage(`{"question":"用哪个模板？"}`),
+	}, nil
+}
+
+func TestWorkerManagerWaitingCreatesNewSegmentOnMessage(t *testing.T) {
+	svc, db, u := newTestService(t)
+	tasks := worktask.New(db)
+	svc.Tasks = tasks
+	ingested, err := svc.Ingest(context.Background(), u.ID, superagent.TriggerInput{
+		Channel: "email", ExternalID: "waiting-mail", Kind: "email", Title: "选择模板",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := superagent.NewWorkerManager(db, waitingRunner{})
+	manager.Tasks = tasks
+	manager.MaxWorkers = 1
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := manager.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id, err := manager.CreateWorker(context.Background(), u.ID, ingested.Trigger,
+		superagent.Decision{Action: superagent.ActionCreateWorker, Goal: "选模板", Profile: "read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := waitJobStatus(t, db, u.ID, id, store.AgentJobCompleted)
+	waitTaskStatus(t, tasks, u.ID, job.WorkTaskID, store.WorkTaskWaitingUser)
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	result, err := tasks.AddMessage(context.Background(), u.ID, job.WorkTaskID,
+		"用简洁模板", nil, "waiting-answer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Job == nil || result.Job.ID == job.ID {
+		t.Fatalf("waiting answer must create new segment: %+v", result)
+	}
+	detail := waitTaskStatus(t, tasks, u.ID, job.WorkTaskID, store.WorkTaskActive)
+	if len(detail.Jobs) < 2 {
+		t.Fatalf("new segment not recorded: %+v", detail.Jobs)
 	}
 }
 

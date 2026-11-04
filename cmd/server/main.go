@@ -41,6 +41,8 @@ import (
 	"goldenfinger/agent/internal/superagent"
 	"goldenfinger/agent/internal/task"
 	"goldenfinger/agent/internal/voice"
+	"goldenfinger/agent/internal/watchdog"
+	"goldenfinger/agent/internal/worktask"
 )
 
 func main() {
@@ -231,6 +233,12 @@ func main() {
 	// Super-agent 事件层：只负责 Trigger/Thread/EventLog 与路由落库，
 	// 外部发送仍必须经过 ActionOutbox 人工审批。
 	superAgent := superagent.New(db)
+	artifactRoot := filepath.Join(filepath.Dir(cfg.Database.Path), "artifacts")
+	workTasks := worktask.New(db)
+	workTasks.ArtifactRoot = artifactRoot
+	artifactSvc := worktask.NewArtifactService(db, workTasks, artifactRoot)
+	svcs.Artifacts = artifactSvc
+	superAgent.Tasks = workTasks
 	superAgent.SummaryAllowed = func(ctx context.Context, ownerID, channel string) (bool, error) {
 		if !store.IsGatedChannel(store.NormalizeChannel(channel)) {
 			return true, nil
@@ -296,8 +304,11 @@ func main() {
 		Jobs:            jobQueue,
 		AgentDispatcher: jobQueue,
 		// 语音口令判定（唤醒词/指令窗口/片段合并）在 Go，手机只执行动作。
-		Voice:      voice.NewService(voice.Config{}, time.Now),
-		SuperAgent: superAgent,
+		Voice:       voice.NewService(voice.Config{}, time.Now),
+		SuperAgent:  superAgent,
+		Tasks:       workTasks,
+		Artifacts:   artifactSvc,
+		Coordinator: &superagent.Coordinator{Tasks: workTasks},
 	}
 
 	llmFor := func() (llm.Client, string) {
@@ -413,6 +424,44 @@ func main() {
 		UploadDir:    api.UploadDir,
 	}
 	workerManager := superagent.NewWorkerManager(db, superAgentWorkerRunner{turns: turnService})
+	workerManager.Tasks = workTasks
+	workerManager.Artifacts = artifactSvc
+	contextBroker := superagent.NewContextBroker(repos, mem)
+	contextBroker.Now = time.Now
+	workerManager.Context = func(ctx context.Context, job *store.AgentJob) ([]string, json.RawMessage, error) {
+		bundle, err := contextBroker.Build(ctx, job.OwnerUserID, job.WorkTaskID, job.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		receipts, err := json.Marshal(bundle.Receipts)
+		if err != nil {
+			return bundle.Blocks, nil, nil
+		}
+		return bundle.Blocks, receipts, nil
+	}
+	workTasks.OnEnqueue = func(_ context.Context, _, _, _ string) {
+		workerManager.Wake()
+	}
+	workTasks.OnCancel = func(ctx context.Context, ownerID, taskID, jobID string) {
+		workerManager.CancelJob(ctx, ownerID, taskID, jobID)
+	}
+	workTasks.DeviceRecoveryCheck = func(ctx context.Context, ownerID string, task *store.WorkTask) (bool, error) {
+		bindings, err := repos.Devices.TaskDevices(ctx, ownerID, task.ID)
+		if err != nil {
+			return false, err
+		}
+		if len(bindings) == 0 {
+			return true, nil
+		}
+		for _, binding := range bindings {
+			device, err := repos.Devices.Get(ctx, ownerID, binding.DeviceID)
+			if err != nil || device.RevokedAt != nil || !device.Online {
+				continue
+			}
+			return true, nil
+		}
+		return false, nil
+	}
 	// Worker 的结论进入统一记忆（episode + 长期记忆镜像），主会话可检索追问；
 	// 原始 Worker 会话仍保留在 agent_job / chat_session，不进入用户可见会话列表。
 	workerManager.OnResult = func(ctx context.Context, job *store.AgentJob, summary string) error {
@@ -433,6 +482,13 @@ func main() {
 		log.Printf("superagent-workers: started (max=%d)", workerManager.MaxWorkers)
 	}
 
+	watchdogSvc := watchdog.New(db, workTasks)
+	watchdogSvc.OnNotify = func(ownerID, body string) {
+		outbox.Push(ownerID, body, time.Now())
+	}
+	go watchdogSvc.Start(ctx)
+	log.Printf("watchdog: started (interval=%s stale=%s)", watchdogSvc.Interval, watchdogSvc.StaleAfter)
+
 	// Router 后台批处理默认关闭；GFA_SUPERAGENT=1 时每 2s 处理一批 queued Trigger。
 	if os.Getenv("GFA_SUPERAGENT") == "1" {
 		go func() {
@@ -446,7 +502,7 @@ func main() {
 					var router superagent.Router = superagent.DeterministicRouter{}
 					if rt := api.EffectiveRuntime(); rt != nil && rt.LLM != nil &&
 						os.Getenv("GFA_SUPERAGENT_ROUTER") != "deterministic" {
-						router = &superagent.LLMRouter{Client: rt.LLM, Model: rt.Model}
+						router = &superagent.LLMRouter{Client: rt.LLM, Model: rt.Model, TaskIndex: superAgent.TaskIndex}
 					}
 					users, err := repos.Users.ListAll(ctx)
 					if err != nil {
@@ -611,21 +667,35 @@ func (r superAgentWorkerRunner) RunWorker(ctx context.Context, req superagent.Wo
 		}
 	}
 	out, err := r.turns.Run(ctx, agent.TurnRequest{
-		UserID:    req.OwnerID,
-		SessionID: req.SessionID,
-		Text:      req.Goal,
-		Kind:      "worker",
-		ThreadID:  req.ThreadID,
-		OnEvent:   onEvent,
+		UserID:         req.OwnerID,
+		SessionID:      req.SessionID,
+		Text:           req.Goal,
+		Kind:           "worker",
+		ThreadID:       req.ThreadID,
+		WorkTaskID:     req.TaskID,
+		JobID:          req.JobID,
+		StepController: req.StepController,
+		ContextBlocks:  req.ContextBlocks,
+		ToolProfile:    req.Profile,
+		OnEvent:        onEvent,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &superagent.WorkerResult{
+	result := &superagent.WorkerResult{
 		SessionID: out.SessionID,
 		Reply:     out.Reply,
 		Summary:   truncateText(out.Reply, 4000),
-	}, nil
+		Paused:    out.Paused,
+		Cancelled: out.Cancelled,
+	}
+	if out.Pending != nil {
+		result.WaitingKind = "user"
+		if raw, marshalErr := json.Marshal(out.Pending); marshalErr == nil {
+			result.WaitingPayload = raw
+		}
+	}
+	return result, nil
 }
 
 // runBriefScheduler 在每天 digest.time 后生成首版简报；有新事件时最多每 30 分钟补一版。

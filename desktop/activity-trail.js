@@ -53,7 +53,7 @@ function isMeaningfulAction(context, label) {
 }
 
 class ActivityTrail {
-  constructor({ readActiveWindow, readPageContent: readContent = readPageContent, readUiContext: readContext = readUiContext, captureWindow, evidenceDir, dataDir, eventsPath, summariesPath, onEvent = () => {}, onError = () => {}, now = () => Date.now(), inputMonitor, inputMonitorEnabled = true, activitySource }) {
+  constructor({ readActiveWindow, readPageContent: readContent = readPageContent, readUiContext: readContext = readUiContext, captureWindow, evidenceDir, dataDir, eventsPath, summariesPath, onEvent = () => {}, onError = () => {}, now = () => Date.now(), inputMonitor, inputMonitorEnabled = true, activitySource, projectName = '' }) {
     this.readActiveWindow = readActiveWindow;
     this.readUiContext = readContext;
     this.captureWindow = captureWindow;
@@ -64,7 +64,7 @@ class ActivityTrail {
     this.onEvent = onEvent;
     this.onError = onError;
     this.now = now;
-    this.activitySource = activitySource || new NativeActivitySource({ readActiveWindow, readPageContent: readContent, now });
+    this.activitySource = activitySource || new NativeActivitySource({ readActiveWindow, readPageContent: readContent, now, projectName });
     this.inputMonitor = inputMonitor || new InputMonitor({ onEvent: event => this.handleInput(event), onError });
     // Low 完整性进程无法编译输入监听所需的 C#，跳过监听，避免反复报错；
     // 窗口与正文仍通过 UI Automation 轮询记录。

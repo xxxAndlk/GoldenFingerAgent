@@ -48,6 +48,8 @@ type AgentJob struct {
 	WaitingKind     string          `json:"waiting_kind,omitempty"`
 	WaitingPayload  json.RawMessage `json:"waiting_payload,omitempty"`
 	Version         int             `json:"version"`
+	WorkTaskID      string          `json:"work_task_id,omitempty"`
+	JobRole         string          `json:"job_role,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 	StartedAt       *time.Time      `json:"started_at,omitempty"`
@@ -89,14 +91,21 @@ func (r *AgentJobRepo) Create(ctx context.Context, job *AgentJob) error {
 	if len(job.WaitingPayload) == 0 {
 		job.WaitingPayload = json.RawMessage(`{}`)
 	}
+	if job.JobRole == "" {
+		job.JobRole = AgentJobRolePrimary
+	}
 	_, err := r.q.ExecContext(ctx, `INSERT INTO agent_job
 		(id, owner_user_id, agent_id, task, work_dir, status, idempotency_key, attempt,
 		 thread_id, session_id, parent_trigger_id, profile, priority, result_summary,
-		 waiting_kind, waiting_payload_json, version, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 waiting_kind, waiting_payload_json, version, work_task_id, job_role, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		job.ID, job.OwnerUserID, job.AgentID, job.Task, job.WorkDir, job.Status, job.IdempotencyKey,
 		job.ThreadID, job.SessionID, job.ParentTriggerID, job.Profile, job.Priority, job.ResultSummary,
-		job.WaitingKind, string(job.WaitingPayload), job.Version, job.CreatedAt, job.UpdatedAt)
+		job.WaitingKind, string(job.WaitingPayload), job.Version, job.WorkTaskID, job.JobRole,
+		job.CreatedAt, job.UpdatedAt)
+	if isUniqueViolation(err) {
+		return ErrConflict
+	}
 	return err
 }
 
@@ -114,7 +123,7 @@ func scanAgentJob(row interface{ Scan(...any) error }) (*AgentJob, error) {
 		&job.IdempotencyKey, &job.ExternalTaskID, &job.Output, &job.Error, &job.Attempt,
 		&job.ThreadID, &job.SessionID, &job.ParentTriggerID, &job.Profile, &job.Priority,
 		&job.ResultSummary, &job.WaitingKind, &waitingPayload, &job.Version,
-		&job.CreatedAt, &job.UpdatedAt, &started, &finished, &heartbeat)
+		&job.WorkTaskID, &job.JobRole, &job.CreatedAt, &job.UpdatedAt, &started, &finished, &heartbeat)
 	if err != nil {
 		return nil, err
 	}
@@ -134,7 +143,7 @@ func timePointer(value sql.NullTime) *time.Time {
 const agentJobColumns = `id, owner_user_id, agent_id, task, work_dir, status, idempotency_key,
 	external_task_id, output, error, attempt, thread_id, session_id, parent_trigger_id, profile,
 	priority, result_summary, waiting_kind, waiting_payload_json, version,
-	created_at, updated_at, started_at, finished_at, heartbeat_at`
+	work_task_id, job_role, created_at, updated_at, started_at, finished_at, heartbeat_at`
 
 func (r *AgentJobRepo) Get(ctx context.Context, ownerID, id string) (*AgentJob, error) {
 	job, err := scanAgentJob(r.q.QueryRowContext(ctx, `SELECT `+agentJobColumns+` FROM agent_job WHERE owner_user_id = ? AND id = ?`, ownerID, id))
@@ -229,6 +238,51 @@ func (r *AgentJobRepo) ListWorkerTasks(ctx context.Context, ownerID, threadID st
 	return jobs, rows.Err()
 }
 
+// ListByTask 返回 WorkTask 下的全部执行段（含历史 Job）。
+func (r *AgentJobRepo) ListByTask(ctx context.Context, ownerID, taskID string, limit int) ([]AgentJob, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := r.q.QueryContext(ctx, `SELECT `+agentJobColumns+` FROM agent_job
+		WHERE owner_user_id = ? AND work_task_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`,
+		ownerID, taskID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]AgentJob, 0)
+	for rows.Next() {
+		job, err := scanAgentJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *job)
+	}
+	return out, rows.Err()
+}
+
+// ActivePrimaryForTask 返回当前 queued/running 的主执行；没有返回 nil。
+func (r *AgentJobRepo) ActivePrimaryForTask(ctx context.Context, ownerID, taskID string) (*AgentJob, error) {
+	job, err := scanAgentJob(r.q.QueryRowContext(ctx, `SELECT `+agentJobColumns+` FROM agent_job
+		WHERE owner_user_id = ? AND work_task_id = ? AND job_role = 'primary'
+		  AND status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1`, ownerID, taskID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return job, err
+}
+
+// CancelActiveByTask 取消某 WorkTask 下所有 queued/running 执行段。
+func (r *AgentJobRepo) CancelActiveByTask(ctx context.Context, ownerID, taskID string, at time.Time) (int64, error) {
+	res, err := r.q.ExecContext(ctx, `UPDATE agent_job SET status = 'cancelled',
+		finished_at = ?, updated_at = ? WHERE owner_user_id = ? AND work_task_id = ?
+		  AND status IN ('queued', 'running')`, at, at, ownerID, taskID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // SetWaiting 让运行中的 Worker 进入等待（澄清/审批），等待期间不占并发槽。
 func (r *AgentJobRepo) SetWaiting(ctx context.Context, ownerID, id, kind string, payload json.RawMessage, at time.Time) (bool, error) {
 	if len(payload) == 0 {
@@ -312,6 +366,36 @@ func (r *AgentJobRepo) FinishWorker(ctx context.Context, id, status, output, res
 	}
 	count, err := result.RowsAffected()
 	return count == 1, err
+}
+
+// InterruptStale 把心跳停滞的 running Job 标记为 interrupted，返回受影响任务。
+func (r *AgentJobRepo) InterruptStale(ctx context.Context, before, at time.Time) ([]AgentJob, error) {
+	rows, err := r.q.QueryContext(ctx, `SELECT `+agentJobColumns+` FROM agent_job
+		WHERE status = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < ?)`, before)
+	if err != nil {
+		return nil, err
+	}
+	jobs := make([]AgentJob, 0)
+	for rows.Next() {
+		job, scanErr := scanAgentJob(rows)
+		if scanErr != nil {
+			rows.Close()
+			return nil, scanErr
+		}
+		jobs = append(jobs, *job)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, job := range jobs {
+		if _, err := r.q.ExecContext(ctx, `UPDATE agent_job SET status = 'interrupted',
+			finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'`,
+			at, at, job.ID); err != nil {
+			return nil, err
+		}
+	}
+	return jobs, nil
 }
 
 func (r *AgentJobRepo) Cancel(ctx context.Context, ownerID, id string, at time.Time) (bool, error) {

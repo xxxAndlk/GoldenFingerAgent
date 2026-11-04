@@ -40,10 +40,12 @@ func (s *Session) Append(m llm.Message) { s.Messages = append(s.Messages, m) }
 
 // TurnResult 是一轮对话面向用户的输出结果。
 type TurnResult struct {
-	Reply   string             `json:"reply"`
-	Pending *nlu.PendingAction `json:"pending,omitempty"`
-	Cards   []Card             `json:"cards,omitempty"`
-	Trace   []string           `json:"trace,omitempty"`
+	Reply     string             `json:"reply"`
+	Pending   *nlu.PendingAction `json:"pending,omitempty"`
+	Cards     []Card             `json:"cards,omitempty"`
+	Trace     []string           `json:"trace,omitempty"`
+	Paused    bool               `json:"paused,omitempty"`
+	Cancelled bool               `json:"cancelled,omitempty"`
 }
 
 // Clock 抽象时间，便于确定性测试。

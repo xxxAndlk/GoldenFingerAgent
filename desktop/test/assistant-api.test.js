@@ -77,6 +77,65 @@ test('AssistantApi exposes workbench, brief and channel endpoints', async () => 
   ]);
 });
 
+test('AssistantApi exposes WorkTask, artifact and grant endpoints', async () => {
+  const requests = [];
+  const api = new AssistantApi({
+    baseUrl: 'http://127.0.0.1:8080',
+    fetchImpl: async (url, options) => {
+      requests.push({ url, method: options.method, body: options.body });
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  await api.listWorkTasks('active', 20);
+  await api.getWorkTask('task-1');
+  await api.createWorkTask({ title: 't', goal: 'g', start: true });
+  await api.messageWorkTask('task-1', '补充', 3);
+  await api.pauseWorkTask('task-1', 3);
+  await api.resumeWorkTask('task-1', 4);
+  await api.cancelWorkTask('task-1', 5);
+  await api.recoverWorkTask('task-1', 4);
+  await api.reopenWorkTask('task-1', 5);
+  await api.completeWorkTask('task-1', 6);
+  await api.listTaskEvents('task-1', 10);
+  await api.createArtifact('task-1', { kind: 'text', title: 'a', content: 'b' });
+  await api.getArtifact('artifact-1');
+  await api.diffArtifact('artifact-1', 1, 2);
+  await api.submitArtifact('artifact-1', 2);
+  await api.acceptArtifact('artifact-1', 2);
+  await api.rejectArtifact('artifact-1', 2, '改一下');
+  await api.listTaskGrants('task-1');
+  await api.createTaskGrant('task-1', { action_type: 'bash' });
+  await api.revokeGrant('grant-1');
+
+  const paths = requests.map(item => `${item.method} ${item.url.replace('http://127.0.0.1:8080', '')}`);
+  assert.deepEqual(paths, [
+    'GET /api/work-tasks?limit=20&status=active',
+    'GET /api/work-tasks/task-1',
+    'POST /api/work-tasks',
+    'POST /api/work-tasks/task-1/messages',
+    'POST /api/work-tasks/task-1/pause',
+    'POST /api/work-tasks/task-1/resume',
+    'POST /api/work-tasks/task-1/cancel',
+    'POST /api/work-tasks/task-1/recover',
+    'POST /api/work-tasks/task-1/reopen',
+    'POST /api/work-tasks/task-1/complete',
+    'GET /api/work-tasks/task-1/events?after_id=10',
+    'POST /api/work-tasks/task-1/artifacts',
+    'GET /api/artifacts/artifact-1',
+    'GET /api/artifacts/artifact-1/diff?from=1&to=2',
+    'POST /api/artifacts/artifact-1/submit',
+    'POST /api/artifacts/artifact-1/accept',
+    'POST /api/artifacts/artifact-1/reject',
+    'GET /api/work-tasks/task-1/grants',
+    'POST /api/work-tasks/task-1/grants',
+    'DELETE /api/grants/grant-1',
+  ]);
+  assert.deepEqual(JSON.parse(requests[3].body), { text: '补充', expected_version: 3 });
+  assert.deepEqual(JSON.parse(requests[14].body), { expected_version: 2 });
+  assert.deepEqual(JSON.parse(requests[15].body), { expected_version: 2 });
+  assert.deepEqual(JSON.parse(requests[16].body), { expected_version: 2, reason: '改一下' });
+});
+
 test('AssistantApi sends local work context with streamed chat', async () => {
   let request;
   const api = new AssistantApi({
@@ -103,6 +162,16 @@ test('AssistantApi sends local work context with streamed chat', async () => {
     context: '今天的阶段总结',
   });
   assert.equal(response.reply, '好的');
+});
+
+test('AssistantApi requestRaw preserves non-success status and body for the spool', async () => {
+  const api = new AssistantApi({
+    baseUrl: 'http://127.0.0.1:8080',
+    fetchImpl: async () => ({ ok: false, status: 202, json: async () => ({ filtered: true, reason: 'denied' }) }),
+  });
+  const result = await api.requestRaw('/api/channels/wechat/messages', { method: 'POST', body: '{}' });
+  assert.equal(result.status, 202);
+  assert.equal(result.body.filtered, true);
 });
 
 test('AssistantApi rejects non-success responses', async () => {

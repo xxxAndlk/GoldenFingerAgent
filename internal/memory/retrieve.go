@@ -116,7 +116,7 @@ func (s *Service) Search(ctx context.Context, ownerID, query string, k int) ([]S
 				if fact.ValidAt != nil {
 					at = *fact.ValidAt
 				}
-				status := ""
+				status := fact.Status
 				if historical {
 					status = "historical"
 				}

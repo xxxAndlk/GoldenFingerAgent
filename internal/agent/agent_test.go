@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,6 +92,86 @@ func (f *fakeQueue) EnqueueForTask(ctx context.Context, t *store.Task) error {
 func (f *fakeQueue) CancelForTask(ctx context.Context, taskID string) error {
 	f.cancelled = append(f.cancelled, taskID)
 	return nil
+}
+
+type testStepController struct {
+	mu       sync.Mutex
+	calls    int
+	injected []llm.Message
+	pauseAt  int
+}
+
+func (c *testStepController) BeforeStep(_ context.Context, s *Session, step int) ([]llm.Message, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.pauseAt >= 0 && step == c.pauseAt {
+		return nil, ErrStepPause
+	}
+	if step == 1 {
+		msg := llm.Message{Role: llm.RoleUser, Content: "【任务补充】先核对日期"}
+		c.injected = append(c.injected, msg)
+		return []llm.Message{msg}, nil
+	}
+	return nil, nil
+}
+
+func TestLoopStepControllerInjectsBeforeNextModelCall(t *testing.T) {
+	sess, rt, _ := testHarness(t,
+		mock.ToolResponse("c1", "save_note", `{"text":"车位在B2"}`),
+		mock.TextResponse("已按补充核对。"),
+	)
+	controller := &testStepController{pauseAt: -1}
+	rt.StepController = controller
+	result, err := Run(context.Background(), sess, "记一下车位", rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Reply != "已按补充核对。" {
+		t.Fatalf("reply=%q", result.Reply)
+	}
+	scripted := rt.LLM.(*mock.Scripted)
+	if len(scripted.Calls) != 2 {
+		t.Fatalf("llm calls=%d", len(scripted.Calls))
+	}
+	found := false
+	for _, message := range scripted.Calls[1].Messages {
+		if strings.Contains(message.Content, "先核对日期") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("second model request missing steer: %+v", scripted.Calls[1].Messages)
+	}
+	found = false
+	for _, message := range sess.Messages {
+		if strings.Contains(message.Content, "先核对日期") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("steer must be appended to persistent session")
+	}
+}
+
+func TestLoopStepControllerPauseStopsAtBoundary(t *testing.T) {
+	sess, rt, _ := testHarness(t,
+		mock.ToolResponse("c1", "save_note", `{"text":"x"}`),
+	)
+	controller := &testStepController{pauseAt: 1}
+	rt.StepController = controller
+	result, err := Run(context.Background(), sess, "记一下", rt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Paused || result.Reply != "" {
+		t.Fatalf("result=%+v", result)
+	}
+	scripted := rt.LLM.(*mock.Scripted)
+	if len(scripted.Calls) != 1 {
+		t.Fatalf("pause must happen before next model call: %d", len(scripted.Calls))
+	}
 }
 
 func TestLoopToolCallThenFinalAnswer(t *testing.T) {

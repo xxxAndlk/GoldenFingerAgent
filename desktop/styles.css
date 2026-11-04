@@ -196,7 +196,8 @@ button:disabled { cursor: default; opacity: .45; }
 .panel {
   position: relative;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   width: 100vw;
   height: 100vh;
   overflow: hidden;
@@ -254,6 +255,16 @@ body[data-expanded="1"][data-dock="bottom"] .panel { border-bottom-left-radius: 
 .connection.offline::before { background: var(--red); }
 
 .title-actions { display: flex; align-items: center; gap: 4px; -webkit-app-region: no-drag; }
+.icon-button.workbench-button {
+  position: relative;
+  display: flex;
+  width: auto;
+  height: 28px;
+  gap: 5px;
+  padding: 0 8px;
+}
+.workbench-button svg { width: 14px; height: 14px; }
+.workbench-label { font-size: 11.5px; font-weight: 600; line-height: 1; white-space: nowrap; }
 
 /* 主题按钮：按当前外观显示「切到另一侧」的图标 */
 #theme-toggle .i-sun, #theme-toggle .i-moon { display: none; }
@@ -434,8 +445,18 @@ body[data-expanded="1"][data-dock="bottom"] .panel { border-bottom-left-radius: 
   letter-spacing: -.02em;
 }
 
+/* 待处理条与简报卡单独占一行，避免与对话区争用网格单元。 */
+.agent-strips {
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.agent-strips:empty { display: none; }
+
 /* ---------- 对话区 ---------- */
-.workspace-grid { grid-row: 2; display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; }
+.workspace-grid { grid-row: 3; display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; }
 .chat-column {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto auto auto auto;
@@ -645,6 +666,33 @@ body[data-expanded="1"][data-dock="bottom"] .panel { border-bottom-left-radius: 
 .message.error {
   background: rgba(255, 69, 58, .14);
   color: var(--red);
+}
+
+/* 对话进行中的思考气泡：只保留一个状态，不再额外显示底部状态条 */
+.message.assistant.pending { padding: 11px 14px; }
+.thinking-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--label-2);
+  font-size: 12.5px;
+}
+.thinking-dots { display: inline-flex; align-items: center; gap: 3px; }
+.thinking-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--blue);
+  opacity: .35;
+  animation: thinkingDot 1.2s ease-in-out infinite;
+}
+.thinking-dots i:nth-child(2) { animation-delay: .16s; }
+.thinking-dots i:nth-child(3) { animation-delay: .32s; }
+.message.pending[data-state="tool"] .thinking-dots i { background: var(--orange); }
+.message.pending[data-state="waiting"] .thinking-dots i { background: var(--green); }
+@keyframes thinkingDot {
+  0%, 70%, 100% { opacity: .3; transform: translateY(0); }
+  35% { opacity: 1; transform: translateY(-2px); }
 }
 
 /* ---------- 对话状态（思考中 / 调用工具 / 等待 Agent） ---------- */
@@ -861,8 +909,8 @@ body[data-expanded="1"][data-dock="bottom"] .panel { border-bottom-left-radius: 
 /* ---------- 工作台待处理提示 ---------- */
 .workbench-dot {
   position: absolute;
-  top: 5px;
-  right: 5px;
+  top: 1px;
+  right: 1px;
   width: 7px;
   height: 7px;
   border-radius: 50%;

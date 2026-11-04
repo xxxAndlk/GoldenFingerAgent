@@ -2,7 +2,23 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { CollaborationMode, summarizeObservations, stripTrailingQuestion } = require('../collaboration');
+const {
+  CollaborationMode, summarizeObservations, stripTrailingQuestion, segmentObservations,
+} = require('../collaboration');
+
+test('segmentObservations splits by context and idle gap instead of one daily bucket', () => {
+  const segments = segmentObservations([
+    { app: 'Code', title: 'a', at: 0, contextKey: 'project:Alpha', projectCandidates: ['Alpha'] },
+    { app: 'Chrome', title: 'b', at: 1000, contextKey: 'project:Alpha' },
+    { app: 'Code', title: 'c', at: 2000, contextKey: 'project:Beta', projectCandidates: ['Beta'] },
+    { app: 'Code', title: 'd', at: 2_000_000, contextKey: 'project:Beta' },
+  ], { idleGapMs: 60_000 });
+  assert.equal(segments.length, 3);
+  assert.equal(segments[0].contextKey, 'project:Alpha');
+  assert.deepEqual(segments[0].apps, ['Code', 'Chrome']);
+  assert.equal(segments[1].contextKey, 'project:Beta');
+  assert.equal(segments[2].contextKey, 'project:Beta');
+});
 
 test('summarizeObservations groups apps, durations and recent window titles', () => {
   const summary = summarizeObservations([

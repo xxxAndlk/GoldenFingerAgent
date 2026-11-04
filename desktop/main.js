@@ -19,6 +19,8 @@ const { ScreenpipeShadow } = require('./screenpipe-shadow');
 const { BrowserSessionManager } = require('./browser-session');
 const { BrowserCollector } = require('./browser-collector');
 const { SecretStore } = require('./secret-store');
+const { ObservationSpool } = require('./observation-spool');
+const { WeChatConnector } = require('./wechat-connector');
 const {
   clampBounds, snapBounds, dockEdge, nearestEdge, overflowEdge, edgeTabBounds, anchorExpandedBounds,
 } = require('./window-dock');
@@ -79,6 +81,9 @@ let chatSessionId = '';
 let api = null;
 let serverManager = null;
 let screenpipeShadow = null;
+let observationSpool = null;
+let wechatConnector = null;
+let spoolTimer = null;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
@@ -130,20 +135,38 @@ function ensureBrowserCollector() {
       return api.captureWebItem(item);
     },
     logger: console,
+    statePath: path.join(app.getPath('userData'), 'browser-collector-state.json'),
   });
-  if (!browserTimer) {
-    browserTimer = setInterval(async () => {
-      try {
-        await ensureServer();
-        const data = await api.webSites();
-        await browserCollector.schedulerTick(data.sites || []);
-      } catch (error) {
-        console.error(`网页采集调度：${error.message}`);
-      }
-    }, 60_000);
-    browserTimer.unref?.();
-  }
   return browserCollector;
+}
+
+// 调度器在桌面启动后常驻；只有存在启用站点时才加载 Playwright 和浏览器会话。
+function startBrowserScheduler() {
+  if (browserTimer) return;
+  browserTimer = setInterval(async () => {
+    try {
+      await ensureServer();
+      const data = await api.webSites();
+      const sites = data.sites || [];
+      if (!sites.some(site => site.enabled)) return;
+      await ensureBrowserCollector().schedulerTick(sites);
+    } catch (error) {
+      console.error(`网页采集调度：${error.message}`);
+    }
+  }, 60_000);
+  browserTimer.unref?.();
+  (async () => {
+    try {
+      await ensureServer();
+      const data = await api.webSites();
+      const sites = data.sites || [];
+      if (sites.some(site => site.enabled)) {
+        await ensureBrowserCollector().schedulerTick(sites);
+      }
+    } catch (error) {
+      console.error(`网页采集启动恢复：${error.message}`);
+    }
+  })();
 }
 
 async function browserSiteById(siteId) {
@@ -155,7 +178,6 @@ async function browserSiteById(siteId) {
 }
 
 // 主进程维护一条到本机服务的 SSE；所有窗口通过 IPC 收到同一事件流。
-let lastWeChatFingerprint = '';
 let channelCache = { loaded: false, wechatDesktopEnabled: false, policies: [] };
 
 async function refreshChannelCache() {
@@ -184,28 +206,59 @@ function wechatSourceAllowed(source) {
   return Boolean(fallback && fallback.allowed);
 }
 
-// 微信只转发当前窗口的可见文本；不读数据库、不注入、不绕过客户端。
-// 服务端默认拒绝微信来源，用户在“工作台 → 渠道采集”显式允许后才入库。
-function forwardWeChatActivity(event) {
-  if (!api || !event || !/wechat|weixin|微信/i.test(String(event.app || ''))) return;
-  const text = String(event.content || event.detail || '').trim();
-  if (text.length < 8) return;
-  const source = String(event.title || event.app || '微信').trim().slice(0, 80);
-  if (!wechatSourceAllowed(source)) return;
-  const fingerprint = crypto.createHash('sha1').update(source + '\n' + text).digest('hex');
-  if (fingerprint === lastWeChatFingerprint) return;
-  lastWeChatFingerprint = fingerprint;
-  api.captureWeChatMessage({
-    source,
-    message_id: fingerprint,
-    sender: '',
-    text,
-    kind: 'visible_content',
-    received_at: new Date(event.at || Date.now()).toISOString(),
-    // UIA/OCR 只能保证“当前可见区域”，永远按可能不完整处理，不能伪装成完整逐条消息。
-    incomplete: true,
-    raw_ref: 'activity:' + String(event.id || fingerprint),
-  }).catch(() => {});
+function ensureObservationSpool() {
+  if (observationSpool) return observationSpool;
+  observationSpool = new ObservationSpool({
+    filePath: path.join(app.getPath('userData'), 'observation-spool.json'),
+    deliver: async record => {
+      await ensureServer();
+      return api.requestRaw(record.endpoint, {
+        method: 'POST',
+        body: JSON.stringify(record.payload),
+        signal: AbortSignal.timeout(60_000),
+      });
+    },
+    logger: console,
+  });
+  if (!spoolTimer) {
+    spoolTimer = setInterval(() => {
+      observationSpool.flush().catch(error => console.error(`待发队列投递：${error.message}`));
+    }, 4000);
+    spoolTimer.unref?.();
+  }
+  return observationSpool;
+}
+
+// 微信连接器独立于工作轨迹运行；渠道关闭或来源未授权时不会截图或入库。
+function ensureWeChatConnector() {
+  if (wechatConnector) return wechatConnector;
+  wechatConnector = new WeChatConnector({
+    statePath: path.join(app.getPath('userData'), 'wechat-connector-state.json'),
+    captureDir: path.join(app.getPath('userData'), 'wechat-capture'),
+    spool: ensureObservationSpool(),
+    isEnabled: async () => Boolean(channelCache.loaded && channelCache.wechatDesktopEnabled),
+    isSourceAllowed: async source => wechatSourceAllowed(source),
+    logger: console,
+  });
+  wechatConnector.start();
+  return wechatConnector;
+}
+
+function connectorHealth() {
+  const spool = observationSpool ? observationSpool.status() : { queueLength: 0, pending: 0 };
+  return {
+    wechat: wechatConnector ? wechatConnector.status() : {
+      state: 'off', enabled: Boolean(channelCache.wechatDesktopEnabled), authorized: false,
+      currentSource: '', lastObservedAt: '', lastEventAt: '', completeness: 'unknown',
+      lastError: '', pending: spool.pending || 0,
+    },
+    browser: browserCollector ? browserCollector.health() : { sites: [], running: 0 },
+    activity: {
+      enabled: collaboration ? collaboration.status().enabled : false,
+      lastObservedAt: activityTrail ? activityTrail.status().lastObservedAt : 0,
+    },
+    spool,
+  };
 }
 
 function startEventStream() {
@@ -919,6 +972,15 @@ app.whenReady().then(async () => {
     },
     loadLastSummary: () => (activityTrail ? activityTrail.lastSummary() : ''),
     onPhase: phase => { if (activityTrail) activityTrail.saveSummaryPhase(phase); },
+    captureEpisode: payload => {
+      ensureObservationSpool().enqueue({
+        endpoint: '/api/channels/activity/episodes',
+        event: `episode:${payload.episode_id}`,
+        kind: 'activity_episode',
+        sourceKey: payload.context_key || '',
+        payload,
+      });
+    },
     sessionId: () => chatSessionId,
     onSession: id => {
       chatSessionId = id;
@@ -940,12 +1002,12 @@ app.whenReady().then(async () => {
     captureWindow: options => captureWindow(options),
     evidenceDir: path.join(app.getPath('userData'), 'activity-evidence'),
     dataDir: app.getPath('userData'),
+    projectName: workspace ? path.basename(workspace) : '',
     inputMonitorEnabled: !LOW_INTEGRITY,
     onEvent: event => {
       collaboration.addObservation(event);
       screenpipeShadow.addNative(event);
       broadcast('activity:event', event);
-      forwardWeChatActivity(event);
     },
     onError: error => broadcast('activity:error', error),
   });
@@ -957,7 +1019,10 @@ app.whenReady().then(async () => {
     baseUrl: process.env.GFA_SERVER_URL || 'http://127.0.0.1:8080',
   });
   try { await ensureServer(); } catch (error) { console.error(error.message); }
+  ensureObservationSpool();
   await refreshChannelCache();
+  ensureWeChatConnector();
+  startBrowserScheduler();
   setInterval(refreshChannelCache, 30_000).unref?.();
   startEventStream();
   try {
@@ -1115,6 +1180,8 @@ app.on('before-quit', () => {
   if (screenpipeShadow) screenpipeShadow.stop();
   if (browserTimer) clearInterval(browserTimer);
   if (browserCollector) browserCollector.stopAll().catch(() => {});
+  if (wechatConnector) wechatConnector.stop();
+  if (spoolTimer) clearInterval(spoolTimer);
   if (serverManager) serverManager.stop();
 });
 
@@ -1125,6 +1192,12 @@ ipcMain.handle('widget:drag-end', () => { endWidgetDrag(); return true; });
 ipcMain.handle('ui:open-window', (_event, kind) => {
   openAuxWindow(String(kind || ''));
   return true;
+});
+ipcMain.handle('connectors:health', () => connectorHealth());
+ipcMain.handle('wechat:test-capture', async () => {
+  await ensureServer();
+  await refreshChannelCache();
+  return ensureWeChatConnector().testCapture();
 });
 // 顶栏「设置」：打开管理窗口并直接切到设置页。
 ipcMain.handle('ui:open-settings', async () => {
@@ -1154,6 +1227,66 @@ ipcMain.handle('assistant:sessions', async (_event, date) => {
 ipcMain.handle('assistant:session-messages', async (_event, id, before, limit) => {
   await ensureServer();
   return api.sessionMessages(String(id || ''), String(before || ''), Number(limit) || 50);
+});
+ipcMain.handle('assistant:work-tasks', async (_event, status, limit) => {
+  await ensureServer();
+  return api.listWorkTasks(String(status || ''), Number(limit) || 100);
+});
+ipcMain.handle('assistant:work-task-get', async (_event, id) => {
+  await ensureServer();
+  return api.getWorkTask(String(id || ''));
+});
+ipcMain.handle('assistant:work-task-create', async (_event, task) => {
+  await ensureServer();
+  return api.createWorkTask(task);
+});
+ipcMain.handle('assistant:work-task-message', async (_event, id, text, version) => {
+  await ensureServer();
+  return api.messageWorkTask(String(id || ''), String(text || ''), version);
+});
+ipcMain.handle('assistant:work-task-action', async (_event, id, action, version) => {
+  await ensureServer();
+  return api.taskAction(String(id || ''), String(action || ''), version);
+});
+ipcMain.handle('assistant:work-task-events', async (_event, id, afterId) => {
+  await ensureServer();
+  return api.listTaskEvents(String(id || ''), Number(afterId) || 0);
+});
+ipcMain.handle('assistant:artifact-create', async (_event, taskId, artifact) => {
+  await ensureServer();
+  return api.createArtifact(String(taskId || ''), artifact);
+});
+ipcMain.handle('assistant:artifact-get', async (_event, id) => {
+  await ensureServer();
+  return api.getArtifact(String(id || ''));
+});
+ipcMain.handle('assistant:artifact-diff', async (_event, id, from, to) => {
+  await ensureServer();
+  return api.diffArtifact(String(id || ''), Number(from), Number(to));
+});
+ipcMain.handle('assistant:artifact-submit', async (_event, id, version) => {
+  await ensureServer();
+  return api.submitArtifact(String(id || ''), Number(version) || 0);
+});
+ipcMain.handle('assistant:artifact-accept', async (_event, id, version) => {
+  await ensureServer();
+  return api.acceptArtifact(String(id || ''), Number(version) || 0);
+});
+ipcMain.handle('assistant:artifact-reject', async (_event, id, version, reason) => {
+  await ensureServer();
+  return api.rejectArtifact(String(id || ''), Number(version) || 0, String(reason || ''));
+});
+ipcMain.handle('assistant:task-grants', async (_event, id) => {
+  await ensureServer();
+  return api.listTaskGrants(String(id || ''));
+});
+ipcMain.handle('assistant:task-grant-create', async (_event, id, grant) => {
+  await ensureServer();
+  return api.createTaskGrant(String(id || ''), grant);
+});
+ipcMain.handle('assistant:grant-revoke', async (_event, id) => {
+  await ensureServer();
+  return api.revokeGrant(String(id || ''));
 });
 ipcMain.handle('assistant:worker-tasks', async (_event, threadId) => {
   await ensureServer();

@@ -1,10 +1,120 @@
 # 当前进度与修改记录
 
-最后更新：2026-11-01
+最后更新：2026-11-03
 
 本文件记录**当前实现状态**与验证证据，不是「全部功能已验收」的证明。每条尽量区分：代码实现 / 自动测试 / 真实环境验证。
 
 > 阅读约定：已完成的条目不再保留「进行中」「未接线」等旧结论；被推翻的判断直接删除或改写，避免后来者按错误前提干活。
+
+## 〇、2026-11-03 感知采集层重设计（M0–M4）
+
+方案来源：`docs/感知采集层重设计方案.md`。本轮把“配置了接收入口”改成“能解释是否真的看见、是否真的入库”。
+
+### 0.1 统一信封与可靠投递
+
+- 新增 `desktop/observation-envelope.js`：统一 `event_id`、`source_id/display_name`、`observed_at`、`occurred_at=null`、`completeness`、`content_hash`、`change`、`privacy`；`event_id` 用于幂等，`content_hash` 只用于内容变化。
+- 新增 `desktop/observation-spool.js`：本地 JSON 持久队列；先入队再上传；2xx 标记 delivered，202 filtered 或 4xx 丢弃正文并保留原因，5xx/网络错误指数退避；重启恢复 pending。
+- 新增客户端本地健康状态，工作台「接入设置 → 感知采集状态」显示：当前状态、当前会话、最近观察、最近入库、完整性、待发/过滤/失败、最近错误。
+
+### 0.2 电脑微信连接器（M1）
+
+- 新增 `desktop/wechat-connector.js`、`wechat-window.js`、`wechat-parser.js`；移除 `main.js` 中依赖 `ActivityTrail.onEvent` 的 `forwardWeChatActivity`。
+- 微信 4.x 是 Qt 窗口，UIA 只暴露窗口壳。连接器通过 UIA 定位唯一的“微信”窗口，用 Electron `desktopCapturer` 抓后台窗口，再用 Windows OCR（新增每行坐标）解析当前会话标题和消息气泡。
+- 只观察当前打开会话，不读取微信数据库、不 hook、不注入、不遍历会话、不翻历史、不发送消息。
+- 逐会话授权：渠道开关和来源策略同时满足才截图；未授权会话不写检查点、不入队、不进入模型。
+- 每个会话持久化最近可见消息序列和 `event_id`；新快照与旧序列做模糊后缀/前缀对齐，只发射新增后缀；连续相同文本按出现次数保留为多条；OCR 抖动不会把历史重新导入。
+- 无法可靠对齐时标记 `degraded`、`completeness=partial` 和缺口，不批量重复导入，也不假装完整。
+- 发送者/方向：1:1 会话可确定“我/对方”，群聊或无法判断时保留 `unknown`；真实发送时间未知时 `occurred_at=null`，只记录实际 `observed_at`。
+- 新增 IPC `wechat:test-capture`；工作台可测试当前会话并显示标题、授权、识别条数和脱敏预览，测试不写入 Spool。
+- 真实环境验收：本机微信 4.x 当前会话「严胜易」→ 捕获 2 条可见消息 → `/api/channels/wechat/messages` 返回 201 → 同一 Thread 入库 2 条 Trigger；重启桌面端后数量仍为 2，未重复导入。当前会话是图片消息，OCR 对其中一条图片内文字存在误识别，已如实保留，不编造。
+
+### 0.3 网页监听可靠性（M2）
+
+- `BrowserCollector` 增加 `browser-collector-state.json`：持久化 `lastRunAt/lastSuccessAt/nextDueAt/lastError/pages`；桌面重启后按原调度恢复，不立即重复全站抓取。
+- 每页保存 `hash/change/lastSeenAt/lastChangedAt`；正文无变化不重复上传，变化形成同 Thread 新版本；上传失败不推进成功检查点。
+- 调度器改为桌面启动即运行；只有存在启用站点时才加载 Playwright 和浏览器会话。
+
+### 0.4 工作片段语义化（M3）
+
+- 观察事件增加 `contextKey/projectCandidates`：工作区项目名优先、网页按 host+首段路径、文档按标题、无法判断进入 `activity:unassigned:<日期>`。
+- `CollaborationMode` 按上下文、空闲间隔、最大片段时长拆分 Episode；每个 Episode 独立 Thread，不再把一天所有项目混成一个 `activity:<日期>`。
+- Episode 上报进入同一持久 Spool，失败可恢复；低置信度只带 `association_confidence`，不自动改写 WorkTask。
+- 服务端 Episode 请求新增 `context_key/apps/project_candidates/association_confidence`，Thread 使用 `activity:project:*` / `activity:web:*` / `activity:unassigned:*`。
+
+### 0.5 验证与限制
+
+- 自动测试：桌面 148 项通过；`go test ./...` 通过；新增微信解析/增量、Spool、网页检查点、Episode 分段、上下文识别和健康 UI 测试。
+- 真实环境：微信 4.x 后台窗口截图 + Windows OCR 已实际入库；服务端日志出现两条 `POST /api/channels/wechat/messages → 201`。
+- 限制：OCR 对图片消息内文字可能误识别或漏行；当前只承诺“当前打开会话的可见内容”，不承诺完整历史；会话 `source_id` 第一版以标题为稳定键，改名或同名联系人需要后续引入更稳定标识；微信 4.x 不提供消息气泡 UIA，无法在 UIA 层判断图片/文件类型。
+
+## 〇、2026-11-02 SuperAgent 完整修复（M0–M9）
+
+方案来源：`docs/SuperAgent完整修复实施方案.md`。本轮把“Worker 只写日志”升级为真正的长期任务控制面。
+
+### 0.1 数据与迁移
+
+- 新增 `migrations/0011_work_tasks.sql`、`0012_execution_control.sql`、`0013_memory_policy_devices.sql`：
+  - `work_task`、`work_task_live_state`、`work_task_thread`、`work_task_inbox`、`artifact`、`artifact_version`。
+  - `work_task_checkpoint`、`action_grant`、`tool_invocation`，以及 ActionOutbox 的 grant/invocation/expected effect/reconciled 字段。
+  - `mem_edge` 增加 `status/scope/confidence/version/confirmed_*`；新增 `personal_policy`、`device_environment`、`device_capability`、`work_task_device_binding`。
+  - `agent_job` 增加 `work_task_id/job_role`，`chat_session` 与 `agent_action_outbox` 增加 `work_task_id`。
+  - 旧 `agent_id=superagent` Job 按确定性 `legacy-<job_id>` 回填 Task，第二次迁移为空操作；已加 0010 旧库升级测试。
+- 单主执行约束：partial unique index 只限制 `work_task_id <> '' AND job_role='primary' AND status IN ('queued','running')`，允许主 Worker 同时拥有多个 delegated 子执行。
+
+### 0.2 控制面
+
+- `internal/worktask/`：Create/Get/List、AddMessage、Pause/Resume/Cancel/Recover/Reopen、Wait、SetActive、PendingAcceptance、Complete/Fail、Thread 关联、ContextReceipt。
+- `/api/work-tasks*` 全量 API；所有变更支持 `expected_version` CAS，冲突 `409`。
+- `internal/superagent/coordinator.go`：`/task new|list|show|msg|pause|resume|cancel` 与“新建任务/暂停任务/恢复任务/取消任务”低成本分流；普通聊天仍走主会话快速路径，不额外调用 Router 模型。
+- Router 新增只读 `TaskIndex`（最多 20 个活跃任务）和 `create_task/update_task/prepare_task/pause_task/resume_task/cancel_task`；模型只能选择索引内 Task，低置信度自动转 `ask_user`，越界 Task 直接失败。
+- Thread 新事件写入 WorkTask Inbox，不再只写 JobEvent；旧 `create_worker/route_to_worker` 兼容为创建/更新 WorkTask。
+- 旧 `/api/worker-tasks/{id}/steer`：绑定 WorkTask 时写 Task Inbox 并返回 `202 + inbox_id + queued`；没有 WorkTask 的旧 Job 返回 `409`，不再假称实时注入。
+
+### 0.3 执行链路
+
+- `agent.Runtime` 增加 `StepController/ToolProfile/WorkTaskID/JobID`；每次模型请求前执行 `BeforeStep`，包括工具步数耗尽后的最终回答前。
+- `WorkerStepController` 在事务内完成“写 Worker 会话用户消息 + 标记 Inbox consumed + 事件”，进程在消费前后崩溃都不会丢消息或重复消费；普通聊天 `StepController=nil`。
+- Pause 在下一个安全步骤边界停止并释放 Worker 槽位；Cancel 继续走 context cancel；Resume/Recover 创建**新 Job**，旧 Job 不复活。
+- `syncTaskSegment` 把执行段结果映射为 `waiting_user`、`failed` 或 `pending_acceptance`；Job completed 不再自动等于 Task completed。
+- `create_artifact` 工具只对 WorkTask 暴露，创建不可变 Artifact 版本；执行段结束时 Supervisor 自动把草稿提交验收。
+- `internal/watchdog/` 默认 15s：心跳 90s 停滞标 interrupted、只读任务自动从 Checkpoint 恢复、重复工具循环/超预算/unknown 副作用暂停并通知；有副作用 unknown 不自动重放。
+- `ContextBroker` 注入任务目标、Live State、Artifact 索引、按任务范围检索的记忆、Thread 摘要、Personal Policy；预算约 6000 token，超限记录截断原因和 ContextReceipt。
+
+### 0.4 权限与记忆治理
+
+- ToolDescriptor 增加风险、环境、Grant 要求；`read` 只能只读，`internal` 允许准备和授权工作目录内写入，`external` 允许外部草稿。
+- `bash`、`delegate_agent`、`switch_claude_provider` 与未知工具必须有覆盖工具名、资源范围和内容 hash 的有效 Grant；过期/撤销/次数耗尽/hash 变化/设备撤销都会拒绝并记录 denied `tool_invocation`。
+- 参数落库前脱敏 password/token/secret/cookie/authorization/api_key；ToolResult 按不可信数据处理。
+- ActionOutbox 审批生成一次性、24h、内容 hash 绑定的 external_write Grant；编辑草稿撤销旧 Grant。
+- `mem_edge` 自动抽取默认 inferred/conflicted；inferred 不得让 confirmed 失效，冲突保留两条证据；提供 confirm/conflict API（version CAS）。
+- Personal Policy、设备/能力/Task 绑定 API 已接线；`waiting_device` 恢复前重新校验设备在线且未撤销。
+
+### 0.5 桌面端
+
+- 工作台从 Job 列表升级为 Task 中心：执行中/等待/验收/暂停异常/完成分组；目标、完成标准、阶段、下一步、Profile、状态版本。
+- 支持追加指令（queued/consumed 语义）、暂停/继续/取消/恢复异常/重新打开；详情展示 Live State、Artifact 版本与验收、Grant 撤销/创建、任务事件时间线、执行段。
+- Electron 链路 `assistant-api.js → preload.js → main.js IPC → workbench.js → renderer.js 角标` 已全部更新；主窗口待处理条改为统计 WorkTask 等待/待验收/异常。
+- 保留渠道采集、网页采集、简报与审批页。
+
+### 0.6 验证
+
+已执行：
+
+- `go test ./... -count=1`：全部通过。
+- `go vet ./...`：通过。
+- `cd desktop && npm run check`：通过。
+- `cd desktop && npm test`：通过（含 WorkTask API、Workbench 契约、ToolGateway、Watchdog、ContextBroker、记忆冲突）。
+- 新增测试覆盖：0010 旧库升级与二次空操作、Task CAS/owner 隔离/单主 Job、Inbox 幂等与单次消费、Artifact 版本唯一与验收、BeforeStep 注入/pause 边界、Worker Task 等待后新执行段、Router TaskIndex/低置信度/越界、Grant 过期撤销 hash、调用参数脱敏、Outbox 审批生成 Grant、Watchdog 心跳/只读恢复/循环/unknown、Context Receipt/截断、inferred 不覆盖 confirmed、治理与设备 API。
+- **真实模型验收**：用真实 LLM 创建“验收：长期任务”，Worker 正常进入 `pending_acceptance`，结果摘要为“我可以接着上一次的进度继续做，跨执行段也不会断线，当前这个任务的标题是「验收：长期任务」”；事件时间线包含 `task.created → task.active → task.context.receipt → task.pending_acceptance`；Worker 会话未出现在 `/api/sessions`；调用 complete 后 Task 变为 completed/v3。
+- **真实旧库升级验收**：`data/gfa.db` 已成功应用 0011/0012/0013，原有用户/会话仍可读取。升级过程中发现并修复了 0011 中 `UPDATE chat_session` 子查询返回 NULL 导致 NOT NULL 失败的缺陷，补充了“无 Job 的旧会话”升级测试。
+- **桌面打包与 smoke**：`GFA_DIST_DIR=GoldenFinger-win-build2 npm --prefix desktop run dist` 成功；在工程外隔离目录执行 `GoldenFinger.exe --smoke-test` 返回 0，输出 `DESKTOP_SMOKE_OK tray=created windows=independent agents=3 bma=callable directory=present protocol=responses activity=independent-after-collapse capture=ok`。官方 `desktop/dist/GoldenFinger-win` 已替换为包含 0011–0013 和 WorkTask UI 的构建，重置 Medium 完整性标签后启动，`/api/work-tasks`、`/api/settings/channels` 返回 200。
+
+未验证 / 已知限制：
+
+- 未对真实外部 CLI 做“运行中插话”验收；不支持运行输入的适配器仍只能下一段生效。
+- 设备在线状态目前由 API/绑定表维护，尚未把 Android WebSocket 生命周期自动同步进 `device_environment`。
+- `unknown` 副作用只暂停并提示，未实现自动只读 Reconciler。
+- 真实模型验收只覆盖无 Artifact 的摘要路径；Artifact 版本/验收由自动测试覆盖。
 
 ## 一、当前形态
 
@@ -367,6 +477,7 @@
 - **手机页面**：`web/index.html` 设置抽屉新增渠道折叠区，无头 Edge 390×844 实测渲染 34 个开关、`/api/settings/channels` 返回 6 个渠道配置；页面同步到 `android/gosvc/webassets` 与 `desktop/server/web`。
 - **DPAPI 真实写入**：打包版 CDP 调用 `saveBrowserCredential` 保存测试账号，`secrets.json` 仅含 safeStorage 密文，未出现账号或密码明文；随后通过 IPC 删除凭据并删除测试站点。
 - **真实站点验收**：打包版 Browser Collector 实际采集百度百科「人工智能」文章（`baike.baidu.com/item/.../9180`），Readability 提取 75,568 字节正文、`complete`；重复采集服务端仍只有 1 条 web Trigger；Thread 摘要由真实模型生成（176 字），当日简报 v3 引用该 `thread:` 来源。原始正文上限从 64KB 提高到 512KB（请求体 1MB），避免长文章被误判超限；测试站点已删除，采集记录保留作为证据。
+- **主窗口布局修复**：`pending-strip` 与 `brief-card` 原先作为额外网格项与对话区争用第 2 行，导致简报卡/消息/标题栏重叠。现在两条状态条收进独立 `.agent-strips` 行，面板补 `grid-template-columns: minmax(0, 1fr)`，对话区改为第 3 行；CDP 实测 460×680 下标题栏、简报卡、消息区、输入区互不重叠，长代码消息也不再撑宽面板。
 - **边界**：飞书/钉钉连接器按用户要求暂缓；自动登录已具备 DPAPI 加密存储和确定性填充，但尚未在真实 QQ 邮箱/BOSS 页面验收；网页调度游标只在进程内，重启后依赖服务端内容 hash 去重；尚未用真实邮箱与微信账号验收。
 
 **本轮未做（飞书/钉钉按要求暂缓）**：飞书官方 SDK、钉钉 Stream SDK、QQ 邮箱/BOSS 专用适配器、真实邮箱与微信账号验收、手机工作台/动态待办、relay v2 增量同步、ICS 日历、邮件发送器、Worker `route_to_worker` 执行上下文。

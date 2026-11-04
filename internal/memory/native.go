@@ -214,7 +214,8 @@ func (n *Native) embedFacts(ctx context.Context, facts []extractedFact) [][]floa
 	return vecs
 }
 
-// applyFact 写入一条抽取事实：同三元组去重，同 (主体,关系) 的新值让旧值失效。
+// applyFact 写入一条抽取事实：同三元组去重；inferred 不得让 confirmed 失效，
+// 与已确认事实冲突时保留两条证据并标记 conflicted，等待用户处理。
 func (n *Native) applyFact(ctx context.Context, ep store.LongTermEpisode, f extractedFact, vec []float32) error {
 	validFrom := ep.ReferenceTime
 	if f.ValidAt != "" {
@@ -227,6 +228,7 @@ func (n *Native) applyFact(ctx context.Context, ep store.LongTermEpisode, f extr
 		return err
 	}
 	sameFact := false
+	conflict := false
 	for _, old := range active {
 		if strings.EqualFold(old.Object, f.Object) {
 			// 同一事实重复出现：只补充来源引用，不产生重复条目。
@@ -234,6 +236,14 @@ func (n *Native) applyFact(ctx context.Context, ep store.LongTermEpisode, f extr
 			if err := n.cfg.Repos.LongTerm.AddSourceRef(ctx, old.ID, ep.SourceID); err != nil {
 				return err
 			}
+			continue
+		}
+		if old.Status == store.MemoryConfirmed {
+			// 自动抽取的 inferred 结论不能推翻用户确认过的事实。
+			conflict = true
+			continue
+		}
+		if old.Status == store.MemoryConflicted {
 			continue
 		}
 		// 同一关系出现新值：旧值在 validFrom 之后不再成立。
@@ -244,10 +254,14 @@ func (n *Native) applyFact(ctx context.Context, ep store.LongTermEpisode, f extr
 	if sameFact {
 		return nil
 	}
+	status := store.MemoryInferred
+	if conflict {
+		status = store.MemoryConflicted
+	}
 	return n.cfg.Repos.LongTerm.InsertEdge(ctx, &store.LongTermEdge{
 		ID: uuid.NewString(), OwnerUserID: ep.OwnerUserID, Subject: f.Subject, Relation: f.Relation,
 		Object: f.Object, Fact: f.Fact, ValidFrom: &validFrom, SourceRefs: []string{ep.SourceID},
-		Embedding: vec,
+		Embedding: vec, Status: status, ScopeType: "global", Confidence: 0.55,
 	})
 }
 
@@ -314,7 +328,7 @@ func (n *Native) Search(ctx context.Context, query MemoryQuery) ([]MemoryFact, e
 		out = append(out, MemoryFact{
 			ID: item.edge.ID, Text: item.edge.Fact,
 			ValidAt: item.edge.ValidFrom, InvalidAt: item.edge.ValidTo,
-			SourceRefs: item.edge.SourceRefs,
+			SourceRefs: item.edge.SourceRefs, Status: item.edge.Status,
 		})
 	}
 	return out, nil

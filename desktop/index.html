@@ -30,8 +30,9 @@
         <button id="history-toggle" class="icon-button" aria-label="对话历史" title="对话历史">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.3"/><path d="M12 7.4V12l3.2 2"/></svg>
         </button>
-        <button id="workbench-toggle" class="icon-button" aria-label="工作台" title="工作台：任务 / 审批 / 简报">
+        <button id="workbench-toggle" class="icon-button workbench-button" aria-label="打开工作台" title="工作台：任务进度、待处理、今日简报">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h9"/></svg>
+          <span class="workbench-label">工作台</span>
           <span id="workbench-dot" class="workbench-dot" hidden></span>
         </button>
         <button id="theme-toggle" class="icon-button" aria-label="切换亮暗模式" title="切换亮暗模式">
@@ -41,23 +42,25 @@
         <button id="agents-toggle" class="icon-button" aria-label="打开设置" title="设置与 Agent">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h5.5M14.5 9H20"/><path d="M4 15h9.5M18.5 15H20"/><circle cx="12" cy="9" r="2.3"/><circle cx="16" cy="15" r="2.3"/></svg>
         </button>
-        <button id="collapse" class="icon-button" aria-label="收起" title="收起，后台继续运行">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>
+        <button id="collapse" class="icon-button" aria-label="关闭" title="关闭，后台继续运行">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
         </button>
       </div>
     </header>
 
-    <button id="pending-strip" class="pending-strip" type="button" hidden>
-      <span class="pending-strip-dot" aria-hidden="true"></span>
-      <span id="pending-strip-text">有待处理事项</span>
-      <span class="pending-strip-arrow" aria-hidden="true">›</span>
-    </button>
+    <div class="agent-strips">
+      <button id="pending-strip" class="pending-strip" type="button" hidden>
+        <span class="pending-strip-dot" aria-hidden="true"></span>
+        <span id="pending-strip-text">有待处理事项</span>
+        <span class="pending-strip-arrow" aria-hidden="true">›</span>
+      </button>
 
-    <button id="brief-card" class="brief-card" type="button" hidden>
-      <span class="brief-card-label">今日简报</span>
-      <span id="brief-card-text"></span>
-      <span class="pending-strip-arrow" aria-hidden="true">›</span>
-    </button>
+      <button id="brief-card" class="brief-card" type="button" hidden>
+        <span class="brief-card-label">今日简报</span>
+        <span id="brief-card-text"></span>
+        <span class="pending-strip-arrow" aria-hidden="true">›</span>
+      </button>
+    </div>
 
     <span id="main-collab-status" class="visually-hidden" role="status">未授权，不会观察</span>
 
@@ -79,7 +82,7 @@
     <div class="workspace-grid">
       <section class="chat-column">
         <section id="messages" class="messages" aria-live="polite">
-          <article class="message assistant"><p>我是金手指管家，可以对话、记录和调度其他 Agent。右上角是设置与 Agent 管理，顶栏开关控制协作模式。</p></article>
+          <article class="message assistant"><p>我是金手指管家，可以对话、记录和调度其他 Agent。要安排长期任务时，点右上角「工作台」；待办和验收也会在那里提醒你。</p></article>
         </section>
         <button id="summary-line" class="summary-line" type="button" hidden>
           <span class="summary-line-dot" aria-hidden="true"></span>

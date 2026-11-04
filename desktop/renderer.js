@@ -37,8 +37,9 @@ const summaryList = document.querySelector('#summary-list');
 const summaryClose = document.querySelector('#summary-close');
 const UPLOAD_BASE = 'http://127.0.0.1:8080';
 const SESSION_KEY = 'gfa.chatSessionId';
-const WELCOME = '我是金手指管家，可以对话、记录和调度其他 Agent。右上角是设置与 Agent 管理，顶栏开关控制协作模式。';
+const WELCOME = '我是金手指管家，可以对话、记录和调度其他 Agent。要安排长期任务时，点右上角「工作台」；待办和验收也会在那里提醒你。';
 let expanded = false;
+let pendingReply = null;
 let historySessions = [];
 let pendingAttachments = [];
 let summaryPhases = [];
@@ -68,6 +69,14 @@ const WAITING_TOOLS = new Set(['delegate_agent', 'open_agent']);
 
 function setChatStatus(state, text) {
   setOrbBusy(Boolean(state));
+  // 对话进行中只更新同一个思考气泡，避免气泡和底部状态条重复出现。
+  if (pendingReply) {
+    const label = pendingReply.querySelector('.thinking-text');
+    if (label) label.textContent = text || '';
+    pendingReply.dataset.state = state || '';
+    if (chatStatus) chatStatus.hidden = true;
+    return;
+  }
   if (!chatStatus) return;
   if (!state) {
     chatStatus.hidden = true;
@@ -77,6 +86,24 @@ function setChatStatus(state, text) {
   chatStatus.hidden = false;
   chatStatus.className = `chat-status ${state}`;
   chatStatusText.textContent = text;
+}
+
+function addThinkingMessage(at, createdAt) {
+  const element = addMessage('', 'assistant', [], at, createdAt);
+  element.classList.add('pending');
+  element.dataset.state = 'thinking';
+  const line = document.createElement('span');
+  line.className = 'thinking-line';
+  const dots = document.createElement('span');
+  dots.className = 'thinking-dots';
+  dots.setAttribute('aria-hidden', 'true');
+  dots.append(document.createElement('i'), document.createElement('i'), document.createElement('i'));
+  const label = document.createElement('span');
+  label.className = 'thinking-text';
+  label.textContent = '正在思考…';
+  line.append(dots, label);
+  element.replaceChildren(line);
+  return element;
 }
 
 // 悬浮球运行状态：思考/调用工具/等待 Agent 时显示旋转光环。
@@ -358,14 +385,14 @@ async function refreshStatus() {
 async function refreshWorkbenchBadge() {
   try {
     const [tasksResult, outboxResult] = await Promise.all([
-      api.listWorkerTasks(''),
+      api.listWorkTasks('', 100),
       api.listOutbox('pending_approval'),
     ]);
     const tasks = (tasksResult && tasksResult.tasks) || [];
     const outbox = (outboxResult && outboxResult.outbox) || [];
     const waiting = tasks.filter(task =>
-      (task.status === 'running' && task.waiting_kind && task.waiting_kind !== 'none') ||
-      ['failed', 'interrupted', 'timeout'].includes(task.status));
+      String(task.status).startsWith('waiting') ||
+      ['pending_acceptance', 'failed'].includes(task.status));
     const count = outbox.length + waiting.length;
     workbenchDot.hidden = count === 0;
     pendingStrip.hidden = count === 0;
@@ -713,7 +740,7 @@ form.addEventListener('submit', async event => {
   send.disabled = true;
   const sentAt = new Date();
   addMessage(text || '（附件）', 'user', files, clockLabel(sentAt), sentAt.toISOString());
-  const loading = addMessage('正在思考…', 'assistant', [], clockLabel(sentAt), sentAt.toISOString());
+  pendingReply = addThinkingMessage(clockLabel(sentAt), sentAt.toISOString());
   setChatStatus('thinking', '正在思考…');
   try {
     const response = await api.chat(text, files);
@@ -728,10 +755,16 @@ form.addEventListener('submit', async event => {
     }
     pendingAttachments = [];
     renderAttachments();
-    loading.innerHTML = window.MarkdownLite.render(response.reply || '我没有收到回答。');
+    pendingReply.classList.remove('pending');
+    delete pendingReply.dataset.state;
+    pendingReply.innerHTML = window.MarkdownLite.render(response.reply || '我没有收到回答。');
+    pendingReply = null;
   } catch (error) {
-    loading.textContent = `发送失败：${error.message}`;
-    loading.classList.add('error');
+    pendingReply.classList.remove('pending');
+    delete pendingReply.dataset.state;
+    pendingReply.textContent = `发送失败：${error.message}`;
+    pendingReply.classList.add('error');
+    pendingReply = null;
   } finally {
     setChatStatus(null);
     send.disabled = false;

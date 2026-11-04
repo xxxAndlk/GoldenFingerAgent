@@ -30,6 +30,21 @@ class AssistantApi {
     return response.json();
   }
 
+  // 投递队列需要拿到原始状态码，不能用 request 的抛错路径丢失 4xx/5xx 语义。
+  async requestRaw(path, options = {}) {
+    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+    if (this.token) headers['X-Token'] = this.token;
+    if (this.userId) headers['X-User-Id'] = this.userId;
+    const response = await this.fetch(`${this.baseUrl}${path}`, {
+      ...options,
+      headers,
+      signal: options.signal || AbortSignal.timeout(65_000),
+    });
+    let body = null;
+    try { body = await response.json(); } catch { /* 空响应不视为投递失败 */ }
+    return { status: response.status, body };
+  }
+
   status() {
     return this.request('/api/me', { method: 'GET' });
   }
@@ -121,6 +136,105 @@ class AssistantApi {
     const query = new URLSearchParams({ limit: String(limit) });
     if (before) query.set('before', before);
     return this.request(`/api/sessions/${encodeURIComponent(id)}/messages?${query.toString()}`, { method: 'GET' });
+  }
+
+  listWorkTasks(status = '', limit = 100) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (status) query.set('status', status);
+    return this.request(`/api/work-tasks?${query.toString()}`, { method: 'GET' });
+  }
+
+  getWorkTask(id) {
+    return this.request(`/api/work-tasks/${encodeURIComponent(id)}`, { method: 'GET' });
+  }
+
+  createWorkTask(task) {
+    return this.request('/api/work-tasks', {
+      method: 'POST',
+      body: JSON.stringify(task || {}),
+    });
+  }
+
+  messageWorkTask(id, text, expectedVersion) {
+    const body = { text: String(text || '') };
+    if (Number.isInteger(expectedVersion)) body.expected_version = expectedVersion;
+    return this.request(`/api/work-tasks/${encodeURIComponent(id)}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  taskAction(id, action, expectedVersion) {
+    const body = {};
+    if (Number.isInteger(expectedVersion)) body.expected_version = expectedVersion;
+    return this.request(`/api/work-tasks/${encodeURIComponent(id)}/${action}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  pauseWorkTask(id, version) { return this.taskAction(id, 'pause', version); }
+  resumeWorkTask(id, version) { return this.taskAction(id, 'resume', version); }
+  cancelWorkTask(id, version) { return this.taskAction(id, 'cancel', version); }
+  recoverWorkTask(id, version) { return this.taskAction(id, 'recover', version); }
+  reopenWorkTask(id, version) { return this.taskAction(id, 'reopen', version); }
+  completeWorkTask(id, version) { return this.taskAction(id, 'complete', version); }
+
+  listTaskEvents(id, afterId = 0) {
+    const query = new URLSearchParams({ after_id: String(afterId || 0) });
+    return this.request(`/api/work-tasks/${encodeURIComponent(id)}/events?${query.toString()}`, { method: 'GET' });
+  }
+
+  createArtifact(taskId, artifact) {
+    return this.request(`/api/work-tasks/${encodeURIComponent(taskId)}/artifacts`, {
+      method: 'POST',
+      body: JSON.stringify(artifact || {}),
+    });
+  }
+
+  getArtifact(id) {
+    return this.request(`/api/artifacts/${encodeURIComponent(id)}`, { method: 'GET' });
+  }
+
+  diffArtifact(id, from, to) {
+    const query = new URLSearchParams({ from: String(from), to: String(to) });
+    return this.request(`/api/artifacts/${encodeURIComponent(id)}/diff?${query.toString()}`, { method: 'GET' });
+  }
+
+  submitArtifact(id, version) {
+    return this.request(`/api/artifacts/${encodeURIComponent(id)}/submit`, {
+      method: 'POST',
+      body: JSON.stringify({ expected_version: Number(version) || 0 }),
+    });
+  }
+
+  acceptArtifact(id, version) {
+    return this.request(`/api/artifacts/${encodeURIComponent(id)}/accept`, {
+      method: 'POST',
+      body: JSON.stringify({ expected_version: Number(version) || 0 }),
+    });
+  }
+
+  rejectArtifact(id, version, reason = '') {
+    return this.request(`/api/artifacts/${encodeURIComponent(id)}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ expected_version: Number(version) || 0, reason }),
+    });
+  }
+
+  listTaskGrants(id) {
+    return this.request(`/api/work-tasks/${encodeURIComponent(id)}/grants`, { method: 'GET' });
+  }
+
+  createTaskGrant(id, grant) {
+    return this.request(`/api/work-tasks/${encodeURIComponent(id)}/grants`, {
+      method: 'POST',
+      body: JSON.stringify(grant || {}),
+    });
+  }
+
+  revokeGrant(id) {
+    return this.request(`/api/grants/${encodeURIComponent(id)}`, { method: 'DELETE' });
   }
 
   listWorkerTasks(threadId = '') {

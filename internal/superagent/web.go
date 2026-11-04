@@ -170,6 +170,7 @@ type WebPayload struct {
 	ContentHash  string   `json:"content_hash"`
 	ExtractedBy  string   `json:"extracted_by"`
 	Completeness string   `json:"completeness"`
+	Change       string   `json:"change"`
 	EvidenceIDs  []string `json:"evidence_ids"`
 }
 

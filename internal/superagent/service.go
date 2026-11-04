@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"goldenfinger/agent/internal/store"
+	"goldenfinger/agent/internal/worktask"
 )
 
 var (
@@ -28,6 +29,8 @@ type Service struct {
 	Filter Filter
 	// Workers 为空时 create_worker/route_to_worker 会确定性回退为 notify。
 	Workers WorkerSink
+	// Tasks 是长期工作控制面；为空时兼容旧的 Job 直通语义。
+	Tasks *worktask.Service
 	// Summarizer 维护渠道 Thread 的滚动摘要；为空时只保存原始事件。
 	Summarizer *Summarizer
 	// SummaryAllowed 是渠道摘要开关；为空时按允许处理（兼容旧装配）。

@@ -11,6 +11,7 @@ import (
 	"goldenfinger/agent/internal/nlu"
 	"goldenfinger/agent/internal/store"
 	"goldenfinger/agent/internal/task"
+	"goldenfinger/agent/internal/worktask"
 )
 
 // ToolServices 打包工具执行器共享的领域服务。
@@ -33,4 +34,6 @@ type ToolServices struct {
 	// DeviceGuard 是设备操作安全闸（敏感确认/急停）；nil 时退化为无闸门，
 	// 仅用于测试，生产装配必须提供。
 	DeviceGuard *device.Guard
+	// Artifacts 是 WorkTask 交付物服务；nil 时 create_artifact 不可用。
+	Artifacts *worktask.ArtifactService
 }

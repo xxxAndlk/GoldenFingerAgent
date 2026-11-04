@@ -102,6 +102,11 @@ type ActionOutbox struct {
 	Channel           string          `json:"channel"`
 	ThreadID          string          `json:"thread_id,omitempty"`
 	WorkerTaskID      string          `json:"worker_task_id,omitempty"`
+	WorkTaskID        string          `json:"work_task_id,omitempty"`
+	ToolInvocationID  string          `json:"tool_invocation_id,omitempty"`
+	ActionGrantID     string          `json:"action_grant_id,omitempty"`
+	ExpectedEffect    json.RawMessage `json:"expected_effect,omitempty"`
+	ReconciledAt      *time.Time      `json:"reconciled_at,omitempty"`
 	Kind              string          `json:"kind"`
 	Target            json.RawMessage `json:"target,omitempty"`
 	Body              string          `json:"body"`
@@ -595,26 +600,30 @@ func NewActionOutboxRepo(q Querier) *ActionOutboxRepo { return &ActionOutboxRepo
 
 func (d *DB) ActionOutbox() *ActionOutboxRepo { return NewActionOutboxRepo(d) }
 
-const actionOutboxColumns = `id, owner_user_id, channel, thread_id, worker_task_id, kind,
+const actionOutboxColumns = `id, owner_user_id, channel, thread_id, worker_task_id, work_task_id,
+	tool_invocation_id, action_grant_id, expected_effect_json, reconciled_at, kind,
 	target_json, body, payload_json, status, requires_approval, idempotency_key, version,
 	approved_by, approved_at, provider_message_id, last_error, created_at, updated_at, sent_at`
 
 func scanActionOutbox(row interface{ Scan(...any) error }) (*ActionOutbox, error) {
 	var o ActionOutbox
-	var target, payload []byte
+	var target, payload, expected []byte
 	var requiresApproval int
-	var approvedAt, sentAt sql.NullTime
-	if err := row.Scan(&o.ID, &o.OwnerUserID, &o.Channel, &o.ThreadID, &o.WorkerTaskID, &o.Kind,
-		&target, &o.Body, &payload, &o.Status, &requiresApproval, &o.IdempotencyKey, &o.Version,
-		&o.ApprovedBy, &approvedAt, &o.ProviderMessageID, &o.LastError, &o.CreatedAt, &o.UpdatedAt,
-		&sentAt); err != nil {
+	var approvedAt, sentAt, reconciledAt sql.NullTime
+	if err := row.Scan(&o.ID, &o.OwnerUserID, &o.Channel, &o.ThreadID, &o.WorkerTaskID,
+		&o.WorkTaskID, &o.ToolInvocationID, &o.ActionGrantID, &expected, &reconciledAt,
+		&o.Kind, &target, &o.Body, &payload, &o.Status, &requiresApproval, &o.IdempotencyKey,
+		&o.Version, &o.ApprovedBy, &approvedAt, &o.ProviderMessageID, &o.LastError,
+		&o.CreatedAt, &o.UpdatedAt, &sentAt); err != nil {
 		return nil, err
 	}
 	o.Target = target
 	o.Payload = payload
+	o.ExpectedEffect = expected
 	o.RequiresApproval = requiresApproval == 1
 	o.ApprovedAt = timePointer(approvedAt)
 	o.SentAt = timePointer(sentAt)
+	o.ReconciledAt = timePointer(reconciledAt)
 	return &o, nil
 }
 
@@ -635,12 +644,17 @@ func (r *ActionOutboxRepo) Create(ctx context.Context, o *ActionOutbox) error {
 	if len(o.Payload) == 0 {
 		o.Payload = json.RawMessage(`{}`)
 	}
+	if len(o.ExpectedEffect) == 0 {
+		o.ExpectedEffect = json.RawMessage(`{}`)
+	}
 	now := nowForDB()
 	_, err := r.q.ExecContext(ctx, `INSERT INTO agent_action_outbox
-		(id, owner_user_id, channel, thread_id, worker_task_id, kind, target_json, body,
-		 payload_json, status, requires_approval, idempotency_key, version, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-		o.ID, o.OwnerUserID, o.Channel, o.ThreadID, o.WorkerTaskID, o.Kind, string(o.Target),
+		(id, owner_user_id, channel, thread_id, worker_task_id, work_task_id, tool_invocation_id,
+		 action_grant_id, expected_effect_json, kind, target_json, body, payload_json, status,
+		 requires_approval, idempotency_key, version, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+		o.ID, o.OwnerUserID, o.Channel, o.ThreadID, o.WorkerTaskID, o.WorkTaskID,
+		o.ToolInvocationID, o.ActionGrantID, string(o.ExpectedEffect), o.Kind, string(o.Target),
 		o.Body, string(o.Payload), o.Status, boolInt(o.RequiresApproval), o.IdempotencyKey, now, now)
 	if isUniqueViolation(err) {
 		return ErrConflict
@@ -698,7 +712,8 @@ func (r *ActionOutboxRepo) UpdateDraft(ctx context.Context, ownerID, id string, 
 		payload = json.RawMessage(`{}`)
 	}
 	res, err := r.q.ExecContext(ctx, `UPDATE agent_action_outbox
-		SET body = ?, target_json = ?, payload_json = ?, version = version + 1, updated_at = ?
+		SET body = ?, target_json = ?, payload_json = ?, action_grant_id = '',
+			version = version + 1, updated_at = ?
 		WHERE owner_user_id = ? AND id = ? AND version = ?
 		  AND status IN ('draft', 'pending_approval')`,
 		body, string(target), string(payload), at, ownerID, id, version)
@@ -728,6 +743,28 @@ func (r *ActionOutboxRepo) Reject(ctx context.Context, ownerID, id string, versi
 		WHERE owner_user_id = ? AND id = ? AND version = ?
 		  AND status IN ('draft', 'pending_approval')`,
 		approver, reason, at, ownerID, id, version)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// LinkGrant 在审批成功后把一次性授权挂到发件箱；内容再次修改会清空关联。
+func (r *ActionOutboxRepo) LinkGrant(ctx context.Context, ownerID, id, grantID string, at time.Time) (bool, error) {
+	res, err := r.q.ExecContext(ctx, `UPDATE agent_action_outbox SET action_grant_id = ?,
+		updated_at = ? WHERE owner_user_id = ? AND id = ? AND status = 'approved'`,
+		grantID, at, ownerID, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func (r *ActionOutboxRepo) MarkReconciled(ctx context.Context, ownerID, id string, at time.Time) (bool, error) {
+	res, err := r.q.ExecContext(ctx, `UPDATE agent_action_outbox SET reconciled_at = ?,
+		updated_at = ? WHERE owner_user_id = ? AND id = ?`, at, at, ownerID, id)
 	if err != nil {
 		return false, err
 	}
@@ -767,6 +804,32 @@ func (r *AgentEventRepo) After(ctx context.Context, ownerID string, afterID int6
 	rows, err := r.q.QueryContext(ctx, `SELECT id, owner_user_id, kind, entity_type, entity_id,
 		payload_json, created_at FROM agent_event
 		WHERE owner_user_id = ? AND id > ? ORDER BY id LIMIT ?`, ownerID, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]AgentEvent, 0)
+	for rows.Next() {
+		var e AgentEvent
+		var payload []byte
+		if err := rows.Scan(&e.ID, &e.OwnerUserID, &e.Kind, &e.EntityType, &e.EntityID,
+			&payload, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		e.Payload = payload
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (r *AgentEventRepo) AfterForEntity(ctx context.Context, ownerID, entityType, entityID string, afterID int64, limit int) ([]AgentEvent, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.q.QueryContext(ctx, `SELECT id, owner_user_id, kind, entity_type, entity_id,
+		payload_json, created_at FROM agent_event
+		WHERE owner_user_id = ? AND entity_type = ? AND entity_id = ? AND id > ?
+		ORDER BY id LIMIT ?`, ownerID, entityType, entityID, afterID, limit)
 	if err != nil {
 		return nil, err
 	}

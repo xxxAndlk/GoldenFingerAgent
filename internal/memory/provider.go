@@ -35,6 +35,7 @@ type MemoryFact struct {
 	ValidAt    *time.Time
 	InvalidAt  *time.Time
 	SourceRefs []string
+	Status     string
 }
 
 // ForgetRequest 以本地来源引用或内部事实 ID 请求遗忘。

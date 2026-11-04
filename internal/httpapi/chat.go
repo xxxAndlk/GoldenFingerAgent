@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"goldenfinger/agent/internal/agent"
+	"goldenfinger/agent/internal/store"
 )
 
 type chatAttachment struct {
@@ -104,6 +105,39 @@ func (s *Server) runChatTurn(ctx context.Context, headerUserID string, req chatR
 	}
 	if u == nil {
 		return nil, fmt.Errorf("unauthorized")
+	}
+	if !req.Internal && s.Coordinator != nil {
+		result, handled, err := s.Coordinator.Handle(ctx, u.ID, req.Text)
+		if err != nil {
+			return nil, err
+		}
+		if handled {
+			sessionID := req.SessionID
+			var session *store.ChatSession
+			if sessionID != "" {
+				loaded, getErr := s.Repos.Sessions.Get(ctx, sessionID)
+				if getErr != nil || loaded.OwnerUserID != u.ID {
+					return nil, fmt.Errorf("session not found")
+				}
+				session = loaded
+			} else {
+				main, getErr := s.Repos.Sessions.GetOrCreateMain(ctx, u.ID)
+				if getErr != nil {
+					return nil, getErr
+				}
+				session = main
+			}
+			if session != nil {
+				_ = s.Repos.Sessions.AppendMessage(ctx, &store.ChatMessage{
+					SessionID: session.ID, Role: "user", Content: req.Text,
+				})
+				_ = s.Repos.Sessions.AppendMessage(ctx, &store.ChatMessage{
+					SessionID: session.ID, Role: "assistant", Content: result.Reply,
+				})
+				sessionID = session.ID
+			}
+			return &chatResponse{SessionID: sessionID, Reply: result.Reply}, nil
+		}
 	}
 	attachments := make([]agent.Attachment, 0, len(req.Attachments))
 	for _, item := range req.Attachments {

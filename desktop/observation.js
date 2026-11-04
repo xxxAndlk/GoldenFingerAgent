@@ -43,6 +43,10 @@ function normalizeObservation(event, defaults = {}) {
     privacyLevel: event.privacyLevel === 'protected' ? 'protected' : 'normal',
     skipEvidence: Boolean(event.skipEvidence),
     captureNote: clean(event.captureNote, 300),
+    contextKey: clean(event.contextKey || defaults.contextKey, 300),
+    projectCandidates: Array.isArray(event.projectCandidates)
+      ? event.projectCandidates.map(value => clean(value, 120)).filter(Boolean).slice(0, 8)
+      : [],
   };
 }
 
@@ -57,6 +61,51 @@ function selectNovelContent(text, seenLines) {
     seenLines.add(key);
   }
   return novel.join('\n').slice(0, 1800);
+}
+
+function localDay(at = Date.now()) {
+  const date = new Date(at);
+  const pad = value => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+// 只在高置信度信号上分配工作上下文；不确定时进入 unassigned，避免把不同项目混成一个 Thread。
+function contextForObservation(event = {}, { projectName = '', at = Date.now() } = {}) {
+  const title = clean(event.title || event.activeTab, 240);
+  const content = String(event.content || '').slice(0, 1200);
+  const candidates = [];
+  const project = clean(projectName, 120);
+  if (project) candidates.push(project);
+  const haystack = `${title}\n${content}`.toLowerCase();
+  if (project && haystack.includes(project.toLowerCase())) {
+    return { contextKey: `project:${project}`, projectCandidates: [project] };
+  }
+  let url = '';
+  try {
+    const parsed = new URL(String(event.url || ''));
+    if (/^https?:$/.test(parsed.protocol)) {
+      const part = parsed.pathname.split('/').filter(Boolean)[0] || '';
+      url = `${parsed.host}${part ? `/${part}` : ''}`;
+      if (parsed.host) candidates.push(parsed.host);
+      if (url) return { contextKey: `web:${url}`, projectCandidates: [...new Set(candidates)].slice(0, 8) };
+    }
+  } catch { /* 非 http(s) 继续按窗口标题判断。 */ }
+  const parts = title
+    .replace(/\s*\[[^\]]*\]\s*$/, '')
+    .split(/\s+-\s+/)
+    .map(part => clean(part, 120))
+    .filter(Boolean);
+  if (parts.length >= 2) {
+    const document = parts[0];
+    if (document && (/\.[a-z0-9]{1,8}$/i.test(document) || /(?:文档|方案|报告|笔记)/.test(document))) {
+      return { contextKey: `doc:${document}`, projectCandidates: [...new Set([...candidates, ...parts.slice(1)])].slice(0, 8) };
+    }
+    const candidate = parts[1];
+    if (candidate) {
+      return { contextKey: `project:${candidate}`, projectCandidates: [...new Set([...candidates, candidate])].slice(0, 8) };
+    }
+  }
+  return { contextKey: `activity:unassigned:${localDay(at)}`, projectCandidates: [...new Set(candidates)].slice(0, 8) };
 }
 
 function contentExcerpt(text) {
@@ -87,4 +136,6 @@ module.exports = {
   normalizeObservation,
   selectNovelContent,
   contentExcerpt,
+  contextForObservation,
+  localDay,
 };

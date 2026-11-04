@@ -31,10 +31,10 @@ func (r *SessionRepo) Create(ctx context.Context, s *ChatSession) error {
 		s.Kind = "chat"
 	}
 	return r.q.QueryRowContext(ctx, `
-		INSERT INTO chat_session (id, owner_user_id, kind, thread_id, summary, state_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO chat_session (id, owner_user_id, kind, thread_id, work_task_id, summary, state_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		RETURNING created_at, updated_at`,
-		s.ID, s.OwnerUserID, s.Kind, s.ThreadID, s.Summary, notNullJSON(s.State), nowForDB(), nowForDB(),
+		s.ID, s.OwnerUserID, s.Kind, s.ThreadID, s.WorkTaskID, s.Summary, notNullJSON(s.State), nowForDB(), nowForDB(),
 	).Scan(&s.CreatedAt, &s.UpdatedAt)
 }
 
@@ -42,9 +42,9 @@ func (r *SessionRepo) Get(ctx context.Context, id string) (*ChatSession, error) 
 	s := &ChatSession{}
 	var state []byte
 	err := r.q.QueryRowContext(ctx, `
-		SELECT id, owner_user_id, kind, thread_id, summary, state_json, created_at, updated_at
+		SELECT id, owner_user_id, kind, thread_id, work_task_id, summary, state_json, created_at, updated_at
 		FROM chat_session WHERE id = ?`, id).
-		Scan(&s.ID, &s.OwnerUserID, &s.Kind, &s.ThreadID, &s.Summary, &state, &s.CreatedAt, &s.UpdatedAt)
+		Scan(&s.ID, &s.OwnerUserID, &s.Kind, &s.ThreadID, &s.WorkTaskID, &s.Summary, &state, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -96,10 +96,10 @@ func (r *SessionRepo) getMain(ctx context.Context, ownerID string) (*ChatSession
 	s := &ChatSession{}
 	var state []byte
 	err := r.q.QueryRowContext(ctx, `
-		SELECT id, owner_user_id, kind, thread_id, summary, state_json, created_at, updated_at
+		SELECT id, owner_user_id, kind, thread_id, work_task_id, summary, state_json, created_at, updated_at
 		FROM chat_session WHERE owner_user_id = ? AND kind = 'main'
 		ORDER BY created_at ASC LIMIT 1`, ownerID).
-		Scan(&s.ID, &s.OwnerUserID, &s.Kind, &s.ThreadID, &s.Summary, &state, &s.CreatedAt, &s.UpdatedAt)
+		Scan(&s.ID, &s.OwnerUserID, &s.Kind, &s.ThreadID, &s.WorkTaskID, &s.Summary, &state, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -108,6 +108,13 @@ func (r *SessionRepo) getMain(ctx context.Context, ownerID string) (*ChatSession
 	}
 	s.State = state
 	return s, nil
+}
+
+// SetWorkTaskID 把 Worker 会话绑定到 WorkTask；同一会话可跨多个执行段复用。
+func (r *SessionRepo) SetWorkTaskID(ctx context.Context, id, taskID string) error {
+	_, err := r.q.ExecContext(ctx, `UPDATE chat_session SET work_task_id = ?, updated_at = ?
+		WHERE id = ?`, taskID, nowForDB(), id)
+	return err
 }
 
 func (r *SessionRepo) SaveState(ctx context.Context, id string, state json.RawMessage) error {

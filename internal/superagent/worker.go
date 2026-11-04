@@ -3,6 +3,7 @@ package superagent
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -12,7 +13,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"goldenfinger/agent/internal/agent"
 	"goldenfinger/agent/internal/store"
+	"goldenfinger/agent/internal/worktask"
 )
 
 // WorkerAgentID 标识由 TurnService 执行的 Super-agent Worker，
@@ -26,19 +29,26 @@ type WorkerEvent struct {
 }
 
 type WorkerRequest struct {
-	OwnerID   string
-	JobID     string
-	ThreadID  string
-	SessionID string
-	Goal      string
-	Profile   string
-	OnEvent   func(WorkerEvent)
+	OwnerID        string
+	JobID          string
+	TaskID         string
+	ThreadID       string
+	SessionID      string
+	Goal           string
+	Profile        string
+	StepController agent.StepController
+	ContextBlocks  []string
+	OnEvent        func(WorkerEvent)
 }
 
 type WorkerResult struct {
-	SessionID string
-	Reply     string
-	Summary   string
+	SessionID      string
+	Reply          string
+	Summary        string
+	Paused         bool
+	Cancelled      bool
+	WaitingKind    string
+	WaitingPayload json.RawMessage
 }
 
 type WorkerRunner interface {
@@ -46,14 +56,20 @@ type WorkerRunner interface {
 }
 
 type WorkerManager struct {
-	DB         *store.DB
-	Runner     WorkerRunner
+	DB     *store.DB
+	Runner WorkerRunner
+	// Tasks 非空时 create_worker 走 WorkTask 控制面；为空保持旧 Job 兼容路径。
+	Tasks *worktask.Service
+	// Artifacts 用于执行段结束时把草稿提交验收；为空时只使用结果摘要。
+	Artifacts  *worktask.ArtifactService
 	MaxWorkers int
 	Timeout    time.Duration
 	Now        func() time.Time
 	// OnResult 在 Worker 成功完成后把提炼结果写入统一记忆。
 	// 失败只记录日志，不改变已完成任务的状态。
 	OnResult func(ctx context.Context, job *store.AgentJob, summary string) error
+	// Context 为 WorkTask 生成任务级上下文块与 ContextReceipt；为空时只传 Goal。
+	Context func(ctx context.Context, job *store.AgentJob) ([]string, json.RawMessage, error)
 
 	mu     sync.Mutex
 	root   context.Context
@@ -135,6 +151,19 @@ func (w *WorkerManager) signal() {
 	}
 }
 
+// Wake 让主程序在 WorkTask 创建新执行段后立刻唤醒 Worker。
+func (w *WorkerManager) Wake() { w.signal() }
+
+// CancelJob 只取消正在执行的 context；数据库状态由 TaskService 在同一事务中结算。
+func (w *WorkerManager) CancelJob(_ context.Context, _ string, _ string, jobID string) {
+	w.mu.Lock()
+	cancel := w.cancel[jobID]
+	w.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 func (w *WorkerManager) loop(ctx context.Context) {
 	for {
 		if err := w.runNext(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -210,9 +239,37 @@ func (w *WorkerManager) runJob(parent context.Context, job *store.AgentJob) erro
 		}
 	}()
 
+	var controller agent.StepController
+	var contextBlocks []string
+	if w.Tasks != nil && job.WorkTaskID != "" {
+		if _, err := w.Tasks.SetActive(ctx, job.OwnerUserID, job.WorkTaskID, job.ID, job.SessionID); err != nil {
+			_ = w.DB.AgentJobs().AddEvent(context.Background(), job.ID, "cancelled",
+				"任务已停止，未开始执行："+err.Error(), w.now())
+			close(heartbeatDone)
+			cancel()
+			w.mu.Lock()
+			delete(w.cancel, job.ID)
+			w.mu.Unlock()
+			return nil
+		}
+		controller = NewWorkerStepController(w.DB, w.Tasks, job)
+		if w.Context != nil {
+			blocks, receipts, contextErr := w.Context(ctx, job)
+			if contextErr != nil {
+				log.Printf("[superagent-worker] context %s: %v", job.ID, contextErr)
+			} else {
+				contextBlocks = blocks
+				if len(receipts) > 0 {
+					_ = w.Tasks.RecordContextReceipt(ctx, job.OwnerUserID, job.WorkTaskID, job.ID, receipts)
+				}
+			}
+		}
+	}
+
 	result, runErr := w.Runner.RunWorker(ctx, WorkerRequest{
-		OwnerID: job.OwnerUserID, JobID: job.ID, ThreadID: job.ThreadID,
+		OwnerID: job.OwnerUserID, JobID: job.ID, TaskID: job.WorkTaskID, ThreadID: job.ThreadID,
 		SessionID: job.SessionID, Goal: job.Task, Profile: job.Profile,
+		StepController: controller, ContextBlocks: contextBlocks,
 		OnEvent: func(ev WorkerEvent) {
 			if ev.Kind != "tool" && ev.Kind != "tool_done" && ev.Kind != "clarify" {
 				return
@@ -287,6 +344,7 @@ func (w *WorkerManager) runJob(parent context.Context, job *store.AgentJob) erro
 	if err != nil {
 		return fmt.Errorf("finish worker %s: %w", job.ID, err)
 	}
+	w.syncTaskSegment(job, result, status, sessionID, summary, errorText)
 	if status == store.AgentJobCompleted {
 		if job.ThreadID != "" && summary != "" {
 			if changed, err := w.DB.Threads().UpdateSummary(context.Background(), job.OwnerUserID,
@@ -310,6 +368,66 @@ func (w *WorkerManager) runJob(parent context.Context, job *store.AgentJob) erro
 	return nil
 }
 
+func (w *WorkerManager) syncTaskSegment(job *store.AgentJob, result *WorkerResult, status,
+	sessionID, summary, errorText string) {
+	if w.Tasks == nil || job == nil || job.WorkTaskID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	detail, err := w.Tasks.Get(ctx, job.OwnerUserID, job.WorkTaskID)
+	if err != nil || detail == nil || detail.Task == nil {
+		return
+	}
+	task := detail.Task
+	if task.Status == store.WorkTaskCancelled || task.Status == store.WorkTaskCompleted {
+		return
+	}
+	if result != nil && (result.Paused || result.Cancelled) {
+		return
+	}
+	switch status {
+	case store.AgentJobFailed, store.AgentJobTimeout, store.AgentJobInterrupted:
+		_, _ = w.Tasks.Fail(ctx, job.OwnerUserID, job.WorkTaskID, job.ID,
+			firstNonEmpty(errorText, "Worker 执行失败"))
+		return
+	}
+	if result != nil && result.WaitingKind != "" {
+		_, _ = w.Tasks.Wait(ctx, job.OwnerUserID, job.WorkTaskID, job.ID, sessionID,
+			task.Version, result.WaitingKind, firstNonEmpty(summary, "等待用户输入"),
+			firstNonEmpty(result.WaitingAction(), "继续任务"), result.WaitingPayload)
+		return
+	}
+	if status == store.AgentJobCompleted && task.Status == store.WorkTaskActive {
+		submitted := 0
+		if w.Artifacts != nil {
+			if artifacts, listErr := store.NewRepos(w.DB).Artifacts.ListByTask(ctx, job.OwnerUserID, job.WorkTaskID); listErr == nil {
+				for _, artifact := range artifacts {
+					if artifact.Status != store.ArtifactDraft {
+						continue
+					}
+					if _, submitErr := w.Artifacts.SubmitForAcceptance(ctx, job.OwnerUserID,
+						artifact.ID, artifact.CurrentVersion); submitErr == nil {
+						submitted++
+					}
+				}
+			}
+		}
+		if submitted == 0 {
+			_, _ = w.Tasks.PendingAcceptance(ctx, job.OwnerUserID, job.WorkTaskID, job.ID,
+				task.Version, firstNonEmpty(summary, "执行段完成"))
+		}
+	}
+}
+
+// WaitingAction 给恢复检查点一个可读的下一步。
+func (r *WorkerResult) WaitingAction() string {
+	if r == nil || len(r.WaitingPayload) == 0 {
+		return ""
+	}
+	return truncateRunes(string(r.WaitingPayload), 500)
+}
+
 // CreateWorker 幂等创建 Worker 任务并订阅 Thread。
 func (w *WorkerManager) CreateWorker(ctx context.Context, ownerID string, trigger *store.Trigger, decision Decision) (string, error) {
 	if w.DB == nil || w.Runner == nil {
@@ -323,6 +441,33 @@ func (w *WorkerManager) CreateWorker(ctx context.Context, ownerID string, trigge
 		return "", errors.New("Worker 目标为空")
 	}
 	now := w.now()
+	if w.Tasks != nil {
+		task, err := w.Tasks.Create(ctx, worktask.CreateInput{
+			OwnerID: ownerID, Title: firstNonEmpty(trigger.Title, decision.Goal), Goal: goal,
+			Priority: decision.Priority, Profile: decision.Profile, SourceTriggerID: trigger.ID,
+			ThreadID: trigger.ThreadID, IdempotencyKey: "superagent:" + trigger.ID,
+			Start: true, CreatedBy: "router", JobThreadID: trigger.ThreadID,
+			JobParentTriggerID: trigger.ID,
+		})
+		if err != nil {
+			return "", err
+		}
+		job, err := w.DB.AgentJobs().GetByIdempotencyKey(ctx, ownerID, "task:"+task.ID+":primary")
+		if err != nil {
+			return "", err
+		}
+		if job.ThreadID != "" {
+			if err := w.DB.ThreadSubscriptions().Add(ctx, ownerID, job.ThreadID, job.ID, now); err != nil {
+				return "", err
+			}
+		}
+		_ = appendEvent(ctx, store.NewRepos(w.DB), ownerID, "worker.created", "worker_task", job.ID, map[string]any{
+			"trigger_id": trigger.ID, "thread_id": trigger.ThreadID, "profile": decision.Profile,
+			"work_task_id": task.ID,
+		})
+		w.signal()
+		return job.ID, nil
+	}
 	idempotencyKey := "superagent:" + trigger.ID
 	job := &store.AgentJob{
 		ID: uuid.NewString(), OwnerUserID: ownerID, AgentID: WorkerAgentID,
@@ -367,13 +512,31 @@ func (w *WorkerManager) RouteToWorker(ctx context.Context, ownerID string, trigg
 	if err != nil {
 		return fmt.Errorf("Worker 任务不存在")
 	}
+	now := w.now()
+	body := truncateRunes("Thread 新事件："+firstNonEmpty(trigger.Title, trigger.Body), 2000)
+	if w.Tasks != nil && job.WorkTaskID != "" {
+		if _, err := w.Tasks.AddThreadEvent(ctx, ownerID, job.WorkTaskID, trigger.ID, body,
+			"trigger:"+trigger.ID); err != nil {
+			return err
+		}
+		return w.DB.WithTx(ctx, func(tx *sql.Tx) error {
+			repos := store.NewRepos(tx)
+			if trigger.ThreadID != "" {
+				if err := repos.ThreadSubscriptions.Add(ctx, ownerID, trigger.ThreadID, job.ID, now); err != nil {
+					return err
+				}
+			}
+			return appendEvent(ctx, repos, ownerID, "worker.routed", "worker_task", job.ID, map[string]any{
+				"trigger_id": trigger.ID, "thread_id": trigger.ThreadID,
+				"work_task_id": job.WorkTaskID,
+			})
+		})
+	}
 	if job.Status == store.AgentJobCompleted || job.Status == store.AgentJobFailed ||
 		job.Status == store.AgentJobCancelled || job.Status == store.AgentJobTimeout ||
 		job.Status == store.AgentJobInterrupted {
 		return errors.New("Worker 任务已结束，不能再直通事件")
 	}
-	now := w.now()
-	body := truncateRunes("Thread 新事件："+firstNonEmpty(trigger.Title, trigger.Body), 2000)
 	return w.DB.WithTx(ctx, func(tx *sql.Tx) error {
 		repos := store.NewRepos(tx)
 		if trigger.ThreadID != "" {

@@ -22,6 +22,46 @@ function stripTrailingQuestion(value) {
   return text;
 }
 
+function segmentObservations(observations, {
+  maxDurationMs = 15 * 60_000,
+  idleGapMs = 5 * 60_000,
+} = {}) {
+  const groups = [];
+  let current = null;
+  const flush = () => {
+    if (current && current.observations.length) groups.push(current);
+    current = null;
+  };
+  for (const observation of observations) {
+    const at = Number(observation.at) || Date.now();
+    const key = String(observation.contextKey || '').trim();
+    if (!current
+      || key !== current.contextKey
+      || at - current.endedAt > idleGapMs
+      || at - current.startedAt > maxDurationMs) {
+      flush();
+      current = {
+        contextKey: key,
+        startedAt: at,
+        endedAt: at,
+        observations: [],
+        apps: new Set(),
+        projectCandidates: new Set(),
+      };
+    }
+    current.observations.push(observation);
+    current.endedAt = Math.max(current.endedAt, at);
+    if (observation.app) current.apps.add(String(observation.app));
+    for (const candidate of observation.projectCandidates || []) current.projectCandidates.add(String(candidate));
+  }
+  flush();
+  return groups.map(group => ({
+    ...group,
+    apps: [...group.apps],
+    projectCandidates: [...group.projectCandidates],
+  }));
+}
+
 function summarizeObservations(observations, scanIntervalMs = DEFAULT_SCAN_INTERVAL) {
   const apps = new Map();
   for (const observation of observations) {
@@ -74,6 +114,7 @@ class CollaborationMode {
     // 上一阶段总结与阶段记录由桌面侧持久化；这里只通过回调读写，方便测试注入。
     loadLastSummary = () => '',
     onPhase = () => {},
+    captureEpisode = null,
   }) {
     this.readActiveWindow = readActiveWindow;
     this.api = api;
@@ -86,6 +127,10 @@ class CollaborationMode {
     this.summaryIntervalMs = summaryIntervalMs;
     this.loadLastSummary = loadLastSummary;
     this.onPhase = onPhase;
+    this.captureEpisode = captureEpisode;
+    this.lastEpisodeAt = 0;
+    this.lastEpisodeError = '';
+    this.episodeCount = 0;
     this.enabled = false;
     this.observations = [];
     this.pendingSeed = [];
@@ -122,6 +167,9 @@ class CollaborationMode {
       summaryIntervalMs: this.summaryIntervalMs,
       nextSummaryAt: this.enabled ? new Date(this.summaryDue).toISOString() : null,
       lastSummaryAt: this.lastSummaryAt ? new Date(this.lastSummaryAt).toISOString() : null,
+      lastEpisodeAt: this.lastEpisodeAt ? new Date(this.lastEpisodeAt).toISOString() : null,
+      lastEpisodeError: this.lastEpisodeError,
+      episodeCount: this.episodeCount,
     };
   }
 
@@ -148,6 +196,11 @@ class CollaborationMode {
       detail: clean(observation.detail, 300),
       content: clean(observation.content, 1800),
       at: observation.at || this.now(),
+      url: clean(observation.url, 1000),
+      contextKey: clean(observation.contextKey, 300),
+      projectCandidates: Array.isArray(observation.projectCandidates)
+        ? observation.projectCandidates.map(item => clean(item, 120)).filter(Boolean).slice(0, 8)
+        : [],
     });
     this.observations = this.observations.slice(-2000);
   }
@@ -215,24 +268,42 @@ class CollaborationMode {
       phase.completedAt = this.lastSummaryAt;
       this.onSummarized(observations, phase);
       this.onPhase(phase);
-      // 已完成的工作片段进入 Super-agent 的活动 Thread；失败不影响本地总结。
-      if (typeof this.api.captureActivityEpisode === 'function') {
+      // 按工作上下文拆分 Episode；每个 Episode 有自己的活动 Thread，不把一天的工作混在一起。
+      const segments = segmentObservations(observations);
+      for (const [index, segment] of segments.entries()) {
+        const contextKey = segment.contextKey || '';
+        const label = contextKey
+          ? contextKey.replace(/^(project|web|doc):/, '')
+          : '未归类工作片段';
+        const evidenceIds = segment.observations.map(item => item.id).filter(Boolean);
+        const payload = {
+          episode_id: `${phase.id}-${index}`,
+          context_key: contextKey,
+          started_at: new Date(segment.startedAt).toISOString(),
+          ended_at: new Date(segment.endedAt).toISOString(),
+          app: segment.apps[0] || '桌面',
+          apps: segment.apps,
+          project_candidates: segment.projectCandidates,
+          title: `${label} · ${new Date(segment.endedAt).toLocaleString()}`,
+          summary: segments.length === 1
+            ? reply
+            : summarizeObservations(segment.observations, this.scanIntervalMs).slice(0, 4000),
+          status: 'completed',
+          outputs: [],
+          decisions: '',
+          issues: '',
+          evidence_ids: evidenceIds,
+          cursor: evidenceIds.length ? String(evidenceIds[evidenceIds.length - 1]) : '',
+          association_confidence: contextKey.startsWith('activity:unassigned') ? 0 : 0.5,
+        };
         try {
-          await this.api.captureActivityEpisode({
-            episode_id: phase.id,
-            started_at: new Date(phase.startedAt).toISOString(),
-            ended_at: new Date(phase.endedAt).toISOString(),
-            app: observations[0]?.app || '桌面',
-            title: '工作片段 ' + new Date(phase.endedAt).toLocaleString(),
-            summary: reply,
-            status: 'completed',
-            outputs: [],
-            decisions: '',
-            issues: '',
-            evidence_ids: phase.eventIds,
-            cursor: phase.eventIds.length ? String(phase.eventIds[phase.eventIds.length - 1]) : '',
-          });
+          if (typeof this.captureEpisode === 'function') await this.captureEpisode(payload);
+          else if (typeof this.api.captureActivityEpisode === 'function') await this.api.captureActivityEpisode(payload);
+          this.lastEpisodeAt = this.now();
+          this.lastEpisodeError = '';
+          this.episodeCount += 1;
         } catch (error) {
+          this.lastEpisodeError = error.message;
           console.error(`工作片段入队失败：${error.message}`);
         }
       }
@@ -253,6 +324,7 @@ class CollaborationMode {
 module.exports = {
   CollaborationMode,
   summarizeObservations,
+  segmentObservations,
   stripTrailingQuestion,
   DEFAULT_SCAN_INTERVAL,
   DEFAULT_SUMMARY_INTERVAL,

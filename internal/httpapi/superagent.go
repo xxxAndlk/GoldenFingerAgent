@@ -1,6 +1,9 @@
 package httpapi
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -281,7 +284,7 @@ func (s *Server) handleSteerWorkerTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "任务不存在")
 		return
 	}
-	if job.ThreadID == "" && job.ParentTriggerID == "" {
+	if job.ThreadID == "" && job.ParentTriggerID == "" && job.WorkTaskID == "" {
 		writeError(w, 404, "不是 Super-agent Worker 任务")
 		return
 	}
@@ -297,11 +300,23 @@ func (s *Server) handleSteerWorkerTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "追加指令不能为空且不能超过 4000 字符")
 		return
 	}
-	if err := s.Repos.AgentJobs.AddEvent(r.Context(), job.ID, "steer", req.Text, time.Now()); err != nil {
-		writeError(w, 500, err.Error())
+	if job.WorkTaskID == "" || s.Tasks == nil {
+		writeError(w, http.StatusConflict, "旧 Worker Job 没有绑定 WorkTask，不能追加指令；请通过 /api/work-tasks/{id}/messages 提交")
 		return
 	}
-	writeJSON(w, 202, map[string]any{"accepted": true})
+	result, err := s.Tasks.AddMessage(r.Context(), u.ID, job.WorkTaskID, req.Text, nil,
+		"legacy-steer:"+job.ID+":"+uuid.NewString())
+	if err != nil {
+		writeWorkTaskError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"accepted": true,
+		"queued":   true,
+		"inbox_id": result.Inbox.ID,
+		"delivery": result.Delivered,
+		"job":      result.Job,
+	})
 }
 
 func (s *Server) handleListActionOutbox(w http.ResponseWriter, r *http.Request) {
@@ -329,10 +344,12 @@ type actionOutboxRequest struct {
 	Channel          string          `json:"channel"`
 	ThreadID         string          `json:"thread_id,omitempty"`
 	WorkerTaskID     string          `json:"worker_task_id,omitempty"`
+	WorkTaskID       string          `json:"work_task_id,omitempty"`
 	Kind             string          `json:"kind"`
 	Target           json.RawMessage `json:"target,omitempty"`
 	Body             string          `json:"body"`
 	Payload          json.RawMessage `json:"payload,omitempty"`
+	ExpectedEffect   json.RawMessage `json:"expected_effect,omitempty"`
 	RequiresApproval *bool           `json:"requires_approval,omitempty"`
 	IdempotencyKey   string          `json:"idempotency_key,omitempty"`
 }
@@ -361,14 +378,23 @@ func (s *Server) handleCreateActionOutbox(w http.ResponseWriter, r *http.Request
 	if req.IdempotencyKey == "" {
 		req.IdempotencyKey = uuid.NewString()
 	}
+	req.WorkTaskID = strings.TrimSpace(req.WorkTaskID)
+	if req.WorkTaskID != "" {
+		if _, err := s.Repos.WorkTasks.Get(r.Context(), u.ID, req.WorkTaskID); err != nil {
+			writeError(w, 404, "WorkTask 不存在")
+			return
+		}
+	}
 	requiresApproval := true
 	if req.RequiresApproval != nil {
 		requiresApproval = *req.RequiresApproval
 	}
 	item := &store.ActionOutbox{
 		OwnerUserID: u.ID, Channel: req.Channel, ThreadID: req.ThreadID,
-		WorkerTaskID: req.WorkerTaskID, Kind: req.Kind, Target: req.Target, Body: req.Body,
-		Payload: req.Payload, RequiresApproval: requiresApproval, IdempotencyKey: req.IdempotencyKey,
+		WorkerTaskID: req.WorkerTaskID, WorkTaskID: req.WorkTaskID, Kind: req.Kind,
+		Target: req.Target, Body: req.Body, Payload: req.Payload,
+		ExpectedEffect: req.ExpectedEffect, RequiresApproval: requiresApproval,
+		IdempotencyKey: req.IdempotencyKey,
 	}
 	if err := s.Repos.ActionOutbox.Create(r.Context(), item); err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -415,6 +441,10 @@ func (s *Server) handleUpdateActionOutbox(w http.ResponseWriter, r *http.Request
 		writeError(w, 400, "bad request body")
 		return
 	}
+	if previous, getErr := s.Repos.ActionOutbox.Get(r.Context(), u.ID, r.PathValue("id")); getErr == nil &&
+		previous.ActionGrantID != "" {
+		_, _ = s.Repos.Grants.Revoke(r.Context(), u.ID, previous.ActionGrantID, time.Now())
+	}
 	changed, err := s.Repos.ActionOutbox.UpdateDraft(r.Context(), u.ID, r.PathValue("id"),
 		req.Version, strings.TrimSpace(req.Body), req.Target, req.Payload, time.Now())
 	if err != nil {
@@ -453,7 +483,35 @@ func (s *Server) handleApproveActionOutbox(w http.ResponseWriter, r *http.Reques
 		writeError(w, 409, "版本已变化或已处理，请刷新后重试")
 		return
 	}
+	s.createOutboxGrant(r.Context(), u.ID, r.PathValue("id"))
 	s.writeActionOutbox(w, r, u.ID)
+}
+
+// createOutboxGrant 为已批准的草稿生成一次性、内容 hash 绑定的外发授权。
+func (s *Server) createOutboxGrant(ctx context.Context, ownerID, outboxID string) {
+	item, err := s.Repos.ActionOutbox.Get(ctx, ownerID, outboxID)
+	if err != nil || item.WorkTaskID == "" {
+		return
+	}
+	sum := sha256.New()
+	fmt.Fprintf(sum, "%s\x00%s\x00%s\x00%s", item.Channel, item.Kind, item.Body, string(item.Target))
+	hash := hex.EncodeToString(sum.Sum(nil))
+	now := time.Now()
+	expires := now.Add(24 * time.Hour)
+	scope, _ := json.Marshal(map[string]any{
+		"channel": item.Channel, "kind": item.Kind, "content_hash": hash,
+		"target": json.RawMessage(item.Target),
+	})
+	grant := &store.ActionGrant{
+		OwnerUserID: ownerID, TaskID: item.WorkTaskID,
+		ActionType:    "external_send:" + item.Channel + ":" + item.Kind,
+		ResourceScope: scope, RiskLevel: store.GrantExternalWrite, RemainingUses: 1,
+		ApprovedBy: ownerID, ApprovedAt: &now, ExpiresAt: &expires,
+	}
+	if err := s.Repos.Grants.Create(ctx, grant); err != nil {
+		return
+	}
+	_, _ = s.Repos.ActionOutbox.LinkGrant(ctx, ownerID, outboxID, grant.ID, now)
 }
 
 func (s *Server) handleRejectActionOutbox(w http.ResponseWriter, r *http.Request) {
@@ -507,7 +565,7 @@ func (s *Server) handleRouteTriggers(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("mode") == "llm" && s.Runtime != nil {
 		rt := s.effectiveRuntime()
 		if rt != nil && rt.LLM != nil {
-			router = &superagent.LLMRouter{Client: rt.LLM, Model: rt.Model}
+			router = &superagent.LLMRouter{Client: rt.LLM, Model: rt.Model, TaskIndex: s.SuperAgent.TaskIndex}
 		}
 	}
 	results, err := s.SuperAgent.RoutePending(r.Context(), u.ID, router,

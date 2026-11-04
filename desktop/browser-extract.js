@@ -66,7 +66,7 @@ async function extractPage(page, options = {}) {
   };
 }
 
-function makeWebItem({ site, account, url, extraction }) {
+function makeWebItem({ site, account, url, extraction, change = 'new' }) {
   const text = normalizeText(extraction.text);
   if (!text) throw new Error('页面没有可读取的正文');
   const canonical = extraction.canonicalUrl || url;
@@ -81,6 +81,7 @@ function makeWebItem({ site, account, url, extraction }) {
     captured_at: extraction.capturedAt || new Date().toISOString(),
     extracted_by: extraction.extractedBy || 'dom',
     completeness: extraction.completeness || 'unknown',
+    change,
     evidence_ids: Array.isArray(extraction.evidenceIds) ? extraction.evidenceIds.slice(0, 50) : [],
   };
 }

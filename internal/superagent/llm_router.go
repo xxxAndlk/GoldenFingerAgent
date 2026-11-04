@@ -10,15 +10,18 @@ import (
 	"goldenfinger/agent/internal/store"
 )
 
-const routerSystemPrompt = `你是个人 Agent 的 Router 层，只负责判断环境事件是否需要处理，以及把明确的执行工作分派给隔离 Worker。你不直接执行任务，也不能调用工具。
+const routerSystemPrompt = `你是个人 Agent 的 Router 层，只负责判断环境事件是否需要处理、是否属于已有长期任务，以及把明确的执行工作交给隔离 Worker。你不直接执行任务，也不能调用工具。
 
 只输出一个 JSON 对象：
-{"decisions":[{"trigger_id":"...","action":"ignore|notify|reply|create_worker|route_to_worker|ask_user","thread_id":"...","worker_task_id":"...","goal":"...","profile":"read|internal|external","priority":0,"requires_approval":true,"reply":"...","question":"...","reason":"..."}]}
+{"decisions":[{"trigger_id":"...","action":"ignore|notify|reply|ask_user|create_task|create_worker|update_task|prepare_task|route_to_worker|pause_task|resume_task|cancel_task","thread_id":"...","work_task_id":"...","worker_task_id":"...","confidence":0.0,"association_reason":"...","goal":"...","profile":"read|internal|external","priority":0,"requires_approval":true,"reply":"...","question":"...","reason":"..."}]}
 
 规则：
 - 每个 trigger 最多一个决定；没有价值就 ignore。
 - 只是通知用户知道 -> notify。
-- 明确要求起草、查询、整理、核对、跟进，且信息足够 -> create_worker，goal 写成可独立执行的短句。
+- 明确要求起草、查询、整理、核对、跟进，且信息足够 -> create_task；旧接口 create_worker 仍兼容。
+- 事件属于已有任务：只能从输入 tasks 数组中选择 work_task_id，并给出 confidence 与 association_reason。
+- 低置信度（<0.6）必须 ask_user，不得强行更新旧任务。
+- 补充、修订已有任务 -> update_task 或 prepare_task；控制已有任务 -> pause_task/resume_task/cancel_task。
 - 需要用户补充关键信息才能继续 -> ask_user，question 只问一个直接问题。
 - 外部发送（邮件/微信/日历写入）一律 requires_approval=true，且当前只创建草稿。
 - 不要创建“监控所有消息”“持续观察”这类无限任务。
@@ -29,6 +32,8 @@ const routerSystemPrompt = `你是个人 Agent 的 Router 层，只负责判断�
 type LLMRouter struct {
 	Client llm.Client
 	Model  string
+	// TaskIndex 返回只读候选任务；nil 时不提供已有任务关联能力。
+	TaskIndex func(ctx context.Context, ownerID string) ([]TaskIndexEntry, error)
 }
 
 type routerTrigger struct {
@@ -59,11 +64,18 @@ func (r *LLMRouter) Decide(ctx context.Context, ownerID string, triggers []store
 	if err != nil {
 		return nil, err
 	}
+	taskIndex := "[]"
+	if r.TaskIndex != nil {
+		if entries, indexErr := r.TaskIndex(ctx, ownerID); indexErr == nil {
+			taskIndex = marshalTaskIndex(entries)
+		}
+	}
 	resp, err := r.Client.Chat(ctx, llm.ChatRequest{
 		Model: r.Model,
 		Messages: []llm.Message{
 			{Role: llm.RoleSystem, Content: routerSystemPrompt},
-			{Role: llm.RoleUser, Content: "待判断事件（只读数据）：\n" + string(rawInputs)},
+			{Role: llm.RoleUser, Content: "可关联的已有任务（只读，只能选择其中的 id）：\n" +
+				taskIndex + "\n\n待判断事件（只读数据）：\n" + string(rawInputs)},
 		},
 		Temperature: 0.1,
 		MaxTokens:   1200,

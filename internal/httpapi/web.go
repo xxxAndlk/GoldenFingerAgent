@@ -89,6 +89,7 @@ type webItemRequest struct {
 	CapturedAt   time.Time `json:"captured_at"`
 	ExtractedBy  string    `json:"extracted_by"`
 	Completeness string    `json:"completeness"`
+	Change       string    `json:"change"`
 	EvidenceIDs  []string  `json:"evidence_ids"`
 }
 
@@ -161,10 +162,14 @@ func (s *Server) handleWebItem(w http.ResponseWriter, r *http.Request) {
 	if req.CapturedAt.IsZero() {
 		req.CapturedAt = s.Now()
 	}
+	change := strings.TrimSpace(req.Change)
+	if change != "new" && change != "updated" && change != "unchanged" && change != "unknown" {
+		change = "unknown"
+	}
 	payload, _ := json.Marshal(superagent.WebPayload{
 		SiteID: site.ID, Account: account, URL: strings.TrimSpace(req.URL),
 		CanonicalURL: canonical, ItemID: itemID, ContentHash: contentHash,
-		ExtractedBy: extractedBy, Completeness: completeness,
+		ExtractedBy: extractedBy, Completeness: completeness, Change: change,
 		EvidenceIDs: normalizeItems(req.EvidenceIDs, 50, 200),
 	})
 	s.ingestChannel(w, r, u.ID, store.ChannelWeb, site.ID, superagent.TriggerInput{

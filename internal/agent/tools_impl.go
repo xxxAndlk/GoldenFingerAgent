@@ -1383,6 +1383,7 @@ func DefaultTools() []Tool {
 		backTool{},
 		openAppTool{},
 		waitTool{},
+		createArtifactTool{},
 	}
 }
 

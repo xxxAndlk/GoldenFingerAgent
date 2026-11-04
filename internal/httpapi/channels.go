@@ -12,18 +12,22 @@ import (
 )
 
 type activityEpisodeRequest struct {
-	EpisodeID   string    `json:"episode_id"`
-	StartedAt   time.Time `json:"started_at"`
-	EndedAt     time.Time `json:"ended_at"`
-	App         string    `json:"app"`
-	Title       string    `json:"title"`
-	Summary     string    `json:"summary"`
-	Status      string    `json:"status"`
-	Outputs     []string  `json:"outputs"`
-	Decisions   string    `json:"decisions"`
-	Issues      string    `json:"issues"`
-	EvidenceIDs []string  `json:"evidence_ids"`
-	Cursor      string    `json:"cursor"`
+	EpisodeID             string    `json:"episode_id"`
+	ContextKey            string    `json:"context_key"`
+	StartedAt             time.Time `json:"started_at"`
+	EndedAt               time.Time `json:"ended_at"`
+	App                   string    `json:"app"`
+	Apps                  []string  `json:"apps"`
+	ProjectCandidates     []string  `json:"project_candidates"`
+	Title                 string    `json:"title"`
+	Summary               string    `json:"summary"`
+	Status                string    `json:"status"`
+	Outputs               []string  `json:"outputs"`
+	Decisions             string    `json:"decisions"`
+	Issues                string    `json:"issues"`
+	EvidenceIDs           []string  `json:"evidence_ids"`
+	Cursor                string    `json:"cursor"`
+	AssociationConfidence float64   `json:"association_confidence"`
 }
 
 // POST /api/channels/activity/episodes —— 桌面端把已完成的工作片段交给事件层。
@@ -39,6 +43,10 @@ func (s *Server) handleActivityEpisode(w http.ResponseWriter, r *http.Request) {
 	}
 	req.EpisodeID = strings.TrimSpace(req.EpisodeID)
 	req.Summary = strings.TrimSpace(req.Summary)
+	req.ContextKey = strings.TrimSpace(req.ContextKey)
+	if len(req.ContextKey) > 300 {
+		req.ContextKey = req.ContextKey[:300]
+	}
 	if req.EpisodeID == "" || req.Summary == "" {
 		writeError(w, http.StatusBadRequest, "episode_id 和 summary 不能为空")
 		return
@@ -47,11 +55,18 @@ func (s *Server) handleActivityEpisode(w http.ResponseWriter, r *http.Request) {
 		req.EndedAt = s.Now().In(time.Local)
 	}
 	day := req.EndedAt.In(time.Local).Format("2006-01-02")
+	threadKey := "activity:" + day
+	if req.ContextKey != "" {
+		threadKey = req.ContextKey
+		if !strings.HasPrefix(threadKey, "activity:") {
+			threadKey = "activity:" + threadKey
+		}
+	}
 	payload, _ := json.Marshal(req)
 	s.ingestChannel(w, r, u.ID, store.ChannelActivity, firstNonEmpty(req.App, "activity"), superagent.TriggerInput{
 		Channel:          store.ChannelActivity,
 		ExternalID:       "episode:" + req.EpisodeID,
-		ThreadExternalID: "activity:" + day,
+		ThreadExternalID: threadKey,
 		Kind:             "episode",
 		Title:            firstNonEmpty(req.Title, req.App, "工作片段"),
 		Body:             req.Summary,
@@ -181,14 +196,24 @@ func (s *Server) handleCalendarEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 type wechatMessageRequest struct {
-	Source     string    `json:"source"`
-	MessageID  string    `json:"message_id"`
-	Sender     string    `json:"sender"`
-	Text       string    `json:"text"`
-	Kind       string    `json:"kind"`
-	ReceivedAt time.Time `json:"received_at"`
-	Incomplete bool      `json:"incomplete"`
-	RawRef     string    `json:"raw_ref"`
+	Source       string     `json:"source"`
+	SourceID     string     `json:"source_id"`
+	DisplayName  string     `json:"display_name"`
+	MessageID    string     `json:"message_id"`
+	EventID      string     `json:"event_id"`
+	Sender       string     `json:"sender"`
+	Direction    string     `json:"direction"`
+	MessageType  string     `json:"message_type"`
+	Text         string     `json:"text"`
+	Kind         string     `json:"kind"`
+	ObservedAt   time.Time  `json:"observed_at"`
+	OccurredAt   *time.Time `json:"occurred_at"`
+	ReceivedAt   time.Time  `json:"received_at"`
+	ContentHash  string     `json:"content_hash"`
+	Completeness string     `json:"completeness"`
+	Incomplete   bool       `json:"incomplete"`
+	RawRef       string     `json:"raw_ref"`
+	Cursor       string     `json:"cursor"`
 }
 
 func (s *Server) handleWeChatMessage(w http.ResponseWriter, r *http.Request) {
@@ -202,35 +227,92 @@ func (s *Server) handleWeChatMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.Source = strings.TrimSpace(req.Source)
+	req.SourceID = strings.TrimSpace(req.SourceID)
+	req.DisplayName = strings.TrimSpace(req.DisplayName)
 	req.MessageID = strings.TrimSpace(req.MessageID)
+	req.EventID = strings.TrimSpace(req.EventID)
 	req.Text = strings.TrimSpace(req.Text)
+	req.Sender = strings.TrimSpace(req.Sender)
+	req.Direction = strings.TrimSpace(req.Direction)
+	req.ContentHash = strings.TrimSpace(req.ContentHash)
+	req.Completeness = strings.TrimSpace(req.Completeness)
+	if req.Source == "" && req.DisplayName != "" {
+		req.Source = req.DisplayName
+	}
+	if req.MessageID == "" {
+		req.MessageID = req.EventID
+	}
 	if req.Source == "" || req.MessageID == "" || req.Text == "" {
 		writeError(w, http.StatusBadRequest, "source、message_id、text 不能为空")
 		return
 	}
+	if req.SourceID == "" {
+		req.SourceID = req.Source
+	}
+	if req.DisplayName == "" {
+		req.DisplayName = req.Source
+	}
+	if req.ObservedAt.IsZero() {
+		req.ObservedAt = req.ReceivedAt
+	}
+	if req.ObservedAt.IsZero() {
+		req.ObservedAt = s.Now()
+	}
 	if req.ReceivedAt.IsZero() {
-		req.ReceivedAt = s.Now()
+		req.ReceivedAt = req.ObservedAt
 	}
 	if req.Kind == "" {
 		req.Kind = "message"
 	}
+	if req.MessageType == "" {
+		req.MessageType = "visible_text"
+	}
+	if !validDirection(req.Direction) {
+		req.Direction = "unknown"
+	}
+	if !validCompleteness(req.Completeness) {
+		req.Completeness = "unknown"
+	}
 	body := req.Text
-	if req.Incomplete {
-		body += "\n（可能不完整：仅采集到当前可见内容）"
+	if req.Completeness == "current_visible" || req.Completeness == "partial" || req.Incomplete {
+		body += "\n（当前可见内容，不代表完整聊天记录）"
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"sender": req.Sender, "incomplete": req.Incomplete, "raw_ref": req.RawRef,
+		"sender": req.Sender, "direction": req.Direction, "message_type": req.MessageType,
+		"source_id": req.SourceID, "display_name": req.DisplayName,
+		"event_id": req.EventID, "content_hash": req.ContentHash,
+		"observed_at": req.ObservedAt, "occurred_at": req.OccurredAt,
+		"completeness": req.Completeness, "incomplete": req.Incomplete,
+		"raw_ref": req.RawRef, "cursor": req.Cursor,
 	})
 	s.ingestChannel(w, r, u.ID, store.ChannelWeChatDesktop, req.Source, superagent.TriggerInput{
 		Channel:          store.ChannelWeChatDesktop,
-		ExternalID:       "wechat:" + req.Source + ":" + req.MessageID,
-		ThreadExternalID: "wechat:" + req.Source,
+		ExternalID:       "wechat:" + req.SourceID + ":" + req.MessageID,
+		ThreadExternalID: "wechat:" + req.SourceID,
 		Kind:             req.Kind,
-		Title:            req.Source,
+		Title:            req.DisplayName,
 		Body:             body,
 		Payload:          payload,
-		ReceivedAt:       req.ReceivedAt,
+		ReceivedAt:       req.ObservedAt,
 	})
+}
+
+func validDirection(value string) bool {
+	switch value {
+	case "self", "other", "system", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+func validCompleteness(value string) bool {
+	switch value {
+	case "complete", "current_visible", "partial", "unknown":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) ingestChannel(w http.ResponseWriter, r *http.Request, ownerID, channel, source string, input superagent.TriggerInput) {

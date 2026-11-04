@@ -3,15 +3,18 @@
 const fs = require('node:fs');
 const { readPageContent } = require('./page-content');
 const { ContentMemory } = require('./content-dedup');
-const { ActivitySource, clean, normalizeObservation, contentExcerpt } = require('./observation');
+const {
+  ActivitySource, clean, normalizeObservation, contentExcerpt, contextForObservation,
+} = require('./observation');
 
 // 默认采集源：保留现有前台窗口、UIA、正文区域裁剪、OCR 和语义去重链路。
 class NativeActivitySource extends ActivitySource {
-  constructor({ readActiveWindow, readPageContent: readContent = readPageContent, now = () => Date.now() }) {
+  constructor({ readActiveWindow, readPageContent: readContent = readPageContent, now = () => Date.now(), projectName = '' }) {
     super();
     this.readActiveWindow = readActiveWindow;
     this.readPageContent = readContent;
     this.now = now;
+    this.projectName = projectName;
     this.reset();
   }
 
@@ -43,6 +46,10 @@ class NativeActivitySource extends ActivitySource {
     const rawContent = clean(page.text, 8000);
     const content = this.contentMemory.select(rawContent);
     const pageTitle = clean(page.activeTab || title);
+    const context = contextForObservation(
+      { title: pageTitle, url: page.url, content: rawContent },
+      { projectName: this.projectName, at: this.now() },
+    );
     const base = {
       app,
       title: pageTitle,
@@ -53,6 +60,8 @@ class NativeActivitySource extends ActivitySource {
       evidenceRef: page.evidencePath || '',
       skipEvidence: Boolean(page.skipEvidence),
       captureNote: page.captureNote || '',
+      contextKey: context.contextKey,
+      projectCandidates: context.projectCandidates,
     };
     if (content) {
       return normalizeObservation({
@@ -70,7 +79,13 @@ class NativeActivitySource extends ActivitySource {
       const due = keyChanged || now - this.lastWindowEventAt >= 60_000;
       if (!due) return null;
       this.lastWindowEventAt = now;
-      return normalizeObservation({ ...base, type: 'window', detail: pageTitle || title || app, source: 'active-window' });
+      return normalizeObservation({
+        ...base,
+        contextKey: contextForObservation({ title: pageTitle || title, url: page.url }, { projectName: this.projectName, at: now }).contextKey,
+        type: 'window',
+        detail: pageTitle || title || app,
+        source: 'active-window',
+      });
     }
     if (page.evidencePath) fs.rmSync(page.evidencePath, { force: true });
     return null;

@@ -32,18 +32,26 @@ const (
 
 // LongTermEdge 是从片段抽取出的（主体, 关系, 客体）事实。
 type LongTermEdge struct {
-	ID          string
-	OwnerUserID string
-	Subject     string
-	Relation    string
-	Object      string
-	Fact        string
-	ValidFrom   *time.Time
-	ValidTo     *time.Time
-	SourceRefs  []string
-	Embedding   []float32
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID            string
+	OwnerUserID   string
+	Subject       string
+	Relation      string
+	Object        string
+	Fact          string
+	ValidFrom     *time.Time
+	ValidTo       *time.Time
+	SourceRefs    []string
+	Embedding     []float32
+	Status        string
+	ScopeType     string
+	ScopeID       string
+	ConditionText string
+	Confidence    float64
+	Version       int
+	ConfirmedBy   string
+	ConfirmedAt   *time.Time
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 // LongTermEdgeRepo 是 mem_episode / mem_edge 的持久化入口。
@@ -157,14 +165,25 @@ func (r *LongTermEdgeRepo) InsertEdge(ctx context.Context, e *LongTermEdge) erro
 	if err != nil {
 		return err
 	}
+	if e.Status == "" {
+		e.Status = MemoryInferred
+	}
+	if e.ScopeType == "" {
+		e.ScopeType = "global"
+	}
+	if e.Confidence <= 0 {
+		e.Confidence = 0.5
+	}
 	now := nowForDB()
 	e.CreatedAt, e.UpdatedAt = now, now
 	_, err = r.q.ExecContext(ctx, `
 		INSERT INTO mem_edge (id, owner_user_id, subject, relation, object, fact,
-			valid_from, valid_to, source_refs, embedding, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			valid_from, valid_to, source_refs, embedding, status, scope_type, scope_id,
+			condition_text, confidence, version, confirmed_by, confirmed_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
 		e.ID, e.OwnerUserID, e.Subject, e.Relation, e.Object, e.Fact,
-		e.ValidFrom, e.ValidTo, string(refs), vecToBlob(e.Embedding), now, now)
+		e.ValidFrom, e.ValidTo, string(refs), vecToBlob(e.Embedding), e.Status, e.ScopeType,
+		e.ScopeID, e.ConditionText, e.Confidence, e.ConfirmedBy, e.ConfirmedAt, now, now)
 	return err
 }
 
@@ -199,8 +218,7 @@ func (r *LongTermEdgeRepo) AddSourceRef(ctx context.Context, edgeID, sourceID st
 // ActiveEdgesByTriple 找出同一 (主体, 关系) 下仍然成立的其他事实，用于时间失效。
 func (r *LongTermEdgeRepo) ActiveEdgesByTriple(ctx context.Context, ownerID, subject, relation string) ([]LongTermEdge, error) {
 	rows, err := r.q.QueryContext(ctx, `
-		SELECT id, owner_user_id, subject, relation, object, fact, valid_from, valid_to,
-			source_refs, embedding, created_at, updated_at
+		SELECT `+longTermEdgeColumns+`
 		FROM mem_edge
 		WHERE owner_user_id = ? AND subject = ? AND relation = ? AND valid_to IS NULL AND deleted_at IS NULL`,
 		ownerID, subject, relation)
@@ -225,8 +243,7 @@ func (r *LongTermEdgeRepo) Edges(ctx context.Context, ownerID string, limit int)
 		limit = 500
 	}
 	rows, err := r.q.QueryContext(ctx, `
-		SELECT id, owner_user_id, subject, relation, object, fact, valid_from, valid_to,
-			source_refs, embedding, created_at, updated_at
+		SELECT `+longTermEdgeColumns+`
 		FROM mem_edge WHERE owner_user_id = ? AND deleted_at IS NULL
 		ORDER BY created_at DESC LIMIT ?`, ownerID, limit)
 	if err != nil {
@@ -244,8 +261,7 @@ func (r *LongTermEdgeRepo) EdgesBySubjects(ctx context.Context, ownerID string, 
 	if limit <= 0 {
 		limit = 20
 	}
-	query := `SELECT id, owner_user_id, subject, relation, object, fact, valid_from, valid_to,
-			source_refs, embedding, created_at, updated_at
+	query := `SELECT ` + longTermEdgeColumns + `
 		FROM mem_edge WHERE owner_user_id = ? AND deleted_at IS NULL AND subject IN (?`
 	args := []any{ownerID, subjects[0]}
 	for _, s := range subjects[1:] {
@@ -326,16 +342,24 @@ func (r *LongTermEdgeRepo) DeleteEpisodesByOwner(ctx context.Context, ownerID st
 	return err
 }
 
+const longTermEdgeColumns = `id, owner_user_id, subject, relation, object, fact,
+	valid_from, valid_to, source_refs, embedding, status, scope_type, scope_id,
+	condition_text, confidence, version, confirmed_by, confirmed_at, created_at, updated_at`
+
 func scanEdges(rows *sql.Rows) ([]LongTermEdge, error) {
 	var out []LongTermEdge
 	for rows.Next() {
 		var e LongTermEdge
 		var refs string
 		var emb []byte
+		var confirmedAt sql.NullTime
 		if err := rows.Scan(&e.ID, &e.OwnerUserID, &e.Subject, &e.Relation, &e.Object, &e.Fact,
-			&e.ValidFrom, &e.ValidTo, &refs, &emb, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			&e.ValidFrom, &e.ValidTo, &refs, &emb, &e.Status, &e.ScopeType, &e.ScopeID,
+			&e.ConditionText, &e.Confidence, &e.Version, &e.ConfirmedBy, &confirmedAt,
+			&e.CreatedAt, &e.UpdatedAt); err != nil {
 			return nil, err
 		}
+		e.ConfirmedAt = timePointer(confirmedAt)
 		if refs != "" {
 			if err := json.Unmarshal([]byte(refs), &e.SourceRefs); err != nil {
 				return nil, err
@@ -349,6 +373,49 @@ func scanEdges(rows *sql.Rows) ([]LongTermEdge, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+func (r *LongTermEdgeRepo) GetEdge(ctx context.Context, ownerID, id string) (*LongTermEdge, error) {
+	var e LongTermEdge
+	var refs string
+	var emb []byte
+	var confirmedAt sql.NullTime
+	err := r.q.QueryRowContext(ctx, `SELECT `+longTermEdgeColumns+` FROM mem_edge
+		WHERE owner_user_id = ? AND id = ? AND deleted_at IS NULL`, ownerID, id).
+		Scan(&e.ID, &e.OwnerUserID, &e.Subject, &e.Relation, &e.Object, &e.Fact,
+			&e.ValidFrom, &e.ValidTo, &refs, &emb, &e.Status, &e.ScopeType, &e.ScopeID,
+			&e.ConditionText, &e.Confidence, &e.Version, &e.ConfirmedBy, &confirmedAt,
+			&e.CreatedAt, &e.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	e.ConfirmedAt = timePointer(confirmedAt)
+	if refs != "" {
+		_ = json.Unmarshal([]byte(refs), &e.SourceRefs)
+	}
+	e.Embedding, _ = parseBlob(emb)
+	return &e, nil
+}
+
+// SetEdgeStatus 以版本 CAS 更新确认状态；inferred 永远不能直接覆盖 confirmed。
+func (r *LongTermEdgeRepo) SetEdgeStatus(ctx context.Context, ownerID, id, status string,
+	expectedVersion int, confirmedBy string, at time.Time) (bool, error) {
+	var confirmed any
+	if status == MemoryConfirmed {
+		confirmed = at
+	}
+	res, err := r.q.ExecContext(ctx, `UPDATE mem_edge SET status = ?, confirmed_by = ?,
+		confirmed_at = ?, version = version + 1, updated_at = ?
+		WHERE owner_user_id = ? AND id = ? AND version = ? AND deleted_at IS NULL`,
+		status, confirmedBy, confirmed, at, ownerID, id, expectedVersion)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 func containsRef(refs []string, target string) bool {

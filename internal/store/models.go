@@ -154,6 +154,7 @@ type ChatSession struct {
 	OwnerUserID string          `json:"owner_user_id"`
 	Kind        string          `json:"kind,omitempty"`
 	ThreadID    string          `json:"thread_id,omitempty"`
+	WorkTaskID  string          `json:"work_task_id,omitempty"`
 	Summary     string          `json:"summary,omitempty"`
 	State       json.RawMessage `json:"state,omitempty"`
 	CreatedAt   time.Time       `json:"created_at"`

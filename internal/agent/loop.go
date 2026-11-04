@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -11,6 +12,19 @@ import (
 	"goldenfinger/agent/internal/llm"
 	"goldenfinger/agent/internal/store"
 )
+
+var (
+	// ErrStepPause 表示任务在安全步骤边界暂停；不是执行失败。
+	ErrStepPause = errors.New("agent: paused at step boundary")
+	// ErrStepCancel 表示任务已取消，当前执行段应立即结束。
+	ErrStepCancel = errors.New("agent: cancelled at step boundary")
+)
+
+// StepController 在每次模型请求前运行，用于消费 WorkTask Inbox。
+// 返回的消息会同时追加到持久会话和当前请求，普通聊天保持 nil。
+type StepController interface {
+	BeforeStep(ctx context.Context, s *Session, step int) ([]llm.Message, error)
+}
 
 // maxSteps 限制工具调用循环的步数（成本/延迟保护）。
 const maxSteps = 6
@@ -30,6 +44,13 @@ type Runtime struct {
 	Tools    *ToolServices // 工具执行器共享的领域服务
 	Clock    Clock
 	MaxSteps int
+	// StepController 只由 WorkTask Worker 设置；普通聊天为 nil。
+	StepController StepController
+	// ToolProfile 只由 WorkTask Worker 设置；空值表示 interactive 主聊天。
+	ToolProfile string
+	// WorkTaskID/JobID 用于工具授权、调用对账与审计；普通聊天为空。
+	WorkTaskID string
+	JobID      string
 
 	// 生成参数（由运行时设置热更新；零值表示沿用内置默认）。
 	Temperature     float64
@@ -112,11 +133,21 @@ func Run(ctx context.Context, s *Session, userText string, rt *Runtime) (*TurnRe
 	}
 
 	for step := 0; step < steps; step++ {
+		paused, cancelled, err := applyStepController(ctx, rt, s, step, &messages)
+		if err != nil {
+			return nil, err
+		}
+		if paused {
+			return &TurnResult{Paused: true, Trace: s.Trace}, nil
+		}
+		if cancelled {
+			return &TurnResult{Cancelled: true, Trace: s.Trace}, nil
+		}
 		rt.emit(Event{Kind: "thinking", Step: step})
 		req := llm.ChatRequest{
 			Model:           rt.Model,
 			Messages:        messages,
-			Tools:           rt.Registry.Specs(),
+			Tools:           rt.Registry.SpecsFor(rt.ToolProfile),
 			Temperature:     temperatureOr(rt.Temperature, 0.4),
 			MaxTokens:       maxTokensOr(rt.MaxOutputTokens, 2048),
 			ReasoningEffort: rt.ReasoningEffort,
@@ -174,12 +205,44 @@ func Run(ctx context.Context, s *Session, userText string, rt *Runtime) (*TurnRe
 			}
 		}
 	}
+	paused, cancelled, err := applyStepController(ctx, rt, s, steps, &messages)
+	if err != nil {
+		return nil, err
+	}
+	if paused {
+		return &TurnResult{Paused: true, Trace: s.Trace}, nil
+	}
+	if cancelled {
+		return &TurnResult{Cancelled: true, Trace: s.Trace}, nil
+	}
 	if reply, ok := finalAnswerAfterStepLimit(ctx, rt, s, messages); ok {
 		rt.emit(Event{Kind: "done", Step: steps})
 		return &TurnResult{Reply: withIntentNotice(reply, fired), Trace: s.Trace}, nil
 	}
 	rt.emit(Event{Kind: "done", Step: steps})
 	return &TurnResult{Reply: withIntentNotice("我这边有点卡住了，我们稍后再试好吗？", fired)}, nil
+}
+
+func applyStepController(ctx context.Context, rt *Runtime, s *Session, step int, messages *[]llm.Message) (bool, bool, error) {
+	if rt.StepController == nil {
+		return false, false, nil
+	}
+	extra, err := rt.StepController.BeforeStep(ctx, s, step)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrStepPause):
+			return true, false, nil
+		case errors.Is(err, ErrStepCancel):
+			return false, true, nil
+		default:
+			return false, false, err
+		}
+	}
+	for _, message := range extra {
+		s.Append(message)
+		*messages = append(*messages, message)
+	}
+	return false, false, nil
 }
 
 // finalAnswerAfterStepLimit 在工具步数用尽后再请求一次不带工具的回复，

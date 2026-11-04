@@ -22,7 +22,8 @@ const files = [
   'settings-renderer.js', 'agents.html', 'management.js', 'ccswitch.html', 'ccswitch.js', 'windows.css',
   'markdown.js', 'agent-panel.js', 'workbench.html', 'workbench.js',
   'browser-policy.js', 'browser-extract.js', 'browser-session.js', 'browser-collector.js',
-  'secret-store.js',
+  'secret-store.js', 'observation-envelope.js', 'observation-spool.js',
+  'wechat-window.js', 'wechat-parser.js', 'wechat-connector.js',
   'tray-icon.png', 'tray-icon.ico', 'tray-icon-busy.png', 'tray-icon-busy.ico',
   'app-icon.png', 'app-icon.ico', 'app-icon.css',
 ];

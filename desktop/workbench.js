@@ -2,20 +2,25 @@
 
 const api = window.desktopAssistant;
 const state = {
-  tab: 'pending', tasks: [], outbox: [], brief: null, briefError: '',
+  tab: 'tasks', workTasks: [], taskDetail: null, taskEvents: [], busyTask: '',
+  outbox: [], brief: null, briefError: '',
   channels: null, email: null, webSites: [], webStatus: {}, webError: '',
+  health: null, wechatTest: null,
 };
 let refreshTimer = null;
 let eventRefresh = null;
 
 const statusEl = document.getElementById('status');
 const panels = {
+  tasks: document.getElementById('panel-tasks'),
   pending: document.getElementById('panel-pending'),
-  running: document.getElementById('panel-running'),
   brief: document.getElementById('panel-brief'),
-  channels: document.getElementById('panel-channels'),
-  web: document.getElementById('panel-web'),
+  access: document.getElementById('panel-access'),
 };
+const channelPanel = document.getElementById('panel-channels');
+const webPanel = document.getElementById('panel-web');
+const healthPanel = document.getElementById('panel-health');
+const pendingCountEl = document.getElementById('pending-count');
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -38,9 +43,27 @@ function today() {
 }
 
 function statusClass(status) {
-  if (status === 'running' || status === 'queued') return 'running';
-  if (status === 'failed' || status === 'interrupted' || status === 'timeout' || status === 'cancelled') return 'failed';
-  if (status === 'waiting') return 'pending';
+  if (['queued', 'active', 'running'].includes(status)) return 'running';
+  if (['failed', 'interrupted', 'timeout', 'cancelled'].includes(status)) return 'failed';
+  if (status && String(status).startsWith('waiting') || status === 'pending_acceptance') return 'pending';
+  return '';
+}
+
+const TASK_STATUS_LABELS = {
+  draft: '草稿', queued: '排队中', active: '执行中', waiting_user: '等待你补充',
+  waiting_approval: '等待审批', waiting_other: '等待其他条件', waiting_device: '等待设备',
+  waiting_external: '等待外部', paused: '已暂停', pending_acceptance: '待验收',
+  completed: '已完成', failed: '异常', cancelled: '已取消',
+};
+
+function taskStatus(task) {
+  return TASK_STATUS_LABELS[task.status] || task.status;
+}
+
+function waitingText(detail) {
+  if (!detail || !detail.live_state) return '';
+  const live = detail.live_state;
+  if (live.waiting_kind && live.waiting_kind !== 'none') return `等待：${live.waiting_kind}`;
   return '';
 }
 
@@ -74,29 +97,414 @@ function actionButton(label, onClick, variant = '') {
   return button;
 }
 
-function workerCard(task) {
-  const status = task.waiting_kind && task.waiting_kind !== 'none' ? `等待：${task.waiting_kind}` : task.status;
-  const meta = `${status} · 更新 ${new Date(task.updated_at).toLocaleString()} · ${task.id.slice(0, 8)}`;
-  const body = task.result_summary || task.output || task.error || task.task || '';
-  const actions = [];
-  const running = ['queued', 'running'].includes(task.status) || (task.waiting_kind && task.waiting_kind !== 'none');
-  if (running) {
-    const input = el('input');
-    input.type = 'text';
-    input.placeholder = '追加指令';
-    const steer = actionButton('追加', async () => {
-      const text = input.value.trim();
-      if (!text) return;
-      await api.steerWorkerTask(task.id, text);
-      input.value = '';
-    }, 'secondary');
-    actions.push(input, steer);
-    actions.push(actionButton('取消任务', async () => {
-      if (!window.confirm('确定取消这个后台任务？')) return;
-      await api.cancelWorkerTask(task.id);
+function statusBadge(task) {
+  return el('span', `badge ${statusClass(task.status)}`, taskStatus(task));
+}
+
+function taskCard(task, detail) {
+  const shownDetail = detail ||
+    (state.taskDetail && state.taskDetail.task.id === task.id ? state.taskDetail : null);
+  const root = el('article', 'card task-card');
+  const head = el('div', 'task-head');
+  head.append(el('h3', '', task.title || '长期任务'), statusBadge(task));
+  root.append(head);
+  root.append(el('div', 'meta', `更新 ${new Date(task.updated_at).toLocaleString()} · ${task.profile || 'read'}`));
+
+  const lines = [];
+  if (task.goal) lines.push(task.goal);
+  if (shownDetail && shownDetail.live_state) {
+    const live = shownDetail.live_state;
+    if (live.next_action) lines.push(`下一步：${live.next_action}`);
+    else if (live.summary) lines.push(`进展：${live.summary}`);
+    const wait = waitingText(shownDetail);
+    if (wait) lines.push(wait);
+  }
+  if (task.completion_criteria) lines.push(`完成标准：${task.completion_criteria}`);
+  if (lines.length) root.append(el('div', 'body', lines.join('\n')));
+
+  const expanded = Boolean(shownDetail);
+  const actions = el('div', 'actions');
+  if (task.status === 'pending_acceptance') {
+    actions.append(actionButton('验收完成', async () => {
+      await api.completeWorkTask(task.id, task.version);
+      await loadTaskDetail(task.id, false);
+    }));
+  } else if (task.status === 'failed') {
+    actions.append(actionButton('恢复', async () => {
+      await api.recoverWorkTask(task.id, task.version);
+      await loadTaskDetail(task.id, false);
+    }));
+  } else if (task.status === 'paused') {
+    actions.append(actionButton('继续', async () => {
+      await api.resumeWorkTask(task.id, task.version);
+      await loadTaskDetail(task.id, false);
+    }));
+  } else if (String(task.status).startsWith('waiting')) {
+    actions.append(actionButton('去处理', async () => {
+      if (!expanded) await loadTaskDetail(task.id, true);
+    }));
+  }
+  actions.append(actionButton(expanded ? '收起' : '查看详情', async () => {
+    if (expanded) {
+      state.taskDetail = null;
+      state.taskEvents = [];
+      render();
+    } else {
+      await loadTaskDetail(task.id, true);
+    }
+  }, actions.childElementCount ? 'secondary' : ''));
+
+  root.append(actions);
+  if (expanded) root.append(renderTaskDetail(shownDetail, state.taskEvents));
+  return root;
+}
+
+function artifactCard(artifact, latest) {
+  const root = el('article', 'card subcard');
+  root.append(el('h3', '', artifact.title || '交付物'));
+  root.append(el('div', 'meta', `${artifact.kind} · ${artifact.status} · v${artifact.current_version}`));
+  const content = latest && latest.content_text || '';
+  if (content) root.append(el('div', 'body', content.slice(0, 1200)));
+  const actions = el('div', 'actions');
+  if (artifact.status === 'draft') {
+    actions.append(actionButton('提交验收', async () => {
+      await api.submitArtifact(artifact.id, artifact.current_version);
+      await loadTaskDetail(artifact.task_id, false);
+    }));
+  }
+  if (artifact.status === 'pending_acceptance') {
+    actions.append(actionButton('验收', async () => {
+      await api.acceptArtifact(artifact.id, artifact.current_version);
+      await loadTaskDetail(artifact.task_id, false);
+    }));
+    actions.append(actionButton('要求修改', async () => {
+      const reason = window.prompt('请填写修改意见', '');
+      if (reason === null) return;
+      await api.rejectArtifact(artifact.id, artifact.current_version, reason);
+      await loadTaskDetail(artifact.task_id, false);
+    }, 'secondary'));
+    if (artifact.current_version > 1) {
+      actions.append(actionButton('版本差异', async () => {
+        const result = await api.diffArtifact(artifact.id, artifact.current_version - 1, artifact.current_version);
+        window.alert(result.diff || '没有文本差异');
+      }, 'secondary'));
+    }
+  }
+  root.append(actions);
+  return root;
+}
+
+function grantCard(grant, taskId) {
+  const root = el('article', 'card subcard');
+  root.append(el('h3', '', grant.action_type));
+  root.append(el('div', 'meta',
+    `${grant.risk_level} · ${grant.status} · 剩余 ${grant.remaining_uses < 0 ? '不限' : grant.remaining_uses} · 到期 ${grant.expires_at ? new Date(grant.expires_at).toLocaleString() : '不限'}`));
+  const actions = el('div', 'actions');
+  if (grant.status === 'active') {
+    actions.append(actionButton('撤销授权', async () => {
+      await api.revokeGrant(grant.id);
+      await loadTaskDetail(taskId, false);
     }, 'danger'));
   }
-  return card(task.task || '后台任务', meta, body, actions);
+  root.append(actions);
+  return root;
+}
+
+function renderTaskDetail(detail, events) {
+  const wrap = el('div', 'task-detail');
+  const task = detail.task;
+  const terminal = ['completed', 'cancelled'].includes(task.status);
+
+  wrap.append(el('h2', '', '最近进展'));
+  if (detail.live_state) {
+    const live = detail.live_state;
+    const lines = [];
+    if (live.stage) lines.push(`阶段：${live.stage}`);
+    if (live.next_action) lines.push(`下一步：${live.next_action}`);
+    if (live.waiting_kind && live.waiting_kind !== 'none') lines.push(`等待：${live.waiting_kind}`);
+    if (live.handoff_note) lines.push(`交接：${live.handoff_note}`);
+    if (lines.length) wrap.append(el('div', 'body', lines.join('\n')));
+  }
+
+  if (!terminal) {
+    wrap.append(el('h2', '', '追加指令'));
+    const row = el('div', 'row');
+    const input = el('input');
+    input.type = 'text';
+    input.placeholder = '补充要求，或告诉管家下一步怎么做';
+    input.className = 'task-input';
+    const send = actionButton('发送', async () => {
+      const text = input.value.trim();
+      if (!text) throw new Error('请先输入要补充的内容');
+      const result = await api.messageWorkTask(task.id, text, task.version);
+      input.value = '';
+      statusEl.textContent = result && result.job
+        ? '已收到，新执行段已排队。'
+        : '已收到，当前执行段到安全位置后会处理。';
+      await loadTaskDetail(task.id, false);
+    });
+    row.append(input, send);
+    wrap.append(row);
+  }
+
+  const controls = el('div', 'detail-controls');
+  if (['queued', 'active', 'waiting_user', 'waiting_approval', 'waiting_other', 'waiting_device', 'waiting_external'].includes(task.status)) {
+    controls.append(actionButton('暂停', async () => {
+      await api.pauseWorkTask(task.id, task.version);
+      await loadTaskDetail(task.id, false);
+    }, 'secondary'));
+  }
+  if (task.status === 'paused') {
+    controls.append(actionButton('继续', async () => {
+      await api.resumeWorkTask(task.id, task.version);
+      await loadTaskDetail(task.id, false);
+    }));
+  }
+  if (task.status === 'failed') {
+    controls.append(actionButton('恢复', async () => {
+      await api.recoverWorkTask(task.id, task.version);
+      await loadTaskDetail(task.id, false);
+    }));
+  }
+  if (task.status === 'pending_acceptance') {
+    controls.append(actionButton('验收完成', async () => {
+      await api.completeWorkTask(task.id, task.version);
+      await loadTaskDetail(task.id, false);
+    }));
+  }
+  if (task.status === 'completed') {
+    controls.append(actionButton('重新打开', async () => {
+      await api.reopenWorkTask(task.id, task.version);
+      await loadTaskDetail(task.id, false);
+    }, 'secondary'));
+  }
+  if (!terminal) {
+    controls.append(actionButton('取消任务', async () => {
+      if (!window.confirm('确定取消这个长期任务？')) return;
+      await api.cancelWorkTask(task.id, task.version);
+      await loadTaskDetail(task.id, false);
+    }, 'danger'));
+  }
+  if (controls.childElementCount) wrap.append(controls);
+
+  wrap.append(el('h2', '', '最近事件'));
+  if (!events || !events.length) {
+    wrap.append(el('div', 'empty', '暂无事件。'));
+  } else {
+    const list = el('div', 'timeline');
+    events.slice(-12).reverse().forEach(event => {
+      const row = el('div', 'timeline-row');
+      row.append(el('span', 'meta', `${new Date(event.created_at).toLocaleString()} · ${event.kind}`));
+      row.append(el('div', 'body', String(event.payload_json || event.payload || '')));
+      list.append(row);
+    });
+    wrap.append(list);
+  }
+
+  const advanced = el('details', 'fold');
+  advanced.append(el('summary', '', '交付物与授权（高级）'));
+  const advancedBody = el('div');
+
+  advancedBody.append(el('h2', '', '新建交付物草稿'));
+  const addArtifact = el('article', 'card subcard');
+  const title = el('input');
+  title.type = 'text';
+  title.placeholder = '标题';
+  const content = el('textarea');
+  content.rows = 4;
+  content.placeholder = '交付内容';
+  const create = actionButton('创建草稿', async () => {
+    if (!content.value.trim()) throw new Error('内容不能为空');
+    await api.createArtifact(task.id, { kind: 'text', title: title.value.trim(), content: content.value });
+    title.value = '';
+    content.value = '';
+    await loadTaskDetail(task.id, false);
+  });
+  addArtifact.append(title, content, el('div', 'actions'));
+  addArtifact.lastChild.append(create);
+  advancedBody.append(addArtifact);
+
+  advancedBody.append(el('h2', '', '交付物'));
+  if (!detail.artifacts || !detail.artifacts.length) {
+    advancedBody.append(el('div', 'empty', '暂无交付物；管家产出后会进入验收。'));
+  } else {
+    detail.artifacts.forEach(item => advancedBody.append(
+      artifactCard(item, detail.artifact_latest && detail.artifact_latest[item.id])));
+  }
+
+  advancedBody.append(el('h2', '', '授权'));
+  const grantForm = el('article', 'card subcard');
+  grantForm.append(el('h3', '', '新建一次性授权'));
+  const tool = el('input');
+  tool.type = 'text';
+  tool.placeholder = '工具名，如 bash / delegate_agent';
+  const risk = el('select');
+  ['prepare', 'external_write', 'sensitive'].forEach(value => {
+    const option = el('option', '', value);
+    option.value = value;
+    risk.append(option);
+  });
+  const uses = el('input');
+  uses.type = 'number';
+  uses.value = '1';
+  uses.placeholder = '次数';
+  const expires = el('input');
+  expires.type = 'number';
+  expires.value = '3600';
+  expires.placeholder = '有效秒数';
+  const saveGrant = actionButton('创建授权', async () => {
+    if (!tool.value.trim()) throw new Error('请填写工具名');
+    await api.createTaskGrant(task.id, {
+      action_type: tool.value.trim(), risk_level: risk.value,
+      remaining_uses: Number(uses.value) || 1, expires_in_seconds: Number(expires.value) || 3600,
+    });
+    tool.value = '';
+    await loadTaskDetail(task.id, false);
+  });
+  grantForm.append(tool, risk, uses, expires, el('div', 'actions'));
+  grantForm.lastChild.append(saveGrant);
+  advancedBody.append(grantForm);
+  if (!detail.grants || !detail.grants.length) {
+    advancedBody.append(el('div', 'empty', '暂无授权。'));
+  } else {
+    detail.grants.forEach(grant => advancedBody.append(grantCard(grant, task.id)));
+  }
+
+  if (detail.jobs && detail.jobs.length) {
+    advancedBody.append(el('h2', '', '执行段'));
+    detail.jobs.slice(0, 8).forEach(job => {
+      advancedBody.append(el('div', 'body',
+        `${job.status} · ${job.id.slice(0, 8)} · ${job.result_summary || job.error || job.task}`));
+    });
+  }
+
+  advanced.append(advancedBody);
+  wrap.append(advanced);
+  return wrap;
+}
+
+async function loadTaskDetail(taskId, force) {
+  if (!taskId) return;
+  if (!force && state.taskDetail && state.taskDetail.task.id === taskId) {
+    // 保持展开状态刷新
+  }
+  state.busyTask = taskId;
+  try {
+    const [detail, eventPage] = await Promise.all([
+      api.getWorkTask(taskId),
+      api.listTaskEvents(taskId, 0),
+    ]);
+    state.taskDetail = detail;
+    state.taskEvents = eventPage.events || [];
+  } finally {
+    state.busyTask = '';
+    render();
+  }
+}
+
+function renderPending() {
+  const panel = panels.pending;
+  panel.replaceChildren();
+  panel.append(el('div', 'hint', '这里只放需要你动手的事：批准草稿、补充信息、验收结果或处理异常。处理完会自动消失。'));
+
+  const waiting = state.workTasks.filter(task =>
+    String(task.status).startsWith('waiting') || task.status === 'pending_acceptance');
+  const failed = state.workTasks.filter(task => task.status === 'failed');
+  if (!state.outbox.length && !waiting.length && !failed.length) {
+    panel.append(el('div', 'empty', '现在没有需要你处理的事项。'));
+    return;
+  }
+  if (state.outbox.length) {
+    panel.append(el('h2', '', `待审批 · ${state.outbox.length}`));
+    state.outbox.forEach(item => panel.append(outboxCard(item)));
+  }
+  if (waiting.length) {
+    panel.append(el('h2', '', `等待你的补充 / 验收 · ${waiting.length}`));
+    waiting.forEach(task => panel.append(taskCard(task)));
+  }
+  if (failed.length) {
+    panel.append(el('h2', '', `异常任务 · ${failed.length}`));
+    failed.forEach(task => panel.append(taskCard(task)));
+  }
+}
+
+function renderTasks() {
+  const panel = panels.tasks;
+  panel.replaceChildren();
+
+  const intro = el('article', 'card');
+  intro.append(el('h3', '', '工作台怎么用'));
+  const steps = el('ol', 'steps');
+  [
+    ['告诉管家要做什么', '在下面写清楚目标，点「开始执行」。'],
+    ['忙别的就行', '它会在后台分段做；缺信息、要审批或要验收时，顶部「待处理」会提醒你。'],
+    ['确认后才算完成', '在「待处理」或任务详情里验收；不满意就让它继续改。'],
+  ].forEach(([title, text]) => {
+    const item = el('li');
+    item.append(el('strong', '', title), el('span', '', `：${text}`));
+    steps.append(item);
+  });
+  intro.append(steps);
+  panel.append(intro);
+
+  const form = el('article', 'card');
+  form.append(el('h3', '', '新建任务'));
+  const goal = el('textarea');
+  goal.rows = 3;
+  goal.placeholder = '例如：整理今天的客户邮件，挑出需要我回复的，并写一份回复草稿';
+  const goalHint = el('div', 'hint', '一句话写清目标和想要的结果。');
+  const title = el('input');
+  title.type = 'text';
+  title.placeholder = '任务标题（不填会自动取第一句话）';
+  const criteria = el('input');
+  criteria.type = 'text';
+  criteria.placeholder = '完成标准（可选）';
+  const profile = el('select');
+  [['read', '只查看，不改文件'], ['internal', '可以在工作目录里整理和写文件'], ['external', '可以准备对外草稿（不会自动发送）']].forEach(([value, label]) => {
+    const option = el('option', '', label);
+    option.value = value;
+    profile.append(option);
+  });
+  const advanced = el('details', 'fold');
+  advanced.append(el('summary', '', '高级设置'));
+  advanced.append(title, criteria, profile);
+  const create = actionButton('开始执行', async () => {
+    const goalText = goal.value.trim();
+    if (!goalText) throw new Error('请先写一下要做什么');
+    const titleText = title.value.trim() ||
+      goalText.split(/\n|[。；;]/)[0].trim().slice(0, 40) ||
+      '新的长期任务';
+    const result = await api.createWorkTask({
+      title: titleText, goal: goalText,
+      completion_criteria: criteria.value.trim(), profile: profile.value,
+      start: true,
+    });
+    title.value = '';
+    goal.value = '';
+    criteria.value = '';
+    statusEl.textContent = '任务已创建，管家会开始处理';
+    if (result && result.task) await loadTaskDetail(result.task.id, true);
+  });
+  const quick = el('div', 'quick-actions');
+  quick.append(create, el('span', 'hint', '不会自动对外发送；需要你确认的步骤会停下来。'));
+  form.append(goal, goalHint, advanced, quick);
+  panel.append(form);
+
+  const groups = [
+    ['执行中', task => ['queued', 'active'].includes(task.status)],
+    ['待你处理', task => String(task.status).startsWith('waiting') || task.status === 'pending_acceptance'],
+    ['暂停 / 异常', task => ['paused', 'failed'].includes(task.status)],
+    ['已完成', task => ['completed', 'cancelled'].includes(task.status)],
+  ];
+  let shown = 0;
+  groups.forEach(([label, match]) => {
+    const items = state.workTasks.filter(match).slice(0, 20);
+    if (!items.length) return;
+    shown += items.length;
+    panel.append(el('h2', '', `${label} · ${items.length}`));
+    items.forEach(task => panel.append(taskCard(task)));
+  });
+  if (!shown) panel.append(el('div', 'empty', '还没有任务。在上面的输入框里写一句，就能开始。'));
 }
 
 function outboxCard(item) {
@@ -113,47 +521,16 @@ function outboxCard(item) {
   ]);
 }
 
-function renderPending() {
-  const panel = panels.pending;
-  panel.replaceChildren();
-  const waiting = state.tasks.filter(task =>
-    task.status === 'running' && task.waiting_kind && task.waiting_kind !== 'none');
-  const failed = state.tasks.filter(task =>
-    ['failed', 'interrupted', 'timeout'].includes(task.status));
-  if (!state.outbox.length && !waiting.length && !failed.length) {
-    panel.append(el('div', 'empty', '没有需要你处理的事项。'));
-    return;
-  }
-  if (state.outbox.length) {
-    panel.append(el('h2', '', '待审批'));
-    state.outbox.forEach(item => panel.append(outboxCard(item)));
-  }
-  if (waiting.length) {
-    panel.append(el('h2', '', '等待你的澄清 / 审批'));
-    waiting.forEach(task => panel.append(workerCard(task)));
-  }
-  if (failed.length) {
-    panel.append(el('h2', '', '异常结束'));
-    failed.forEach(task => panel.append(workerCard(task)));
-  }
-}
-
-function renderRunning() {
-  const panel = panels.running;
-  panel.replaceChildren();
-  const tasks = state.tasks.filter(task => ['queued', 'running'].includes(task.status));
-  if (!tasks.length) {
-    panel.append(el('div', 'empty', '当前没有运行中的后台任务。'));
-    return;
-  }
-  tasks.forEach(task => panel.append(workerCard(task)));
-}
-
 function renderBrief() {
   const panel = panels.brief;
   panel.replaceChildren();
+  panel.append(el('div', 'hint', '简报会把今天的重要变化、需要你处理的事和背景整理在一起。可以手动生成，不会打扰聊天。'));
   if (!state.brief) {
-    panel.append(el('div', 'empty', state.briefError || '今日简报尚未生成。'));
+    panel.append(el('div', 'empty', state.briefError || '今天还没有简报。'));
+    panel.append(actionButton('生成今天的简报', async () => {
+      await api.generateBrief(today());
+      await refresh();
+    }));
     return;
   }
   const brief = state.brief;
@@ -162,6 +539,10 @@ function renderBrief() {
   const pre = el('pre', '', brief.content_md || '');
   root.append(pre);
   const actions = el('div', 'actions');
+  actions.append(actionButton('重新生成', async () => {
+    await api.generateBrief(today());
+    await refresh();
+  }, 'secondary'));
   if (brief.status !== 'delivered') {
     actions.append(actionButton('标记已读', async () => {
       await api.markBriefDelivered(brief.id);
@@ -200,7 +581,7 @@ function checkboxField(label, checked, description = '') {
 }
 
 function renderChannels() {
-  const panel = panels.channels;
+  const panel = channelPanel;
   panel.replaceChildren();
   const data = state.channels;
   panel.append(el('div', 'hint',
@@ -529,7 +910,7 @@ function webSiteCard(site, isNew = false) {
 }
 
 function renderWeb() {
-  const panel = panels.web;
+  const panel = webPanel;
   panel.replaceChildren();
   panel.append(el('div', 'hint',
     '网页采集只读取授权 origin 和路径内的页面。未启用的站点不会启动浏览器；网页内容始终是不可信数据，不能扩大工具权限。'));
@@ -542,30 +923,106 @@ function renderWeb() {
   panel.append(webSiteCard({ enabled: false, interval_seconds: 1800, max_pages: 5, max_depth: 0 }, true));
 }
 
+const WECHAT_STATE_LABELS = {
+  off: '已关闭', waiting_window: '未检测到微信', waiting_conversation: '等待打开会话',
+  waiting_authorization: '等待授权', observing: '正在观察', degraded: '降级（有缺口）', error: '错误',
+};
+
+function renderHealth() {
+  if (!healthPanel) return;
+  healthPanel.replaceChildren();
+  const health = state.health || {};
+  const wechat = health.wechat || {};
+  const spool = health.spool || {};
+  const root = el('article', 'card');
+  root.append(el('h3', '', '感知采集状态'));
+  const stateLabel = WECHAT_STATE_LABELS[wechat.state] || wechat.state || '未知';
+  const lines = [
+    `微信：${stateLabel}${wechat.currentSource ? ` · 当前会话「${wechat.currentSource}」` : ''}`,
+    `最近观察：${wechat.lastObservedAt ? new Date(wechat.lastObservedAt).toLocaleString() : '尚未观察'}`,
+    `最近入库：${wechat.lastDeliveredAt ? new Date(wechat.lastDeliveredAt).toLocaleString() : '尚未确认入库'}`,
+    `完整性：${wechat.completeness || 'unknown'} · 待发 ${wechat.pending || 0} · 过滤 ${wechat.filtered || 0} · 失败 ${wechat.failed || 0}`,
+  ];
+  if (wechat.lastError) lines.push(`最近错误：${wechat.lastError}`);
+  root.append(el('div', 'body', lines.join('\n')));
+
+  const actions = el('div', 'actions');
+  actions.append(actionButton('测试微信采集', async () => {
+    statusEl.textContent = '正在读取微信当前会话…';
+    const result = await api.testWeChatCapture();
+    state.wechatTest = result;
+    statusEl.textContent = result.ok
+      ? `采集测试成功：${result.title}，识别 ${result.messageCount} 条可见消息`
+      : `采集测试未通过：${result.error || '未知原因'}`;
+    renderHealth();
+  }, 'secondary'));
+  const title = (state.wechatTest && state.wechatTest.title) || wechat.currentSource;
+  if (title && (!wechat.enabled || !wechat.authorized)) {
+    actions.append(actionButton('启用并允许当前会话', async () => {
+      const current = (state.channels && state.channels.configs || [])
+        .find(item => item.channel === 'wechat_desktop') || {};
+      await api.updateChannelConfig('wechat_desktop', {
+        enabled: true,
+        summary_enabled: Boolean(current.summary_enabled),
+        index_enabled: Boolean(current.index_enabled),
+        brief_enabled: Boolean(current.brief_enabled),
+        auto_worker_enabled: Boolean(current.auto_worker_enabled),
+      });
+      await api.updateChannelPolicy({ channel: 'wechat_desktop', source: title, allowed: true });
+      await api.refreshChannelCache?.();
+      statusEl.textContent = `已启用微信采集，并允许会话「${title}」`;
+      await refresh();
+    }));
+  }
+  root.append(actions);
+
+  if (state.wechatTest) {
+    const test = state.wechatTest;
+    const preview = el('div', 'body');
+    preview.append(el('div', 'meta',
+      `测试结果：${test.ok ? '通过' : '未通过'} · ${test.title || '未识别会话'} · ${test.authorized ? '已授权' : '未授权'} · ${test.messageCount || 0} 条可见消息`));
+    (test.messages || []).slice(0, 4).forEach(message => {
+      preview.append(el('div', 'hint', `[${message.direction}] ${message.text}`));
+    });
+    root.append(preview);
+  }
+
+  const browserSites = (health.browser && health.browser.sites || []).length;
+  root.append(el('div', 'hint',
+    `网页采集：${browserSites} 个站点有检查点；活动片段：${health.activity && health.activity.enabled ? '协作模式开启' : '协作模式关闭'}；待发队列 ${spool.pending || 0} 条。`));
+  healthPanel.append(root);
+}
+
+function renderAccess() {
+  renderHealth();
+  renderChannels();
+  renderWeb();
+}
+
 function render() {
   document.querySelectorAll('nav button').forEach(button => {
     button.classList.toggle('active', button.dataset.tab === state.tab);
   });
   Object.entries(panels).forEach(([name, panel]) => { panel.hidden = name !== state.tab; });
-  if (state.tab === 'pending') renderPending();
-  else if (state.tab === 'running') renderRunning();
+  if (state.tab === 'tasks') renderTasks();
+  else if (state.tab === 'pending') renderPending();
   else if (state.tab === 'brief') renderBrief();
-  else if (state.tab === 'channels') renderChannels();
-  else if (state.tab === 'web') renderWeb();
+  else if (state.tab === 'access') renderAccess();
 }
 
 async function refresh() {
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(async () => {
     const results = await Promise.allSettled([
-      api.listWorkerTasks(''),
+      api.listWorkTasks('', 100),
       api.listOutbox('pending_approval'),
       api.latestBrief(today()),
       api.channelSettings(),
       api.getEmailSettings(),
       api.listWebSites(),
+      api.connectorHealth ? api.connectorHealth() : Promise.reject(new Error('连接器健康接口不可用')),
     ]);
-    if (results[0].status === 'fulfilled') state.tasks = results[0].value.tasks || [];
+    if (results[0].status === 'fulfilled') state.workTasks = results[0].value.tasks || [];
     if (results[1].status === 'fulfilled') state.outbox = results[1].value.outbox || [];
     if (results[2].status === 'fulfilled') {
       state.brief = results[2].value.brief || null;
@@ -589,6 +1046,23 @@ async function refresh() {
       state.webSites = [];
       state.webError = results[5].reason?.message || '网页站点读取失败';
     }
+    if (results[6] && results[6].status === 'fulfilled') state.health = results[6].value;
+    if (state.taskDetail) {
+      try {
+        const detail = await api.getWorkTask(state.taskDetail.task.id);
+        const events = await api.listTaskEvents(state.taskDetail.task.id, 0);
+        state.taskDetail = detail;
+        state.taskEvents = events.events || [];
+      } catch {
+        // 详情刷新失败不覆盖主列表；下次刷新或操作会重试。
+      }
+    }
+    const actionable = state.workTasks.filter(task =>
+      String(task.status).startsWith('waiting') ||
+      ['pending_acceptance', 'failed'].includes(task.status)).length;
+    const pendingTotal = actionable + state.outbox.length;
+    pendingCountEl.hidden = pendingTotal === 0;
+    pendingCountEl.textContent = String(pendingTotal);
     statusEl.textContent = results.some(result => result.status === 'rejected') ? '部分数据读取失败' : '已连接';
     render();
   }, 50);
@@ -602,19 +1076,6 @@ document.addEventListener('click', event => {
   refresh();
 });
 document.getElementById('refresh').addEventListener('click', refresh);
-document.getElementById('generate').addEventListener('click', async event => {
-  const button = event.currentTarget;
-  button.disabled = true;
-  statusEl.textContent = '正在生成今日简报…';
-  try {
-    await api.generateBrief(today());
-    await refresh();
-  } catch (error) {
-    statusEl.textContent = `生成失败：${error.message}`;
-  } finally {
-    button.disabled = false;
-  }
-});
 
 if (api.onAgentEvent) {
   api.onAgentEvent(event => {
@@ -625,7 +1086,7 @@ if (api.onAgentEvent) {
   });
 }
 
-api.listWorkerTasks('')
+api.listWorkTasks('', 100)
   .then(() => { statusEl.textContent = '已连接'; })
   .catch(error => { statusEl.textContent = `未连接：${error.message}`; });
 refresh();

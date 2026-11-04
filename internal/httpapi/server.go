@@ -25,6 +25,7 @@ import (
 	"goldenfinger/agent/internal/store"
 	"goldenfinger/agent/internal/superagent"
 	"goldenfinger/agent/internal/voice"
+	"goldenfinger/agent/internal/worktask"
 )
 
 // Server 在运行时之上装配 HTTP 路由（无框架——标准库 mux）。
@@ -65,8 +66,14 @@ type Server struct {
 	SuperAgent *superagent.Service
 	// SuperAgentWorkers 执行 Thread Worker；nil 时 create_worker 会降级为通知。
 	SuperAgentWorkers *superagent.WorkerManager
+	// Coordinator 负责明确的 WorkTask 指令分流；普通闲聊仍走主会话快速路径。
+	Coordinator *superagent.Coordinator
 	// Briefs 生成跨渠道每日简报；nil 时生成端点返回 503。
 	Briefs *superagent.BriefGenerator
+	// Tasks 是跨执行段的长期工作控制面；nil 时同前缀端点返回 503。
+	Tasks *worktask.Service
+	// Artifacts 管理不可变交付物版本与验收；nil 时相关端点返回 503。
+	Artifacts *worktask.ArtifactService
 }
 
 // Outbox 是已投递提醒文本的小型内存队列（开发 MVP）。
@@ -128,6 +135,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/intents/{id}", s.handleCancelIntent)
 	mux.HandleFunc("GET /api/memory/export.md", s.handleMemoryExport)
 	mux.HandleFunc("POST /api/memory/capture", s.handleCaptureEpisode)
+	mux.HandleFunc("GET /api/memory/longterm", s.handleListLongTermEdges)
+	mux.HandleFunc("POST /api/memory/longterm/{id}/confirm", s.handleConfirmLongTermEdge)
+	mux.HandleFunc("POST /api/memory/longterm/{id}/conflict", s.handleConflictLongTermEdge)
+	mux.HandleFunc("GET /api/personal-policies", s.handleListPersonalPolicies)
+	mux.HandleFunc("POST /api/personal-policies", s.handleCreatePersonalPolicy)
+	mux.HandleFunc("POST /api/personal-policies/{id}/status", s.handlePersonalPolicyStatus)
+	mux.HandleFunc("GET /api/devices", s.handleListDevices)
+	mux.HandleFunc("POST /api/devices", s.handleUpsertDevice)
+	mux.HandleFunc("POST /api/devices/{id}/revoke", s.handleRevokeDevice)
+	mux.HandleFunc("GET /api/devices/{id}/capabilities", s.handleListDeviceCapabilities)
+	mux.HandleFunc("POST /api/devices/{id}/capabilities", s.handleAddDeviceCapability)
 	// 语音口令判定：唤醒词/指令窗口/片段合并都在 Go，手机只执行动作。
 	mux.HandleFunc("POST /api/voice/text", s.handleVoiceText)
 	mux.HandleFunc("GET /api/memory/search", s.handleSearchEpisodes)
@@ -232,6 +250,33 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/briefs/generate", s.handleGenerateBrief)
 	mux.HandleFunc("GET /api/briefs/{id}", s.handleGetBrief)
 	mux.HandleFunc("POST /api/briefs/{id}/delivered", s.handleBriefDelivered)
+
+	// WorkTask：跨执行段的长期任务、控制 Inbox、Artifact 与 Grant。
+	mux.HandleFunc("POST /api/work-tasks", s.handleCreateWorkTask)
+	mux.HandleFunc("GET /api/work-tasks", s.handleListWorkTasks)
+	mux.HandleFunc("GET /api/work-tasks/{id}", s.handleGetWorkTask)
+	mux.HandleFunc("POST /api/work-tasks/{id}/messages", s.handleWorkTaskMessage)
+	mux.HandleFunc("POST /api/work-tasks/{id}/pause", s.handlePauseWorkTask)
+	mux.HandleFunc("POST /api/work-tasks/{id}/resume", s.handleResumeWorkTask)
+	mux.HandleFunc("POST /api/work-tasks/{id}/cancel", s.handleCancelWorkTask)
+	mux.HandleFunc("POST /api/work-tasks/{id}/recover", s.handleRecoverWorkTask)
+	mux.HandleFunc("POST /api/work-tasks/{id}/reopen", s.handleReopenWorkTask)
+	mux.HandleFunc("POST /api/work-tasks/{id}/complete", s.handleCompleteWorkTask)
+	mux.HandleFunc("GET /api/work-tasks/{id}/events", s.handleWorkTaskEvents)
+	mux.HandleFunc("POST /api/work-tasks/{id}/threads/{thread_id}", s.handleAttachWorkTaskThread)
+	mux.HandleFunc("DELETE /api/work-tasks/{id}/threads/{thread_id}", s.handleDetachWorkTaskThread)
+	mux.HandleFunc("GET /api/work-tasks/{id}/artifacts", s.handleListTaskArtifacts)
+	mux.HandleFunc("POST /api/work-tasks/{id}/artifacts", s.handleCreateArtifact)
+	mux.HandleFunc("GET /api/work-tasks/{id}/grants", s.handleListTaskGrants)
+	mux.HandleFunc("POST /api/work-tasks/{id}/grants", s.handleCreateTaskGrant)
+	mux.HandleFunc("POST /api/work-tasks/{id}/devices/{device_id}", s.handleBindTaskDevice)
+	mux.HandleFunc("GET /api/artifacts/{id}", s.handleGetArtifact)
+	mux.HandleFunc("GET /api/artifacts/{id}/versions/{version}/download", s.handleDownloadArtifact)
+	mux.HandleFunc("GET /api/artifacts/{id}/diff", s.handleDiffArtifact)
+	mux.HandleFunc("POST /api/artifacts/{id}/submit", s.handleSubmitArtifact)
+	mux.HandleFunc("POST /api/artifacts/{id}/accept", s.handleAcceptArtifact)
+	mux.HandleFunc("POST /api/artifacts/{id}/reject", s.handleRejectArtifact)
+	mux.HandleFunc("DELETE /api/grants/{id}", s.handleRevokeGrant)
 
 	// 静态 Web UI。
 	mux.Handle("GET /", http.FileServer(http.Dir(s.WebDir)))

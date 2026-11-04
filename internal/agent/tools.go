@@ -48,29 +48,82 @@ type ToolContext struct {
 	SourceMsgID *string
 }
 
+// RiskLevel 是工具副作用分级；Profile 只决定上限，ActionGrant 再缩小范围。
+type RiskLevel string
+
+const (
+	RiskRead          RiskLevel = "read"
+	RiskPrepare       RiskLevel = "prepare"
+	RiskExternalWrite RiskLevel = "external_write"
+	RiskSensitive     RiskLevel = "sensitive"
+)
+
+type ToolDescriptor struct {
+	Spec          llm.ToolSpec
+	Risk          RiskLevel
+	Environments  []string
+	RequiresGrant bool
+	WorkTaskOnly  bool
+}
+
 // Registry 把工具名映射到实现，并向模型暴露规格。
 type Registry struct {
-	tools map[string]Tool
-	order []string
+	tools       map[string]Tool
+	descriptors map[string]ToolDescriptor
+	order       []string
 }
 
 func NewRegistry(tools ...Tool) *Registry {
-	r := &Registry{tools: make(map[string]Tool)}
+	r := &Registry{tools: make(map[string]Tool), descriptors: make(map[string]ToolDescriptor)}
 	for _, t := range tools {
-		name := t.Spec().Name
+		desc := classifyTool(t)
+		name := desc.Spec.Name
 		if _, exists := r.tools[name]; !exists {
 			r.order = append(r.order, name)
 		}
 		r.tools[name] = t
+		r.descriptors[name] = desc
 	}
 	return r
 }
 
-// Specs 返回聊天请求所需的工具声明。
+func (r *Registry) RegisterDescriptor(desc ToolDescriptor, t Tool) {
+	name := desc.Spec.Name
+	if _, exists := r.tools[name]; !exists {
+		r.order = append(r.order, name)
+	}
+	r.tools[name] = t
+	r.descriptors[name] = desc
+}
+
+func (r *Registry) Descriptor(name string) (ToolDescriptor, bool) {
+	desc, ok := r.descriptors[name]
+	return desc, ok
+}
+
+// Specs 返回主聊天所需的工具声明；WorkTaskOnly 工具不暴露给普通对话。
 func (r *Registry) Specs() []llm.ToolSpec {
 	out := make([]llm.ToolSpec, 0, len(r.order))
 	for _, name := range r.order {
-		out = append(out, r.tools[name].Spec())
+		desc := r.descriptors[name]
+		if desc.WorkTaskOnly {
+			continue
+		}
+		out = append(out, desc.Spec)
+	}
+	return out
+}
+
+// SpecsFor 按 Profile 过滤工具声明；空 Profile 表示 interactive 主聊天。
+func (r *Registry) SpecsFor(profile string) []llm.ToolSpec {
+	if profile == "" {
+		return r.Specs()
+	}
+	out := make([]llm.ToolSpec, 0, len(r.order))
+	for _, name := range r.order {
+		if profileAllows(profile, r.descriptors[name]) {
+			out = append(out, r.descriptors[name].Spec)
+		}
 	}
 	return out
 }
@@ -86,8 +139,16 @@ func (r *Registry) Execute(ctx context.Context, call llm.ToolCall, tc *ToolConte
 			Trace:  call.Name + " → unknown",
 		}, nil
 	}
+	desc := r.descriptors[call.Name]
+	auth, denied := authorizeTool(ctx, call, tc, desc)
+	if denied != nil {
+		return *denied, nil
+	}
 	start := time.Now()
 	res, err := t.Execute(ctx, call.Arguments, tc)
+	if auth != nil {
+		auth.finish(ctx, desc, res, err)
+	}
 	if err != nil {
 		log.Printf("[tool] %s → error: %v (%s)", call.Name, err, time.Since(start).Round(time.Millisecond))
 		return ToolResult{
@@ -101,6 +162,51 @@ func (r *Registry) Execute(ctx context.Context, call llm.ToolCall, tc *ToolConte
 		res.Trace = call.Name + " → " + string(res.Status)
 	}
 	return res, nil
+}
+
+func classifyTool(t Tool) ToolDescriptor {
+	spec := t.Spec()
+	risk, grant := classifyToolName(spec.Name)
+	return ToolDescriptor{
+		Spec: spec, Risk: risk, Environments: []string{"desktop"}, RequiresGrant: grant,
+		WorkTaskOnly: spec.Name == "create_artifact",
+	}
+}
+
+func classifyToolName(name string) (RiskLevel, bool) {
+	switch name {
+	case "get_datetime", "list_tasks", "search_memory", "query_person", "list_intents",
+		"get_weather", "read", "web_search", "web_fetch", "screen_observe",
+		"list_agents", "refresh_agents", "agent_provider_usage", "list_skills",
+		"load_skill", "list_agent_tasks", "get_agent_task":
+		return RiskRead, false
+	case "create_task", "set_alarm", "save_note", "save_fact", "update_task",
+		"create_intent", "cancel_intent", "wait", "tap", "input_text", "swipe",
+		"back", "open_app", "open_agent", "cancel_agent_task", "create_artifact":
+		return RiskPrepare, false
+	case "write":
+		return RiskPrepare, false
+	case "bash", "delegate_agent":
+		return RiskSensitive, true
+	case "switch_claude_provider":
+		return RiskExternalWrite, true
+	default:
+		// 未知工具在 WorkTask 中按敏感能力处理，必须显式授权；普通聊天不受影响。
+		return RiskSensitive, true
+	}
+}
+
+func profileAllows(profile string, desc ToolDescriptor) bool {
+	switch profile {
+	case "read":
+		return desc.Risk == RiskRead
+	case "internal":
+		return desc.Risk != RiskExternalWrite
+	case "external":
+		return true
+	default:
+		return true
+	}
 }
 
 func toolNames(calls []llm.ToolCall) string {

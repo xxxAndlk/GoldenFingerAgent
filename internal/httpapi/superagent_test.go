@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -255,8 +256,8 @@ func TestSuperAgentWorkerTasksSteerAndCancel(t *testing.T) {
 	}
 
 	steer := postJSON(t, h, "/api/worker-tasks/"+job.ID+"/steer", `{"text":"先核对日期"}`)
-	if steer.Code != http.StatusAccepted {
-		t.Fatalf("steer status=%d body=%s", steer.Code, steer.Body)
+	if steer.Code != http.StatusConflict {
+		t.Fatalf("legacy steer without WorkTask must conflict: status=%d body=%s", steer.Code, steer.Body)
 	}
 	cancel := postJSON(t, h, "/api/worker-tasks/"+job.ID+"/cancel", `{}`)
 	if cancel.Code != 200 {
@@ -266,18 +267,47 @@ func TestSuperAgentWorkerTasksSteerAndCancel(t *testing.T) {
 	if err != nil || updated.Status != store.AgentJobCancelled {
 		t.Fatalf("updated=%+v err=%v", updated, err)
 	}
-	events, err := repos.AgentJobs.Events(t.Context(), u[0].ID, job.ID)
+}
+
+func TestActionOutboxApprovalCreatesContentBoundGrant(t *testing.T) {
+	srv, repos := newTestServer(t)
+	h := srv.Handler()
+	user := &store.User{UserType: store.UserGeneral, Name: "outbox-grant", TZ: "Asia/Shanghai"}
+	if err := repos.Users.Create(t.Context(), user); err != nil {
+		t.Fatal(err)
+	}
+	task := &store.WorkTask{
+		OwnerUserID: user.ID, Title: "发邮件", Goal: "回复客户", Status: store.WorkTaskActive,
+		Profile: store.WorkTaskProfileExternal, IdempotencyKey: "outbox-grant-task",
+	}
+	if err := repos.WorkTasks.Create(t.Context(), task); err != nil {
+		t.Fatal(err)
+	}
+	rec := postJSON(t, h, "/api/action-outbox",
+		`{"channel":"email","kind":"reply","body":"您好","work_task_id":"`+task.ID+`","requires_approval":true}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create outbox=%d %s", rec.Code, rec.Body)
+	}
+	body := decodeMap(t, rec)
+	item := body["outbox"].(map[string]any)
+	id := item["id"].(string)
+	rec = postJSON(t, h, "/api/action-outbox/"+id+"/approve", `{"version":0}`)
+	if rec.Code != 200 {
+		t.Fatalf("approve=%d %s", rec.Code, rec.Body)
+	}
+	outbox, err := repos.ActionOutbox.Get(t.Context(), user.ID, id)
+	if err != nil || outbox.ActionGrantID == "" {
+		t.Fatalf("outbox=%+v err=%v", outbox, err)
+	}
+	grant, err := repos.Grants.Get(t.Context(), user.ID, outbox.ActionGrantID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	foundSteer := false
-	for _, event := range events {
-		if event.Type == "steer" {
-			foundSteer = true
-		}
+	if grant.TaskID != task.ID || grant.RemainingUses != 1 || grant.RiskLevel != store.GrantExternalWrite {
+		t.Fatalf("grant=%+v", grant)
 	}
-	if !foundSteer {
-		t.Fatalf("steer event missing: %+v", events)
+	if !strings.Contains(string(grant.ResourceScope), "content_hash") {
+		t.Fatalf("grant scope must bind content hash: %s", grant.ResourceScope)
 	}
 }
 

@@ -60,6 +60,27 @@ func TestActivityEpisodeIngestDedupes(t *testing.T) {
 	}
 }
 
+func TestActivityEpisodeUsesContextThread(t *testing.T) {
+	srv, _ := newTestServer(t)
+	enableChannel(t, srv, store.ChannelActivity)
+	h := srv.Handler()
+	body := `{
+		"episode_id":"ep-context-1","context_key":"project:GoldenFingerAgent",
+		"started_at":"2026-11-01T09:00:00+08:00","ended_at":"2026-11-01T09:12:00+08:00",
+		"app":"VS Code","apps":["VS Code","Chrome"],"project_candidates":["GoldenFingerAgent"],
+		"title":"GoldenFingerAgent · 修复登录","summary":"定位并修复了登录接口。",
+		"status":"completed","evidence_ids":["obs-1"],"association_confidence":0.5
+	}`
+	response := postJSON(t, h, "/api/channels/activity/episodes", body)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body)
+	}
+	thread := decodeMap(t, response)["thread"].(map[string]any)
+	if thread["external_id"] != "activity:project:GoldenFingerAgent" {
+		t.Fatalf("thread=%v", thread)
+	}
+}
+
 func TestEmailMessagesShareThread(t *testing.T) {
 	srv, _ := newTestServer(t)
 	enableChannel(t, srv, store.ChannelEmail)
@@ -153,6 +174,46 @@ func TestChannelConfigAPIUpdatesFlags(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("wechat_mobile missing: %s", settings)
+	}
+}
+
+func TestWeChatVisibleMessageKeepsDirectionAndCompleteness(t *testing.T) {
+	srv, _ := newTestServer(t)
+	enableChannel(t, srv, store.ChannelWeChatDesktop)
+	h := srv.Handler()
+	allowReq := httptest.NewRequest(http.MethodPut, "/api/settings/channels",
+		strings.NewReader(`{"channel":"wechat","source":"严胜易","allowed":true}`))
+	allowReq.Header.Set("Content-Type", "application/json")
+	allow := httptest.NewRecorder()
+	h.ServeHTTP(allow, allowReq)
+	if allow.Code != http.StatusOK {
+		t.Fatalf("allow=%d %s", allow.Code, allow.Body)
+	}
+	message := `{
+		"source":"严胜易","source_id":"wechat-uia:严胜易","display_name":"严胜易",
+		"message_id":"wx-visible-1","event_id":"wx-visible-1","sender":"严胜易",
+		"direction":"other","message_type":"visible_text","text":"你好",
+		"observed_at":"2026-11-03T09:30:00+08:00","occurred_at":null,
+		"content_hash":"abc","completeness":"current_visible","incomplete":true
+	}`
+	accepted := postJSON(t, h, "/api/channels/wechat/messages", message)
+	if accepted.Code != http.StatusCreated {
+		t.Fatalf("accepted=%d %s", accepted.Code, accepted.Body)
+	}
+	triggers := decodeMap(t, getJSON(t, h, "/api/triggers"))["triggers"].([]any)
+	if len(triggers) != 1 {
+		t.Fatalf("triggers=%v", triggers)
+	}
+	trigger := triggers[0].(map[string]any)
+	if trigger["title"] != "严胜易" {
+		t.Fatalf("title=%v", trigger["title"])
+	}
+	if body, _ := trigger["body"].(string); !strings.Contains(body, "当前可见内容") {
+		t.Fatalf("body=%v", trigger["body"])
+	}
+	payload, _ := trigger["payload"].(map[string]any)
+	if payload["direction"] != "other" || payload["source_id"] != "wechat-uia:严胜易" {
+		t.Fatalf("payload=%v", payload)
 	}
 }
 

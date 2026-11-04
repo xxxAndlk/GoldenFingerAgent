@@ -2,6 +2,9 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { BrowserCollector } = require('../browser-collector');
 
 function fakePage({ login = false, links = [] } = {}) {
@@ -136,6 +139,45 @@ test('autoLogin stops when credential origin differs', async () => {
     /origin/,
   );
   assert.equal(sessions.calls, 0);
+});
+
+test('collector persists schedule and page checkpoints across restart', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gfa-browser-'));
+  try {
+    const statePath = path.join(dir, 'browser-state.json');
+    const items = [];
+    let now = 1000;
+    const first = new BrowserCollector({
+      sessions: fakeSessions(),
+      captureItem: async item => items.push(item),
+      now: () => now,
+      statePath,
+    });
+    const result = await first.runSite(site, { timeoutMs: 5000 });
+    assert.equal(result.items, 1);
+    assert.equal(items.length, 1);
+    const saved = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.equal(saved.sites.example.lastRunAt, 1000);
+    assert.ok(saved.sites.example.pages['https://example.com/items/1'].hash);
+
+    now = 2000;
+    const restored = new BrowserCollector({
+      sessions: fakeSessions(),
+      captureItem: async item => items.push(item),
+      now: () => now,
+      statePath,
+    });
+    assert.equal(restored.statusFor('example').lastRunAt, 1000);
+    assert.equal((await restored.schedulerTick([site])).length, 0, 'restart must not immediately recrawl');
+
+    now = 70_000;
+    const unchanged = await restored.runSite(site, { timeoutMs: 5000 });
+    assert.equal(unchanged.items, 0);
+    assert.equal(unchanged.unchanged, 1);
+    assert.equal(items.length, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('collector follows only authorized links within page limit', async () => {

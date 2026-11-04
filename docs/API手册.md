@@ -201,7 +201,43 @@
 | `DELETE /api/threads/{id}/link/{linkedID}?relation=manual` | 解除关联 |
 | `GET /api/sessions/main` | 获取/创建唯一主会话；客户端启动时直接恢复它，不再依赖本地会话 ID |
 
-### 3. 路由与 Worker
+### 3. WorkTask 长期任务
+
+WorkTask 跨多条消息、多个执行段和多个渠道保存目标、实时状态、控制 Inbox、Artifact 版本、ActionGrant 与 Checkpoint。所有变更接口都按 `owner_user_id` 过滤；状态迁移使用 `expected_version` CAS，冲突返回 `409`。
+
+| 方法 路径 | 用途 |
+|---|---|
+| `POST /api/work-tasks` | `{"title":"...","goal":"...","completion_criteria":"...","profile":"read|internal|external","start":true}`；`start=false` 时只创建草稿 |
+| `GET /api/work-tasks?status=&limit=100` | 任务列表 |
+| `GET /api/work-tasks/{id}` | 任务 + live_state + Threads + Inbox + Jobs + Artifacts + Checkpoints + Grants + ToolInvocations；Artifact 最新正文在 `artifact_latest` |
+| `POST /api/work-tasks/{id}/messages` | `{"text":"...","expected_version":N}`；等待中的任务会恢复并创建新执行段，其他运行中任务在下一个安全步骤边界消费 |
+| `POST /api/work-tasks/{id}/pause` | `{"expected_version":N}`；在当前安全步骤边界停止，释放 Worker 槽位 |
+| `POST /api/work-tasks/{id}/resume` | `{"expected_version":N}`；从暂停恢复，创建新执行段 |
+| `POST /api/work-tasks/{id}/cancel` | 取消任务、活动 Job、未消费 Inbox 和未执行 Grant |
+| `POST /api/work-tasks/{id}/recover` | 从最近 Checkpoint 创建**新 Job**；旧 Job 保持结束状态，不重放未知副作用 |
+| `POST /api/work-tasks/{id}/reopen` | 已完成任务重新打开 |
+| `POST /api/work-tasks/{id}/complete` | `{"expected_version":N}`；无文件交付、仅有结果摘要时人工验收完成 |
+| `GET /api/work-tasks/{id}/events?after_id=` | 任务级事件时间线 |
+| `POST /api/work-tasks/{id}/threads/{thread_id}` | 关联来源 Thread（`relation=origin|related|output`） |
+| `DELETE /api/work-tasks/{id}/threads/{thread_id}?relation=` | 解除关联 |
+| `GET /api/work-tasks/{id}/artifacts` | 交付物列表 |
+| `POST /api/work-tasks/{id}/artifacts` | 创建草稿：`{"kind":"text","title":"...","content":"...","source_refs":[],"job_id":""}` |
+| `GET /api/artifacts/{id}` | 交付物与全部不可变版本 |
+| `GET /api/artifacts/{id}/versions/{version}/download` | 按 owner 校验后下载文本版本 |
+| `GET /api/artifacts/{id}/diff?from=&to=` | 服务端 unified diff |
+| `POST /api/artifacts/{id}/submit` | 提交验收 |
+| `POST /api/artifacts/{id}/accept` / `reject` | 验收/要求修改；所有待验收 Artifact 通过后 Task 完成 |
+| `GET /api/work-tasks/{id}/grants` | 任务授权 |
+| `POST /api/work-tasks/{id}/grants` | 手工创建带范围/次数/有效期的 Grant |
+| `DELETE /api/grants/{id}` | 撤销授权 |
+
+**状态机**：`draft → queued → active → waiting_* / paused / pending_acceptance → completed`；`failed` 可恢复重排队，`cancelled` 为终态。执行段完成只进入 `pending_acceptance`，不会自动算作任务完成。
+
+**插话语义**：`POST /messages` 返回 `202 + inbox_id + delivery`。运行中的 Job 不保证立即注入，而是在下一个模型请求前由 `StepController` 事务性消费（写 Worker 会话用户消息 + 标记 consumed）；进程崩溃不会重复消费或丢消息。外部 CLI 不支持运行中输入时，消息保持 queued，下一段执行生效。
+
+**工具权限**：`read` 只能调用只读工具；`internal` 允许本机准备和授权工作目录内写入；`external` 允许外部草稿。`bash`、`delegate_agent`、`switch_claude_provider` 和未知工具按敏感能力处理，必须有覆盖工具名、资源范围和内容 hash 的有效 Grant。授权过期、撤销、次数耗尽、内容变化或设备撤销都会拒绝执行，并记录 `tool_invocation(status=denied)`。
+
+### 4. 路由与 Worker
 
 `POST /api/superagent/route?mode=deterministic|llm&limit=20` 手动路由一批 `queued` Trigger。响应 `{"results":[{"trigger_id":"...","action":"notify","status":"routed"}]}`。`mode=llm` 失败时自动回退确定性 Router。
 
@@ -209,17 +245,17 @@
 |---|---|
 | `GET /api/worker-tasks?thread_id=&limit=50` | Worker 任务视图（`agent_job` 扩展字段） |
 | `POST /api/worker-tasks/{id}/cancel` | 取消排队/运行中的 Worker |
-| `POST /api/worker-tasks/{id}/steer` | `{"text":"先核对日期"}`；追加为任务事件 |
+| `POST /api/worker-tasks/{id}/steer` | 旧接口：若 Job 已绑定 WorkTask，则写 Task Inbox 并返回 `202 + inbox_id + queued`；没有 WorkTask 的旧 Job 返回 `409`，不再假称已注入 |
 | `GET /api/superagent/health` | Trigger/Event/Outbox 计数、Worker 数与最新事件 ID |
 
 后台 Router 默认关闭；`GFA_SUPERAGENT=1` 时每 2s 批量路由，`GFA_SUPERAGENT_ROUTER=deterministic` 可强制不走模型，`GFA_SUPERAGENT_MAX_WORKERS` 控制并发（1–8）。
 
-### 4. ActionOutbox 草稿与版本审批
+### 5. ActionOutbox 草稿与版本审批
 
 `POST /api/action-outbox`：
 
 ```json
-{"channel":"email","kind":"reply","body":"草稿正文","requires_approval":true,"idempotency_key":"draft-1"}
+{"channel":"email","kind":"reply","body":"草稿正文","work_task_id":"...","expected_effect":{},"requires_approval":true,"idempotency_key":"draft-1"}
 ```
 
 | 方法 路径 | 用途 |
@@ -230,31 +266,35 @@
 | `POST /api/action-outbox/{id}/approve` | `{"version":0}` |
 | `POST /api/action-outbox/{id}/reject` | `{"version":0,"reason":"不需要"}` |
 
-每次编辑/审批递增 `version`；旧版本或重复审批返回 `409`，不会重复发送。本轮没有外部发送器，`approved` 只表示人工已确认。
+每次编辑/审批递增 `version`；旧版本或重复审批返回 `409`，不会重复发送。本轮没有外部发送器，`approved` 只表示人工已确认。绑定 `work_task_id` 的审批会生成一次性、24 小时、内容 hash 绑定的 `action_grant`；再次编辑草稿会撤销旧 Grant。外部调用超时记录 `tool_invocation=unknown`，不会自动重试。
 
-### 5. 事件流
+### 6. 事件流
 
 `GET /api/events?after=0&limit=100` 返回 `{"events":[...],"next_event_id":N,"has_more":false}`。
 
 `GET /api/events?stream=1` 使用 SSE，支持 `Last-Event-ID` 或 `after` 断线补拉；每帧 `event: agent`、`id: <event_id>`。Worker 生命周期通过 `worker.created/running/completed/failed/timeout/cancelled/interrupted` 进入同一事件流，桌面任务卡可直接由 SSE 驱动。
 
-### 6. 渠道接入与增量摘要
+### 7. 渠道接入与增量摘要
 
 渠道原始内容统一写 `agent_trigger`；`activity/email/wechat` 新事件会异步更新所属 Thread 的滚动摘要（LLM 失败时确定性回退）。
 
 | 方法 路径 | 用途 |
 |---|---|
-| `POST /api/channels/activity/episodes` | 桌面工作片段：`episode_id/started_at/ended_at/app/title/summary/status/outputs/evidence_ids/cursor`；按日期归入 `activity:<YYYY-MM-DD>` Thread |
+| `POST /api/channels/activity/episodes` | 桌面工作片段：`episode_id/context_key/started_at/ended_at/app/apps/project_candidates/title/summary/status/outputs/evidence_ids/cursor/association_confidence`；有 `context_key` 时归入 `activity:project:*` / `activity:web:*` / `activity:unassigned:*`，否则按日期 |
 | `POST /api/channels/email/messages` | 单封邮件：`account/message_id/thread_key/from/to/subject/text/received_at`；同一 `thread_key` 复用 Thread |
-| `POST /api/channels/wechat/messages` | 可见微信内容：`source/message_id/sender/text/incomplete`；默认拒绝，来源需显式允许 |
+| `POST /api/channels/wechat/messages` | 可见微信内容：`source/source_id/display_name/message_id/event_id/sender/direction/message_type/text/observed_at/occurred_at/content_hash/completeness/incomplete`；默认拒绝，来源需显式允许 |
 | `POST /api/channels/calendar/events` | 日历事件：`calendar/event_id/series_id/title/description/location/start_at/end_at/attendees/status`；按 series/event 归 Thread |
 | `GET /api/settings/channels` | 返回渠道策略、今日跳过计数；微信默认 deny，其他渠道默认 allow |
 | `PUT /api/settings/channels` | `{"channel":"wechat","source":"项目群","allowed":true}`；拒绝来源不落正文，只增加跳过计数 |
 | `GET/PUT /api/settings/email` | IMAP 收件配置（host/port/username/password/mailbox/tls/initial_fetch/poll_seconds）；GET 密码打码，空密码表示保留原值 |
 
+微信字段语义：`source_id` 是会话稳定键，`display_name` 是用户可见名称；`direction` 只能是 `self/other/system/unknown`；`completeness` 为 `complete/current_visible/partial/unknown`；不知道真实发送时间时 `occurred_at=null`，只写 `observed_at`。`event_id` 用于幂等，`content_hash` 只用于内容变化判断。`current_visible`/`partial` 会在正文末尾标注“当前可见内容，不代表完整聊天记录”。
+
+桌面端微信连接器只读取当前打开会话的可见屏幕；微信 4.x 的 Qt 窗口不提供消息气泡 UIA，因此消息边界来自截图 OCR 坐标。未授权会话不写检查点、不入队、不进入模型。桌面工作台「接入设置 → 感知采集状态」可见当前会话、最近观察/入库、完整性、待发/过滤/失败和错误；`wechat:test-capture` IPC 只做测试预览，不写入 Spool。
+
 可选 IMAP 采集器只读取正文（`BODY.PEEK[]`），不标记已读、不发送邮件；游标保存在 `agent_channel_cursor`，重启不重复拉取。
 
-### 7. 跨渠道每日简报
+### 8. 跨渠道每日简报
 
 | 方法 路径 | 用途 |
 |---|---|
@@ -266,7 +306,7 @@
 
 简报固定三段：`needs_action`（审批、明确问题、当天到期）、`important_changes`（决定/改期/完成/阻塞）、`background`。每条必须带来源 ref（`trigger:` / `thread:` / `worker:` / `outbox:` / `task:`）。到达 `digest.time` 后自动生成首版，之后有新事件最多每 30 分钟补一版。
 
-### 8. 渠道与全局开关
+### 9. 渠道与全局开关
 
 六类渠道 `activity`、`email`、`feishu`、`dingtalk`、`wechat_desktop`、`wechat_mobile` 分别保存五个开关，**默认全部关闭**：
 
@@ -289,7 +329,7 @@
 
 `/api/inbox/events` 在写入旧通知中心前应用 `wechat_mobile` 开关和来源策略；被拒微信通知只计数，不落正文、不生成向量索引。
 
-### 9. 邮箱 UIDVALIDITY 与筛选
+### 10. 邮箱 UIDVALIDITY 与筛选
 
 `GET/PUT /api/settings/email` 在原有字段外增加：
 
@@ -304,7 +344,7 @@
 
 游标保存 `UIDVALIDITY + UID`；邮箱重建导致 UIDVALIDITY 变化时自动按首次拉取策略重置，不按旧 UID 漏信。筛选同时在 IMAP SEARCH 和本地解析后执行。仍使用 `EXAMINE` / `BODY.PEEK[]`，不修改已读状态、不自动发送。
 
-### 10. 通用网页采集
+### 11. 通用网页采集
 
 `POST /api/channels/web/items`：
 
@@ -338,7 +378,25 @@
 
 ---
 
-## 四、其余既有端点（摘要）
+## 四、记忆、策略与设备治理
+
+| 方法 路径 | 用途 |
+|---|---|
+| `GET /api/memory/longterm?status=&limit=` | 长期事实列表；status 支持 `inferred/confirmed/draft/conflicted` |
+| `POST /api/memory/longterm/{id}/confirm` | `{"expected_version":N}`；用户确认 inferred/conflicted 事实 |
+| `POST /api/memory/longterm/{id}/conflict` | 标记冲突，保留证据等待人工处理 |
+| `GET /api/personal-policies?scope_type=&scope_id=&status=` | 个人策略/SOP 列表 |
+| `POST /api/personal-policies` | `{"policy_type":"focus|preference|boundary|sop|notification","name":"...","content":{},"scope_type":"global|task|channel|device","scope_id":"","status":"draft|active","valid_days":0}` |
+| `POST /api/personal-policies/{id}/status` | `{"status":"active|disabled","expected_version":N}` |
+| `GET /api/devices` | 设备环境列表 |
+| `POST /api/devices` | `{"id":"dev-1","name":"手机","device_type":"android","online":true}` |
+| `POST /api/devices/{id}/revoke` | 撤销设备；撤销后绑定动作与恢复均拒绝 |
+| `GET/POST /api/devices/{id}/capabilities` | 查询/新增设备能力：`{"tool_name":"tap","resource_scope":{},"work_dir":"","limits":{}}` |
+| `POST /api/work-tasks/{id}/devices/{device_id}` | 绑定任务与设备能力：`{"capability_id":"..."}`；`waiting_device` 恢复前重新校验在线且未撤销 |
+
+自动抽取事实默认 `inferred`，不会覆盖 `confirmed`；冲突保留两条证据并标 `conflicted`。Worker 结论不得自动成为稳定 Personal Policy，必须用户确认后 `active`。工具执行还要同时满足 Profile、设备能力和 ActionGrant；任一失效都会拒绝并记录 denied 调用。
+
+## 五、其余既有端点（摘要）
 
 | 方法 路径 | 功能 |
 |---|---|
@@ -366,6 +424,6 @@
 
 ---
 
-## 五、错误格式
+## 六、错误格式
 
 统一：`{"error":"<message>"}`，常见状态码 400（请求/格式错误）、404（资源不存在）、500（服务端错误）、503（对应服务未装配，如 Inbox=nil）。

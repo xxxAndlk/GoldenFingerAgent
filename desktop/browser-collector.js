@@ -1,26 +1,72 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
 const {
   canonicalUrl, checkUrl, sanitizeSiteLimits, siteReady, urlOrigin,
 } = require('./browser-policy');
-const { extractPage, makeWebItem } = require('./browser-extract');
+const { extractPage, makeWebItem, contentHash } = require('./browser-extract');
 const { loginLikelyRequired } = require('./browser-session');
+
+function readState(file) {
+  try {
+    const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return value && typeof value === 'object' ? value : {};
+  } catch {
+    return {};
+  }
+}
 
 // BrowserCollector 负责单站点 single-flight、有限导航和结果上报。
 // 它不点击业务按钮、不填写表单、不绕过验证码；外部动作仍走 ActionOutbox。
 class BrowserCollector {
-  constructor({ sessions, captureItem, logger = console, now = () => Date.now() }) {
+  constructor({ sessions, captureItem, logger = console, now = () => Date.now(), statePath = '' }) {
     this.sessions = sessions;
     this.captureItem = captureItem;
     this.logger = logger;
     this.now = now;
+    this.statePath = statePath;
     this.running = new Map();
     this.status = new Map();
+    const saved = statePath ? readState(statePath) : {};
+    for (const [siteId, value] of Object.entries(saved.sites || {})) {
+      if (value && typeof value === 'object') {
+        this.status.set(siteId, {
+          running: false, lastRunAt: 0, lastSuccessAt: 0, lastError: '', items: 0,
+          loginRequired: false, pages: {}, unchanged: 0, ...value, running: false,
+        });
+      }
+    }
+  }
+
+  saveState() {
+    if (!this.statePath) return;
+    try {
+      fs.mkdirSync(path.dirname(this.statePath), { recursive: true });
+      const sites = {};
+      for (const [siteId, value] of this.status.entries()) {
+        if (value && typeof value === 'object') sites[siteId] = value;
+      }
+      const temp = `${this.statePath}.tmp`;
+      fs.writeFileSync(temp, JSON.stringify({ sites }), 'utf8');
+      fs.renameSync(temp, this.statePath);
+    } catch (error) {
+      this.logger.error?.(`网页采集检查点保存失败：${error.message}`);
+    }
   }
 
   statusFor(siteId) {
     return this.status.get(siteId) || {
-      running: false, lastRunAt: 0, lastError: '', items: 0, loginRequired: false,
+      running: false, lastRunAt: 0, lastSuccessAt: 0, lastError: '', items: 0,
+      loginRequired: false, pages: {}, unchanged: 0,
+    };
+  }
+
+  health() {
+    return {
+      sites: [...this.status.entries()].map(([siteId, value]) => ({ siteId, ...value })),
+      running: this.running.size,
+      pending: 0,
     };
   }
 
@@ -38,10 +84,14 @@ class BrowserCollector {
     const headless = options.headless !== undefined ? Boolean(options.headless) : Boolean(site.session_enabled);
     const visitLimit = Math.min(limits.maxPages, Number(options.maxPages) || limits.maxPages);
     const deadline = this.now() + (Number(options.timeoutMs) || 60_000);
+    const previous = this.statusFor(site.id);
     const state = {
-      running: true, lastRunAt: this.now(), lastError: '', items: 0, loginRequired: false,
+      running: true, lastRunAt: this.now(), lastSuccessAt: Number(previous.lastSuccessAt) || 0,
+      lastError: '', items: 0, loginRequired: false, pages: { ...(previous.pages || {}) },
+      unchanged: 0, nextDueAt: this.now() + limits.intervalSeconds * 1000,
     };
     this.status.set(site.id, state);
+    this.saveState();
     const queue = [];
     const seen = new Set();
     for (const raw of site.start_urls || []) {
@@ -81,9 +131,32 @@ class BrowserCollector {
         const item = makeWebItem({
           site, account: site.account || site.id, url, extraction,
         });
-        await this.captureItem(item);
+        const pageKey = item.canonical_url || item.url;
+        const hash = contentHash(item.text);
+        const checkpoint = state.pages[pageKey];
+        item.change = checkpoint ? 'updated' : 'new';
+        if (checkpoint && checkpoint.hash === hash) {
+          checkpoint.lastSeenAt = this.now();
+          state.unchanged += 1;
+          this.saveState();
+        } else {
+          const result = await this.captureItem(item);
+          if (result && result.filtered) {
+            state.lastError = `页面被服务端过滤：${result.reason || '策略限制'}`;
+          } else {
+            state.pages[pageKey] = {
+              hash,
+              change: checkpoint ? 'updated' : 'new',
+              lastSeenAt: this.now(),
+              lastChangedAt: this.now(),
+              title: item.title,
+            };
+            state.items += 1;
+            state.lastSuccessAt = this.now();
+            this.saveState();
+          }
+        }
         visited += 1;
-        state.items += 1;
         if (!site.navigation_enabled || depth >= limits.maxDepth) continue;
         for (const link of extraction.links || []) {
           if (queue.length + visited >= visitLimit) break;
@@ -106,9 +179,11 @@ class BrowserCollector {
       return { siteId: site.id, ...state, running: false, visited };
     } finally {
       state.running = false;
+      state.nextDueAt = this.now() + limits.intervalSeconds * 1000;
       if (!this.sessions.get(site.id)) {
         this.status.set(site.id, state);
       }
+      this.saveState();
     }
   }
 
