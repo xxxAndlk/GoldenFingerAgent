@@ -417,9 +417,80 @@ async function loadSkills() {
   }
 }
 
+// ---- 云端共享记忆 ----
+const cloudForm = document.querySelector('#cloud-memory-form');
+const cloudEnabled = document.querySelector('#cloud-memory-enabled');
+const cloudStatus = document.querySelector('#cloud-memory-status');
+const cloudTestButton = document.querySelector('#cloud-memory-test');
+
+function renderCloudMemory(config) {
+  if (!cloudForm) return;
+  cloudEnabled.checked = Boolean(config.enabled);
+  setField('#cloud-memory-url', config.base_url || '');
+  setField('#cloud-memory-device', config.device_id || '');
+  setField('#cloud-memory-owner', config.owner_user_id || '');
+  setField('#cloud-memory-token', config.token || '');
+  document.querySelector('#cloud-memory-delivery').checked = Boolean(config.delivery_enabled);
+  const mode = config.mode === 'cloud' ? '云端共享模式' : '本机模式';
+  const sync = config.mode === 'cloud'
+    ? ` · ${config.ready ? '已连接' : '未连接'} · 待发 ${config.pending || 0} / 失败 ${config.failed || 0} / 暂停 ${config.paused || 0}`
+    : '';
+  const detail = config.detail ? ` · ${config.detail}` : '';
+  cloudStatus.textContent = `${mode}${sync}${detail}`;
+}
+
+async function loadCloudMemory() {
+  if (!cloudForm || typeof api.getCloudMemory !== 'function') return;
+  try {
+    renderCloudMemory(await api.getCloudMemory());
+  } catch (error) {
+    cloudStatus.textContent = `读取失败：${error.message}`;
+  }
+}
+
+if (cloudForm) {
+  cloudForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    const payload = {
+      enabled: cloudEnabled.checked,
+      base_url: fieldValue('#cloud-memory-url').trim(),
+      device_id: fieldValue('#cloud-memory-device').trim(),
+      owner_user_id: fieldValue('#cloud-memory-owner').trim(),
+      token: fieldValue('#cloud-memory-token'),
+      delivery_enabled: document.querySelector('#cloud-memory-delivery').checked,
+    };
+    try {
+      const saved = await api.saveCloudMemory(payload);
+      renderCloudMemory(saved);
+      cloudStatus.textContent += ' · 已保存，重启应用后生效';
+    } catch (error) {
+      cloudStatus.textContent = `保存失败：${error.message}`;
+    }
+  });
+
+  cloudTestButton.addEventListener('click', async () => {
+    cloudTestButton.disabled = true;
+    cloudStatus.textContent = '正在测试连接…';
+    try {
+      const result = await api.testCloudMemory({
+        base_url: fieldValue('#cloud-memory-url').trim(),
+        token: fieldValue('#cloud-memory-token'),
+      });
+      cloudStatus.textContent = result.ready
+        ? `连接成功 · ${result.backend || '云端记忆'}${result.detail ? ' · ' + result.detail : ''}`
+        : `连接失败：${result.error || result.detail || '未知错误'}`;
+    } catch (error) {
+      cloudStatus.textContent = `连接失败：${error.message}`;
+    } finally {
+      cloudTestButton.disabled = false;
+    }
+  });
+}
+
 loadRelayStatus();
 loadSettings();
 loadSkills();
+loadCloudMemory();
 api.getDesktopSettings().then(settings => {
   renderOpacity(settings.activityOpacity);
   activityVisible.checked = settings.activityVisible;

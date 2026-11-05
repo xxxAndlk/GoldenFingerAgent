@@ -1,0 +1,8 @@
+{
+  "name": "goldenfinger-agent",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/dev-mobile-h5.js",
+    "test:mobile-h5": "node scripts/verify-mobile-h5.js"
+  }
+}

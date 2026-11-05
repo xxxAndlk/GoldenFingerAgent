@@ -111,7 +111,7 @@ func Run(ctx context.Context, s *Session, userText string, rt *Runtime) (*TurnRe
 
 	// 系统提示跨轮次保持不变；动态上下文只进入当前用户消息，且不落会话库。
 	// 因而下一轮可完整复用“固定系统 + 历史用户/助手消息”的缓存前缀。
-	dynamic, err := rt.Prompt.BuildDynamic(ctx, s, now)
+	dynamic, err := rt.Prompt.BuildDynamicFor(ctx, s, now, userText)
 	if err != nil {
 		return nil, err
 	}

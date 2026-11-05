@@ -1,10 +1,21 @@
 # 当前进度与修改记录
 
-最后更新：2026-11-04
+最后更新：2026-11-05
 
 本文件记录**当前实现状态**与验证证据，不是「全部功能已验收」的证明。每条尽量区分：代码实现 / 自动测试 / 真实环境验证。
 
 > 阅读约定：已完成的条目不再保留「进行中」「未接线」等旧结论；被推翻的判断直接删除或改写，避免后来者按错误前提干活。
+
+## 〇、2026-11-05 工作台界面重做、图标替换与托盘隐藏区
+
+- **工作台重做**：`desktop/workbench.html` 换成新的设计系统（顶栏 + 分段标签栏 + 折叠区块 + 统计磁贴 + 卡片网格 + 明暗双配色），`desktop/workbench.js` 配套重写渲染逻辑。顶栏带应用图标、连接状态胶囊与图标刷新按钮；标签栏从普通按钮改成胶囊分段控件。
+- **展开/收起**：新增 `collapseSection()` 组件，标题行本身就是开关——点一次展开、再点一次收起。「感知采集状态」「微信会话授权」「工作台怎么用」都用它；「渠道与邮箱」「网页采集」沿用原生 `details`，但改成同一套视觉与箭头。
+- **微信会话卡片**：每个联系人一张独立卡片——圆形首字头像 + 名字 + 一行灰色小字（群聊/私聊与最近消息时间）+ 授权/撤销授权按钮；已授权的卡片描边变绿。稳定 `source_id` 不再占版面，只留在卡片 `title` 里备查。
+- **两个按钮的分工**：「加载授权会话」只读会话名单，不碰正文；「测试数据库连接」会真的读一条最近消息来验证只读连接。原来测试按钮会静默先拉一次会话名单，看起来和加载按钮是同一个功能——现在两者分开，并在界面上写明区别。
+- **图标替换**：新增 `desktop/scripts/extract-icon-source.py`，从用户提供的截图重建 512×512 透明背景源图（深色圆形 + 原子图案）；`create-tray-icon.py` 改为消费该源图，重新生成 `app-icon.*`、`tray-icon.*`、`tray-icon-busy.*` 与悬浮球位图 `app-icon.css`；工作台顶栏用 `app-icon.png`，与标题栏、任务栏、托盘同源。
+- **托盘留在隐藏区**：`promoteTrayIcon` 改为 `demoteTrayIcon`，把 `NotifyIconSettings` 里本程序的 `isPromoted` 置 0，图标留在任务栏「^」隐藏区，点开即可看到；单击/双击托盘图标仍然展开主对话，右键菜单里的「工作台」入口不变。提示文案同步改成「点『^』展开隐藏图标区」。
+- **验证**：桌面 `npm test` 146/146 通过、`npm run check` 通过；用 Playwright 渲染 `workbench.html`（注入桩 API）离屏截图核对：明暗两套配色、4 张会话卡片渲染正确、折叠后 `open` 变 false、再点一次恢复 true；`node --check` 通过。
+- **未验证/未做**：托盘隐藏区的真实效果需要在 Windows 上重新启动应用才能看到（当前运行的是旧打包版，图标仍是旧的）；手机页面头部仍是「金」字文字头像，不是图片图标，本轮未替换；未做真机双端交付。
 
 ## 〇、2026-11-04 聊天式渠道管理与连接器复核
 
@@ -22,6 +33,78 @@
 - **聊天窗口：时间贴边**：消息时间不再居中，机主消息右对齐（右上方），回复左对齐（左上方）。
 - **回答失败给出具体原因**：LLM 调用失败不再只回一句“稍后再试”。`failureReply` 把上游错误（HTTP 状态、限流、网络、解析失败等）折叠空白、脱敏 `sk-***`、限长 300 字后直接写进回复；工具步数用尽也会说明“用完了 N 步”。待办解析里的建档/查询失败同样带上原因。
 - **验证**：`desktop/scripts/widget-smoke.js` 用 Playwright 驱动真实 Electron 窗口验证：打开后距底 0px、今日简报可关闭、清屏后可见消息 0 条且内容不被撑高、向上滚轮恢复 50 条、关闭再打开后仍是最近一页且在底部（`WIDGET_SMOKE_OK time=right/left brief=dismissed messages=50 cleared=0 restored=50 grown=52 reopened=50`）；截图见 `desktop/artifacts/widget-opened.png`、`widget-cleared.png`。桌面 `npm test` 146 项通过（含 `test/chat-clear-contract.test.js`）。
+
+## 〇、2026-11-04 云端共享记忆与跨端文件交付（M0–M7）
+
+方案来源：`docs/云端共享记忆与跨端文件交付实施方案.md`。本轮按 M1→M6 顺序实现，云端与端侧各自可独立测试。
+
+### 0.1 云端共享记忆（M1）
+
+- 新增 `cmd/cloudserver`、`internal/memorycloud`、`internal/cloudauth`；云端独立 DB，复用 `store.LongTerm` 与 `memory.Native`。
+- `cloud_device` 只存 Token 哈希；owner 永远由 Bearer Token 解析。scope 分 `memory:read/write`、`delivery:read/write`，无效/撤销 Token 统一 401。
+- `POST /api/memory/v1/episodes`：`mem_episode.source_id` 全局主键，云端保存为 `cloud:<owner>:<original>`；`cloud_episode_meta` 维护双向映射与遗忘墓碑。相同来源相同正文返回 `duplicate`，不同正文 409，已遗忘 410。
+- `POST /search` 返回派生事实并把 `source_refs` 还原为端侧原始 ID；`POST /forget` 支持 source/fact，source 遗忘写入墓碑并删除片段与派生边；`GET /health` 只返回数量/状态，不返回正文。
+- 设备管理：`cloudserver device create|list|revoke`；旧数据迁移：`cloudserver migrate export|import`（导出 schema_version=1，导入校验引用、阻塞重复导入，Embedder 维度不一致时丢弃旧向量并重建）。
+- 抽取失败现在会记录来源 ID 与错误（不输出正文），健康详情可看到 `last_error`。
+
+### 0.2 RemoteMemory、Outbox 与自动召回（M2）
+
+- 新增 `internal/memory/remote.go`：`Append` 先写 `memory_sync_outbox` 再异步上传；网络/429/5xx 指数退避并尊重 `Retry-After`；duplicate 视为成功；400/409 停止重试；401/403 暂停同步；410 标记为已遗忘。
+- 新增 `BuildContextForQuery`：按当前问题检索共享长期记忆（1.2 秒超时，不阻断回答），与本地人物/事实去重后在 token 预算内打包；`PromptBuilder.BuildDynamicFor` 由对话循环传入当前用户原话。
+- 电脑 `cmd/server` 与 Android `gosvc` 都按设置选择 Native 或 Remote；云模式不再启动本地抽取，避免双主写。
+- 设置页新增「云端共享记忆」：地址、Device ID、Owner、Token（掩码）、交付开关、测试连接、待发/失败/暂停状态；保存后明确提示重启生效。
+
+### 0.3 Artifact 通用文件化（M4）
+
+- 迁移 `0018_artifact_files.sql` 增加 `storage_kind/original_name/source_kind/source_ref`；文本版本默认 `storage_kind=text`，历史数据无需迁移。
+- `CreateFileDraft`/`AddFileVersion`：校验普通文件、解析符号链接、限制 100 MiB、默认拒绝可执行文件/脚本；先写临时文件边写边算 SHA-256，校验大小后原子改名，数据库版本与快照一致。
+- 下载接口改为流式 `http.ServeContent`（支持 Range），使用原始文件名与 RFC 5987 文件名；文本版本保持原行为。
+- 新增 `create_file_artifact` 工具（WorkTask 专用，需要 Grant），路径可相对工作目录。
+
+### 0.4 云端交付与手机下载（M5）
+
+- 新增 `internal/deliverycloud`：multipart 上传（幂等键 + 实际大小/SHA-256 校验 + 原子落盘）、收件箱、元数据、流式下载、ACK、撤销与 TTL 清理；默认 100 MiB / 72 小时；下载必须匹配目标设备、owner 与 `delivery:read`。
+- 新增 `internal/deliveryclient`：上传客户端 + 持久 `artifact_delivery_outbox` Worker；同一 Artifact 版本 + 目标设备使用确定性幂等键，重复交付返回同一 Delivery；重启后继续上传。
+- 新增 `deliver_artifact` 工具与本地 `/api/delivery/{inbox,status,content,ack}` 端点；交付完成后写入一条不含正文的 `system` 记忆摘要。
+- 中继协议扩展 v2：`ArtifactRef` 与 `HelloPayload.Version`；两端通过 `?pv=2` 协商，v1 端收不到 ArtifactRef；任务结果按目标端能力裁剪。
+- 手机 Web UI 新增「交付物」列表：浏览器端下载后校验 SHA-256 再 ACK；Android 由 Kotlin `DeliveryBridge` 下载到 App 私有目录、校验、ACK，并用 FileProvider 弹出保存/分享。
+
+### 0.5 A2A 版本与文件产物（M6）
+
+- 新增 `a2a_codec.go`/`a2a_artifact.go`：按 Agent Card `supportedInterfaces[].protocolVersion` 选择 v0.3 / v1.0 Codec；未声明版本时不把旧报文标成 1.0，默认 v0.3（端点可显式指定）。
+- v0.3 使用 `message/send` + `kind:text`；v1.0 使用 `SendMessage` + 统一 Part（`text/url/raw/data`、`mediaType/filename`）与 `ROLE_USER`；TaskState 统一归一化。
+- `Invocation.Artifacts` 接收外部文件：内联 bytes 严格限制 8 MiB 并保存到工作区 `.agent-artifacts/`；外部 URI 只保留元数据，不随 `delegate_agent` 自动联网。需要下载时必须由模型另行调用 WorkTask 专用工具 `download_agent_artifact`，并取得覆盖该工具及 `external_uri` 的独立 Grant。
+- 独立下载仍只允许公网 HTTPS，连接时校验目标 IP，禁止私网/本机/元数据地址与非法重定向，下载后重新计算 SHA-256（上限 100 MiB），成功后才转为当前 WorkTask Artifact。
+- 无文本但有文件时返回明确的文件产物说明，不再误报“没有文本结果”。
+
+### 0.6 验证证据
+
+- **自动测试**：`go test ./... -count=1` 全部通过；`go vet ./...` 通过；`git diff --check` 通过；桌面 `npm test` **146/146** 通过。
+- **云端真实进程 E2E（无 LLM 模式）**：`cloudserver` + 临时 DB 实测：episodes `accepted → duplicate → 409`，forget 后重传 `410`；交付上传 `201`，android 收件箱可见，下载内容与源文件 `cmp` 一致、`X-Content-Hash` 匹配，ACK 200，撤销后下载 410。
+- **未完成真机验证**：`config.yaml` 当前 LLM Key 返回 HTTP 401，因此“API 写入 → 真实模型抽取 → 搜索到派生事实”的实网闭环尚未通过；健康接口如实返回 `failed=1` 与 `last_error=HTTP 401`，代码路径由 fake backend 单测覆盖。换有效 Key 后需补做该验收。
+- **Android 构建**：2026-11-05 已用项目内隔离的 JDK 17、Android SDK 34、NDK 26.3.11579264 和 Gradle 8.9 完成最新 `assembleDebug`，编译证据见 0.7；没有连接设备，未做真机运行验收。
+- **部署边界**：`cloudserver` 监听 HTTP，公网必须放在 HTTPS 反向代理后（与 relay 相同）；云端首次部署需用有效 `llm`/`embedder` 配置才能抽取与向量检索。
+
+### 0.7 验收复核修复（2026-11-05）
+
+- **A2A 文件闭环**：新增 `Manager.ImportArtifacts`，同步 `delegate_agent` 通过 `attachArtifacts` 把已有本地文件转为当前 WorkTask 交付物；异步 Dispatcher 在任务结束前导入文件，没有 WorkTask 时创建「外部 Agent 文件产物」任务。普通导入只接受已有 `LocalPath`，绝不自动下载 `ExternalURI`；公网 URL 文件必须经 `download_agent_artifact` 独立授权，委派授权本身不能覆盖下载。无文本但有文件时只陈述“返回了 N 个文件产物”，导入成功后才补充“已转为 WorkTask 交付物”。
+- **健康隔离**：新增 `EpisodeCountsByOwner`，云端 `/health` 只统计当前设备 owner；补充两个 owner 交叉计数测试。
+- **手机配置入口**：手机 Web 设置面板新增「云端共享记忆」：地址、Device ID、Token、交付开关、测试连接与保存状态。
+- **Token 安全存储**：新增 `internal/secretstore`；Windows 使用 DPAPI，Android 通过 gomobile `SecretStore` 桥调用 Kotlin Android Keystore，以不可导出的 AES-256 密钥和 AES/GCM/NoPadding（128-bit tag）加密。密文文件带 `GFAK1` 版本前缀；旧版无前缀明文 Token 在成功读取后立即重写为密文。Android 未注册 Keystore 桥时明确失败，禁止回退为私有目录明文。`settings.json` 只保留 `token_ref`，API 返回 `token=""`、`has_token=true`，不回传 Token。
+- **可执行文件许可**：新增迁移 `0020_delivery_allow_executable.sql`，Outbox 持久化 `allow_executable`，Worker 上传时继续传给云端；补充 `.bat` 交付测试。
+- **自动验证**：`go test ./... -count=1` 全部通过（含独立下载 Grant、URL 安全校验、桥接密文与旧明文迁移测试）；`go vet ./...` 通过；`git diff --check` 通过；桌面 `npm run check` 通过，`npm test` **146/146** 通过。
+- **Android 编译验证**：gomobile 实际生成并 `javap` 核对 `SecretStore.encrypt/decrypt` 与 `Gosvc.setSecretStore` 签名。同步最新 H5 页面后，`go test ./android/gosvc -count=1` 通过，`./gradlew.bat --no-daemon --no-parallel --max-workers=1 :app:assembleDebug` 再次成功。当前 AAR 为 12,043,844 字节，SHA-256 `7eec867d988ce9daeabf047fb012f57548faa697920d87f2434efbc5fa980ae4`。APK 位于 `android/app/build/outputs/apk/debug/app-debug.apk`，51,269,836 字节，SHA-256 `9024fe5b0f23e560edf9ec6a6d69da5854a59b397eb0de11180e32a37fc87cf6`；包名 `com.goldenfinger.butler`，minSdk 26 / targetSdk 34，包含 arm64-v8a 与 armeabi-v7a，v2 调试签名验证通过。
+- **仍未完成**：当前 `adb devices` 无设备，Android Keystore 真机加解密、旧 Token 真机迁移和 App 启动尚未验证；未做真实公网 HTTPS 外部文件下载与真实电脑→手机跨端交付；`config.yaml` 的 LLM Key 401 仍未解决，真实抽取闭环待有效 Key。单元测试、接口生成和 APK 编译不能替代这些实机链路验收。
+
+### 0.8 手机版 H5 电脑调试（2026-11-05）
+
+- 新增根目录 `package.json` 与 `scripts/dev-mobile-h5.js`：`npm run dev -- --host 127.0.0.1 --port 7100` 复用 `cmd/server` 和 `web/` 启动手机页面，支持 Kimi Work 转发 host/port；只允许回环地址，避免把鉴权不完整的调试接口暴露到局域网。
+- H5 数据库、设置和上传文件隔离到 `artifacts/mobile-h5-dev/`，不读写正式 `data/gfa.db` 或根目录 `settings.json`；默认 `GFA_MEMORY_DISABLE=1`，需要完整记忆链路时显式打开。
+- 新增 `scripts/verify-mobile-h5.js` 与 `npm run test:mobile-h5`：模拟 Responses / Embeddings，不消耗真实模型额度；启动真实 Edge 浏览器，以 390×844、移动触摸上下文验证首页、设置、发送消息、刷新恢复和历史面板，结束后清理服务进程。
+- 实测结果：`H5_VERIFY_OK viewport=390x844 settings=ok chat=mock persistence=ok history=ok horizontalOverflow=false pageErrors=0 responses=1`。截图在 `artifacts/mobile-h5-verify/screenshots/`，已人工查看；这只证明 H5 页面和 HTTP 链路，不代表真实模型调用成功。
+- 发现并修正共享页面分叉：`desktop/server/web/index.html` 比根目录 `web/index.html` 多 195 行云端记忆与交付物代码。已逐段对齐，三份页面（根目录、桌面服务、Android 内嵌）当前一致；根目录与桌面副本 SHA-256 均为 `22c5271639d947443ffb08e8aff9410847d8266c4022adf0617968c48d62304e`。
+- 浏览器文件交付已有独立分支：普通 H5 直接下载、Web Crypto 校验 SHA-256 后 ACK；Android 使用 `gfaDelivery` 原生下载和保存/分享。本轮没有配置云端交付服务，未实测文件下载业务闭环。
+- H5 可替代手机 UI 与 Web API 的日常调试，但不能验证 Android Keystore、语音唤醒、无障碍、通知监听、原生保存/分享和真实 WebView 行为；这些真机项仍保留，不因 H5 通过而标记完成。
 
 ## 〇、2026-11-03 感知采集层重设计（M0–M4）
 

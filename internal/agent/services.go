@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"time"
 
 	"goldenfinger/agent/internal/compliance"
@@ -36,4 +37,12 @@ type ToolServices struct {
 	DeviceGuard *device.Guard
 	// Artifacts 是 WorkTask 交付物服务；nil 时 create_artifact 不可用。
 	Artifacts *worktask.ArtifactService
+	// Delivery 是跨端文件交付队列；nil 时 deliver_artifact 不可用。
+	Delivery DeliveryQueue
+}
+
+// DeliveryQueue 把 Artifact 版本加入持久上传队列（*deliveryclient.Worker 满足）。
+type DeliveryQueue interface {
+	Enqueue(ctx context.Context, ownerID, artifactID string, version int,
+		targetDeviceID string, allowExecutable bool) (string, error)
 }

@@ -1430,6 +1430,25 @@ details.trace .tlines {
   white-space: pre-wrap;
   box-shadow: var(--shadow-1);
 }
+.pc-subhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 14px 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label-2);
+}
+.delivery-card {
+  margin: 6px 0;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  border: .5px solid var(--separator);
+  box-shadow: var(--shadow-1);
+}
+.delivery-name { font-size: 14px; color: var(--label); word-break: break-all; }
+.delivery-meta { margin: 3px 0 8px; font-size: 12px; color: var(--label-2); }
 .pc-check {
   display: flex;
   align-items: flex-start;
@@ -1756,6 +1775,18 @@ body.child .panel-btn, body.child .adv { display: none; }
       </div>
 
       <div id="pc-reply" class="pc-reply" v-if="pcReply">{{ pcReply }}</div>
+      <div v-if="deliveryAvailable" class="pc-subhead">
+        交付物
+        <button class="btn" type="button" @click="loadDeliveries">刷新</button>
+      </div>
+      <div v-if="deliveryAvailable && deliveryError" class="pc-events">{{ deliveryError }}</div>
+      <div v-for="d in deliveries" :key="d.delivery_id" class="delivery-card">
+        <div class="delivery-name">{{ d.name }}</div>
+        <div class="delivery-meta">{{ formatBytes(d.size_bytes) }} · {{ d.acked_at ? '已接收' : '待接收' }} · {{ deliveryExpiry(d) }}</div>
+        <button class="btn primary" type="button" :disabled="deliveryBusy === d.delivery_id" @click="downloadDelivery(d)">
+          {{ deliveryBusy === d.delivery_id ? '下载并校验中…' : '下载并校验' }}
+        </button>
+      </div>
       <button v-if="pcRetryable" class="btn" @click="sendPC(true)" :disabled="pcBusy">重试（不会重复执行）</button>
       <button v-if="pcStatus.paired" class="btn danger" @click="unpairPC">解除绑定</button>
       <div class="empty">电脑只执行你发过去的指令，不会主动向你推送。</div>
@@ -1977,6 +2008,24 @@ body.child .panel-btn, body.child .adv { display: none; }
         <input v-model.trim="searchKey" type="password" :placeholder="searchHasKey ? '已保存单独密钥，留空不修改' : '留空则复用模型 Key'" autocomplete="new-password">
         <button class="btn ghost" type="button" style="width:100%;margin-top:8px" :disabled="searchSaving" @click="saveSearchKey">{{ searchSaving ? '保存中…' : '保存搜索密钥' }}</button>
       </div>
+
+      <details class="field adv">
+        <summary style="cursor:pointer;font-weight:600">云端共享记忆</summary>
+        <div class="empty" style="margin:8px 0">电脑与手机使用同一个 owner 的云端记忆；保存后需重启应用生效。Token 只保存在本机。</div>
+        <label style="display:inline-flex;align-items:center;gap:6px;width:auto"><input type="checkbox" v-model="cloudMemory.enabled"> 启用云端共享记忆</label>
+        <label>云端地址</label>
+        <input v-model.trim="cloudMemory.base_url" type="url" placeholder="https://cloud.example.com" autocomplete="off">
+        <label>Device ID</label>
+        <input v-model.trim="cloudMemory.device_id" placeholder="android-01" autocomplete="off">
+        <label>设备 Token</label>
+        <input v-model.trim="cloudMemory.token" type="password" :placeholder="cloudMemory.has_token ? '已保存（留空不修改）' : 'cloudserver device create 输出'" autocomplete="new-password">
+        <label style="display:inline-flex;align-items:center;gap:6px;width:auto"><input type="checkbox" v-model="cloudMemory.delivery_enabled"> 允许文件交付</label>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn ghost" type="button" style="flex:1" :disabled="cloudSaving" @click="testCloudMemory">测试连接</button>
+          <button class="btn" type="button" style="flex:1" :disabled="cloudSaving" @click="saveCloudMemory">{{ cloudSaving ? '保存中…' : '保存云端记忆' }}</button>
+        </div>
+        <div class="model-status">{{ cloudStatus }}</div>
+      </details>
       <div class="saveok" v-if="settingsSaved"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>已保存，立即生效</div>
       <div class="empty">保存在服务端 settings.json，对所有设备生效；接口使用 OpenAI Responses 协议。</div>
     </div>
@@ -2130,6 +2179,13 @@ createApp({
       searchKey: '',
       searchSaving: false,
       searchHasKey: false,
+      cloudMemory: {
+        enabled: false, base_url: '', device_id: '', token: '', has_token: false,
+        delivery_enabled: false, mode: 'native', ready: false, detail: '',
+        pending: 0, failed: 0, paused: 0,
+      },
+      cloudSaving: false,
+      cloudStatus: '',
       channelConfigs: [],
       channelGlobal: {},
       channelPolicies: [],
@@ -2166,6 +2222,10 @@ createApp({
       pcJobStatus: '',
       pcEvents: [],
       pcPollTimer: null,
+      deliveryAvailable: false,
+      deliveries: [],
+      deliveryBusy: '',
+      deliveryError: '',
       inboxTab: 'snooze',
       inboxQuery: '',
       inboxMode: 'keyword',
@@ -2420,10 +2480,73 @@ createApp({
       if (!this.showPC) { this.stopPCPoll(); return; }
       this.showHistory = false;
       this.loadPCStatus();
+      this.loadDeliveries();
       // 重新打开面板时接着看之前那条任务：立刻查一次再恢复轮询。
       if (this.pcJobId && ['queued', 'running'].includes(this.pcJobStatus)) {
         this.pollPCJob();
         this.startPCPoll();
+      }
+    },
+    formatBytes(n) {
+      const value = Number(n) || 0;
+      if (value < 1024) return value + ' B';
+      if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' KB';
+      return (value / 1024 / 1024).toFixed(1) + ' MB';
+    },
+    deliveryExpiry(d) {
+      const at = new Date(d.expires_at).getTime();
+      if (!Number.isFinite(at)) return '';
+      const hours = Math.max(0, Math.round((at - Date.now()) / 3600000));
+      return hours > 0 ? '剩余 ' + hours + ' 小时' : '即将过期';
+    },
+    async loadDeliveries() {
+      try {
+        const statusRes = await apiFetch('/api/delivery/status');
+        this.deliveryAvailable = statusRes.ok && Boolean((await statusRes.json()).enabled);
+        if (!this.deliveryAvailable) { this.deliveries = []; return; }
+        const res = await apiFetch('/api/delivery/inbox?limit=50');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        this.deliveries = data.deliveries || [];
+        this.deliveryError = '';
+      } catch (e) {
+        this.deliveryError = '交付物读取失败：' + e.message;
+      }
+    },
+    async downloadDelivery(d) {
+      // Android：交给 Kotlin 原生下载、校验、ACK 并弹出保存/分享。
+      if (window.gfaDelivery && typeof window.gfaDelivery.save === 'function') {
+        window.gfaDelivery.save(d.delivery_id, d.name || 'download', d.sha256 || '');
+        setTimeout(() => this.loadDeliveries(), 3000);
+        return;
+      }
+      this.deliveryBusy = d.delivery_id;
+      this.deliveryError = '';
+      try {
+        const res = await apiFetch(`/api/delivery/${encodeURIComponent(d.delivery_id)}/content`);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const blob = await res.blob();
+        const buf = await blob.arrayBuffer();
+        if (d.sha256 && window.crypto && crypto.subtle) {
+          const digest = await crypto.subtle.digest('SHA-256', buf);
+          const hex = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+          if (hex !== String(d.sha256).toLowerCase()) throw new Error('SHA-256 校验失败，文件已丢弃');
+        }
+        // 只有完整下载且校验通过后才回执。
+        const ack = await apiFetch(`/api/delivery/${encodeURIComponent(d.delivery_id)}/ack`, { method: 'POST' });
+        if (ack.ok) d.acked_at = new Date().toISOString();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = d.name || 'download';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 15000);
+      } catch (e) {
+        this.deliveryError = '下载失败：' + e.message;
+      } finally {
+        this.deliveryBusy = '';
       }
     },
     async pairPC() {
@@ -2643,6 +2766,7 @@ createApp({
       if (this.showSettings) {
         this.showHistory = false;
         this.loadSettings();
+        this.loadCloudMemory();
       }
     },
     toggleHistory() {
@@ -2919,6 +3043,77 @@ createApp({
       this.models = (env && env.models) || [];
       const act = this.models.find(m => m.active);
       this.activeModelId = act ? act.id : '';
+    },
+    cloudStatusText(data) {
+      const mode = data.mode === 'cloud' ? '云端共享模式' : '本机模式';
+      const sync = data.mode === 'cloud'
+        ? ` · ${data.ready ? '已连接' : '未连接'} · 待发 ${data.pending || 0} / 失败 ${data.failed || 0} / 暂停 ${data.paused || 0}`
+        : '';
+      const detail = data.detail ? ' · ' + data.detail : '';
+      return mode + sync + detail;
+    },
+    async loadCloudMemory() {
+      try {
+        const res = await apiFetch('/api/settings/cloud-memory');
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        this.cloudMemory = {
+          enabled: Boolean(data.enabled), base_url: data.base_url || '',
+          device_id: data.device_id || '', token: data.token || '',
+          has_token: Boolean(data.has_token), delivery_enabled: Boolean(data.delivery_enabled),
+          mode: data.mode || 'native', ready: Boolean(data.ready), detail: data.detail || '',
+          pending: data.pending || 0, failed: data.failed || 0, paused: data.paused || 0,
+        };
+        this.cloudStatus = this.cloudStatusText(data);
+      } catch (e) {
+        this.cloudStatus = '读取失败：' + e.message;
+      }
+    },
+    async saveCloudMemory() {
+      this.cloudSaving = true;
+      this.cloudStatus = '正在保存…';
+      try {
+        const res = await apiFetch('/api/settings/cloud-memory', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.cloudMemory),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        this.cloudMemory = {
+          ...this.cloudMemory, ...data,
+          token: data.token || '',
+          has_token: Boolean(data.has_token),
+        };
+        this.cloudStatus = this.cloudStatusText(data) + ' · 已保存，重启应用后生效';
+      } catch (e) {
+        this.cloudStatus = '保存失败：' + e.message;
+      } finally {
+        this.cloudSaving = false;
+      }
+    },
+    async testCloudMemory() {
+      this.cloudSaving = true;
+      this.cloudStatus = '正在测试连接…';
+      try {
+        const res = await apiFetch('/api/cloud-memory/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            base_url: this.cloudMemory.base_url,
+            token: this.cloudMemory.token,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        this.cloudStatus = data.ready
+          ? ('连接成功 · ' + (data.backend || '云端记忆') + (data.detail ? ' · ' + data.detail : ''))
+          : ('连接失败：' + (data.error || data.detail || '未知错误'));
+      } catch (e) {
+        this.cloudStatus = '连接失败：' + e.message;
+      } finally {
+        this.cloudSaving = false;
+      }
     },
     async loadSettings() {
       try {

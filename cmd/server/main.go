@@ -22,6 +22,7 @@ import (
 	"goldenfinger/agent/internal/collection"
 	"goldenfinger/agent/internal/compliance"
 	"goldenfinger/agent/internal/config"
+	"goldenfinger/agent/internal/deliveryclient"
 	"goldenfinger/agent/internal/device"
 	emailsvc "goldenfinger/agent/internal/email"
 	"goldenfinger/agent/internal/extsvc"
@@ -68,6 +69,16 @@ func main() {
 	}
 	repos := store.NewRepos(db)
 
+	// ---- 运行时设置（尽早打开：长期记忆需要在启动时选择 Native / Remote） ----
+	settingsPath := os.Getenv("GFA_SETTINGS")
+	if settingsPath == "" {
+		settingsPath = "settings.json"
+	}
+	st, err := settings.Open(settingsPath)
+	if err != nil {
+		fatal(err)
+	}
+
 	// ---- 外部服务（接口 + 桩实现；LLM 为真实服务） ----
 	llmClient := openai.New(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model)
 	embedder := openai.New(cfg.Embedder.BaseURL, cfg.Embedder.APIKey, cfg.Embedder.Model)
@@ -102,20 +113,7 @@ func main() {
 	}
 	mem := memory.NewService(repos.Persons, repos.Facts, repos.Episodes, repos.Audit,
 		embedder, th, cfg.Memory.RecencyHalfLife, nil)
-	// 长期记忆统一使用内置 Go 实现（无外部进程、无新依赖）。
-	// GFA_MEMORY_DISABLE=1 时仅使用 SQLite 检索，用于排障。
-	if os.Getenv("GFA_MEMORY_DISABLE") == "1" {
-		log.Printf("long-term memory: 已禁用，仅使用 SQLite 检索")
-	} else if native, err := memory.NewNative(memory.NativeConfig{
-		Repos: repos, LLM: llmClient, Model: cfg.LLM.Model, Embed: embedder,
-		RecencyHalfLife: cfg.Memory.RecencyHalfLife,
-	}); err != nil {
-		log.Printf("long-term memory: 内置后端初始化失败，降级为 SQLite 检索: %v", err)
-	} else {
-		mem.SetLongTermMemory(native)
-		go native.Start(ctx)
-		log.Printf("long-term memory: built-in sqlite-native provider enabled (no python process)")
-	}
+	remoteMemory := setupLongTermMemory(ctx, mem, st, cfg, repos, llmClient, embedder)
 
 	// 通知中心：watch 命中经 Notify 复用 Outbox（Web/NotifyPoller 轮询）。
 	inboxSvc := inbox.NewService(repos, embedder, time.Now, cfg.Embedder.Dim)
@@ -207,22 +205,11 @@ func main() {
 	}
 
 	// ---- HTTP API ----
-	settingsPath := os.Getenv("GFA_SETTINGS")
-	if settingsPath == "" {
-		settingsPath = "settings.json"
-	}
-	st, err := settings.Open(settingsPath)
-	if err != nil {
-		fatal(err)
-	}
 	agentHub := agenthub.New(workspace, filepath.Join(filepath.Dir(settingsPath), "agents.json"))
 
 	// 持久化异步任务队列：提交即返回 task_id，执行结果与通知落库，
 	// 长任务不再被一次 HTTP 请求的超时拖死（手机端也能重连查询/取消）。
 	jobQueue := agenthub.NewDispatcher(db, agentHub)
-	if err := jobQueue.Start(ctx); err != nil {
-		log.Printf("agent-jobs: 队列启动失败（异步派发不可用）: %v", err)
-	}
 
 	collectionManager := collection.New(repos, st)
 	tools := append(agent.DefaultTools(), agent.SystemTools()...)
@@ -241,7 +228,46 @@ func main() {
 	workTasks := worktask.New(db)
 	workTasks.ArtifactRoot = artifactRoot
 	artifactSvc := worktask.NewArtifactService(db, workTasks, artifactRoot)
+	artifactSvc.Workspace = workspace
 	svcs.Artifacts = artifactSvc
+	// 异步 Agent 返回的文件产物统一转为 WorkTask 交付物。
+	jobQueue.Artifacts = artifactSvc
+	jobQueue.Tasks = workTasks
+	if err := jobQueue.Start(ctx); err != nil {
+		log.Printf("agent-jobs: 队列启动失败（异步派发不可用）: %v", err)
+	}
+
+	// 跨端文件交付：与共享记忆共用云端地址/设备 Token，但可单独关闭。
+	var deliveryClient *deliveryclient.Client
+	if cloud := st.CloudMemory(); cloud.DeliveryEnabled &&
+		(cloud.Enabled || os.Getenv("GFA_CLOUD_URL") != "") {
+		base, token := cloudConnection(st)
+		if base != "" && token != "" {
+			client, clientErr := deliveryclient.New(deliveryclient.Config{
+				BaseURL: base, Token: token, DeviceID: cloud.DeviceID,
+			})
+			if clientErr != nil {
+				log.Printf("delivery: 客户端初始化失败，文件交付不可用: %v", clientErr)
+			} else {
+				ownerID, _ := ensureLocalUserID(ctx, repos)
+				worker := deliveryclient.NewWorker(deliveryclient.WorkerConfig{
+					DB: db, Client: client, Artifacts: artifactSvc, OwnerID: ownerID,
+					OnDelivered: func(ctx context.Context, entry *store.DeliveryOutboxEntry, delivery *deliveryclient.Delivery) error {
+						text := fmt.Sprintf("%s，电脑把 Artifact %s v%d 交付到 %s（%s，sha256:%s），"+
+							"已上传到云端临时交付区，等待目标设备接收。",
+							time.Now().Format("2006-01-02"), entry.ArtifactID, entry.ArtifactVersion,
+							entry.TargetDeviceID, delivery.Name, delivery.SHA256)
+						_, err := mem.SaveSystemEvent(ctx, ownerID, text, "delivery:"+delivery.DeliveryID)
+						return err
+					},
+				})
+				svcs.Delivery = worker
+				deliveryClient = client
+				go worker.Start(ctx)
+				log.Printf("delivery: 云端文件交付 enabled (base=%s device=%s)", base, cloud.DeviceID)
+			}
+		}
+	}
 	superAgent.Tasks = workTasks
 	superAgent.SummaryAllowed = func(ctx context.Context, ownerID, channel string) (bool, error) {
 		if !store.IsGatedChannel(store.NormalizeChannel(channel)) {
@@ -309,11 +335,13 @@ func main() {
 		Jobs:            jobQueue,
 		AgentDispatcher: jobQueue,
 		// 语音口令判定（唤醒词/指令窗口/片段合并）在 Go，手机只执行动作。
-		Voice:       voice.NewService(voice.Config{}, time.Now),
-		SuperAgent:  superAgent,
-		Tasks:       workTasks,
-		Artifacts:   artifactSvc,
-		Coordinator: &superagent.Coordinator{Tasks: workTasks},
+		Voice:        voice.NewService(voice.Config{}, time.Now),
+		SuperAgent:   superAgent,
+		Tasks:        workTasks,
+		Artifacts:    artifactSvc,
+		RemoteMemory: remoteMemory,
+		Delivery:     deliveryClient,
+		Coordinator:  &superagent.Coordinator{Tasks: workTasks},
 	}
 
 	llmFor := func() (llm.Client, string) {
@@ -553,6 +581,38 @@ func main() {
 			Name:      envOrDefault("GFA_RELAY_NAME", hostname()),
 			StatePath: filepath.Join(filepath.Dir(settingsPath), "relay.json"),
 			Handle:    relay.ExecuteLocal(localAPIBase(cfg.Server.Addr), nil),
+			// v2 端会同时收到任务当前 Artifact 引用；文件正文仍由云端收件箱下载。
+			Enrich: func(ctx context.Context, payload *relay.ResultPayload) {
+				if payload == nil || payload.TaskID == "" {
+					return
+				}
+				ownerID, ownerErr := ensureLocalUserID(ctx, repos)
+				if ownerErr != nil {
+					return
+				}
+				job, jobErr := repos.AgentJobs.Get(ctx, ownerID, payload.TaskID)
+				if jobErr != nil || job.WorkTaskID == "" {
+					return
+				}
+				artifacts, listErr := repos.Artifacts.ListByTask(ctx, ownerID, job.WorkTaskID)
+				if listErr != nil {
+					return
+				}
+				for _, artifact := range artifacts {
+					if artifact.CurrentVersion <= 0 {
+						continue
+					}
+					version, getErr := repos.ArtifactVersions.Get(ctx, ownerID, artifact.ID, artifact.CurrentVersion)
+					if getErr != nil {
+						continue
+					}
+					payload.Artifacts = append(payload.Artifacts, relay.ArtifactRef{
+						ArtifactID: artifact.ID, Version: version.Version,
+						Name: firstText(version.OriginalName, artifact.Title),
+						MIME: version.MimeType, Size: version.SizeBytes, SHA256: version.ContentHash,
+					})
+				}
+			},
 		}
 		if err := phoneRelay.Load(); err != nil {
 			log.Printf("relay: 读取凭据失败（将重新注册）: %v", err)
@@ -820,6 +880,62 @@ func ensureLocalUserID(ctx context.Context, repos *store.Repos) (string, error) 
 		return "", err
 	}
 	return u.ID, nil
+}
+
+// setupLongTermMemory 在启动时确定唯一长期记忆主后端：
+// 云端模式只使用 RemoteMemory，不再同时运行本地 Native 双写。
+func setupLongTermMemory(ctx context.Context, mem *memory.Service, st *settings.Store,
+	cfg *config.Config, repos *store.Repos, llmClient llm.Client, embedder llm.Embedder) *memory.Remote {
+	if os.Getenv("GFA_MEMORY_DISABLE") == "1" {
+		log.Printf("long-term memory: 已禁用，仅使用 SQLite 检索")
+		return nil
+	}
+	cloud := st.CloudMemory()
+	envBase := os.Getenv("GFA_CLOUD_URL")
+	baseURL := firstText(envBase, cloud.BaseURL)
+	token := firstText(os.Getenv("GFA_CLOUD_TOKEN"), st.CloudToken())
+	if cloud.Enabled || envBase != "" {
+		if baseURL == "" || token == "" {
+			log.Printf("long-term memory: 云端模式缺少 base_url/token，保持本机模式")
+		} else {
+			ownerID, ownerErr := ensureLocalUserID(ctx, repos)
+			if ownerErr != nil {
+				log.Printf("long-term memory: 无法确定本地 owner，保持本机模式: %v", ownerErr)
+			} else {
+				remote, remoteErr := memory.NewRemote(memory.RemoteConfig{
+					BaseURL: baseURL, Token: token, DeviceID: cloud.DeviceID,
+					OwnerID: ownerID, DB: repos.DB,
+				})
+				if remoteErr != nil {
+					log.Printf("long-term memory: 云端客户端初始化失败，保持本机模式: %v", remoteErr)
+				} else {
+					mem.SetLongTermMemory(remote)
+					go remote.Start(ctx)
+					log.Printf("long-term memory: 云端共享模式 enabled (base=%s device=%s owner=%s)",
+						baseURL, cloud.DeviceID, ownerID)
+					return remote
+				}
+			}
+		}
+	}
+	if native, nativeErr := memory.NewNative(memory.NativeConfig{
+		Repos: repos, LLM: llmClient, Model: cfg.LLM.Model, Embed: embedder,
+		RecencyHalfLife: cfg.Memory.RecencyHalfLife,
+	}); nativeErr != nil {
+		log.Printf("long-term memory: 内置后端初始化失败，降级为 SQLite 检索: %v", nativeErr)
+	} else {
+		mem.SetLongTermMemory(native)
+		go native.Start(ctx)
+		log.Printf("long-term memory: built-in sqlite-native provider enabled (no python process)")
+	}
+	return nil
+}
+
+// cloudConnection 解析云端地址与设备 Token（环境变量优先于设置文件）。
+func cloudConnection(st *settings.Store) (baseURL, token string) {
+	cfg := st.CloudMemory()
+	return firstText(os.Getenv("GFA_CLOUD_URL"), cfg.BaseURL),
+		firstText(os.Getenv("GFA_CLOUD_TOKEN"), st.CloudToken())
 }
 
 func firstText(values ...string) string {

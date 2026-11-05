@@ -125,6 +125,9 @@ func (n *Native) wake() {
 	}
 }
 
+// Wake 立即唤醒后台抽取。云端在事务提交后调用，避免等待下一轮轮询。
+func (n *Native) Wake() { n.wake() }
+
 // Start 运行后台抽取循环直到 ctx 结束。
 func (n *Native) Start(ctx context.Context) {
 	ticker := time.NewTicker(n.cfg.PollInterval)
@@ -175,6 +178,8 @@ func (n *Native) processEpisode(ctx context.Context, ep store.LongTermEpisode) e
 		n.mu.Lock()
 		n.failed++
 		n.mu.Unlock()
+		// 只记录来源 ID 与错误，不输出片段正文。
+		n.cfg.Logger("[memory] 抽取 %s 失败（第 %d 次）: %v", ep.SourceID, attempts, err)
 		return fmt.Errorf("抽取 %s: %w", ep.SourceID, err)
 	}
 

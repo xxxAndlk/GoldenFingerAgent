@@ -24,6 +24,7 @@ import (
 	"goldenfinger/agent/internal/agent"
 	"goldenfinger/agent/internal/compliance"
 	"goldenfinger/agent/internal/config"
+	"goldenfinger/agent/internal/deliveryclient"
 	"goldenfinger/agent/internal/device"
 	"goldenfinger/agent/internal/extsvc"
 	"goldenfinger/agent/internal/extsvc/deepseek"
@@ -36,11 +37,24 @@ import (
 	"goldenfinger/agent/internal/nlu"
 	"goldenfinger/agent/internal/relay"
 	"goldenfinger/agent/internal/scheduler"
+	"goldenfinger/agent/internal/secretstore"
 	"goldenfinger/agent/internal/settings"
 	"goldenfinger/agent/internal/store"
 	"goldenfinger/agent/internal/task"
 	"goldenfinger/agent/internal/voice"
 )
+
+// SecretStore 由 Android Kotlin 用 Keystore 实现 AES-GCM 加解密。
+// gomobile 会把它导出为 Java/Kotlin 接口，密钥材料不会进入 Go 或文件系统。
+type SecretStore interface {
+	Encrypt(plain []byte) ([]byte, error)
+	Decrypt(ciphertext []byte) ([]byte, error)
+}
+
+// SetSecretStore 必须在 StartServer 前调用，确保旧 Token 迁移和新 Token 保存都加密。
+func SetSecretStore(store SecretStore) {
+	secretstore.SetBridge(store)
+}
 
 // webAssets 内嵌手机端 Web 首页与其前端依赖。
 // 内容由 scripts/sync-webassets.sh 从 web/ 同步，避免手机端再维护一份分叉页面。
@@ -133,16 +147,66 @@ func StartServer(dataDir string) (info string, err error) {
 	}
 	mem := memory.NewService(repos.Persons, repos.Facts, repos.Episodes, repos.Audit,
 		embedder, th, cfg.Memory.RecencyHalfLife, nil)
-	// 手机上同样使用内置 Go 长期记忆：不引入 Python/图数据库，
-	// 也就不会把 AAR/APK 体积再推高一层。
-	nativeMemory, err := memory.NewNative(memory.NativeConfig{
-		Repos: repos, LLM: llmClient, Model: cfg.LLM.Model, Embed: embedder,
-		RecencyHalfLife: cfg.Memory.RecencyHalfLife,
-	})
+
+	st, err := settings.Open(filepath.Join(dataDir, "settings.json"))
 	if err != nil {
-		log.Printf("[gosvc] 长期记忆初始化失败，降级为 SQLite 检索: %v", err)
-	} else {
-		mem.SetLongTermMemory(nativeMemory)
+		return "", fmt.Errorf("gosvc: 打开设置: %w", err)
+	}
+	// 云模式只使用 Remote；本机模式才启动 Native 抽取，避免双主写。
+	var nativeMemory *memory.Native
+	var remoteMemory *memory.Remote
+	cloud := st.CloudMemory()
+	cloudBase := cloud.BaseURL
+	if env := os.Getenv("GFA_CLOUD_URL"); env != "" {
+		cloudBase = env
+	}
+	cloudToken := st.CloudToken()
+	if env := os.Getenv("GFA_CLOUD_TOKEN"); env != "" {
+		cloudToken = env
+	}
+	cloudActive := cloud.Enabled || os.Getenv("GFA_CLOUD_URL") != ""
+	if cloudActive {
+		if cloudBase == "" || cloudToken == "" {
+			log.Printf("[gosvc] 云端记忆缺少 base_url/token，保持本机模式")
+		} else {
+			ownerID := ""
+			if users, uerr := repos.Users.ListAll(ctx); uerr == nil && len(users) > 0 {
+				ownerID = users[0].ID
+			}
+			remote, rerr := memory.NewRemote(memory.RemoteConfig{
+				BaseURL: cloudBase, Token: cloudToken, DeviceID: cloud.DeviceID,
+				OwnerID: ownerID, DB: db,
+			})
+			if rerr != nil {
+				log.Printf("[gosvc] 云端记忆初始化失败，保持本机模式: %v", rerr)
+			} else {
+				remoteMemory = remote
+				mem.SetLongTermMemory(remote)
+				log.Printf("[gosvc] 云端共享记忆 enabled (base=%s device=%s)", cloudBase, cloud.DeviceID)
+			}
+		}
+	}
+	var deliveryClient *deliveryclient.Client
+	if cloudActive && cloud.DeliveryEnabled && cloudBase != "" && cloudToken != "" {
+		client, derr := deliveryclient.New(deliveryclient.Config{
+			BaseURL: cloudBase, Token: cloudToken, DeviceID: cloud.DeviceID,
+		})
+		if derr != nil {
+			log.Printf("[gosvc] 云端交付客户端初始化失败: %v", derr)
+		} else {
+			deliveryClient = client
+		}
+	}
+	if remoteMemory == nil {
+		nativeMemory, err = memory.NewNative(memory.NativeConfig{
+			Repos: repos, LLM: llmClient, Model: cfg.LLM.Model, Embed: embedder,
+			RecencyHalfLife: cfg.Memory.RecencyHalfLife,
+		})
+		if err != nil {
+			log.Printf("[gosvc] 长期记忆初始化失败，降级为 SQLite 检索: %v", err)
+		} else {
+			mem.SetLongTermMemory(nativeMemory)
+		}
 	}
 
 	// 通知中心：与电脑端同构装配，否则 /api/inbox* 在手机上会全部 503，
@@ -208,10 +272,6 @@ func StartServer(dataDir string) (info string, err error) {
 		Clock:    agent.SystemClock{},
 	}
 
-	st, err := settings.Open(filepath.Join(dataDir, "settings.json"))
-	if err != nil {
-		return "", fmt.Errorf("gosvc: 打开设置: %w", err)
-	}
 	webDir := filepath.Join(dataDir, "web")
 	if err := ensureWeb(webDir); err != nil {
 		return "", err
@@ -224,23 +284,27 @@ func StartServer(dataDir string) (info string, err error) {
 	}
 
 	api := &httpapi.Server{
-		PhoneRelay:  phoneRelay,
-		Inbox:       inboxSvc,
-		Repos:       repos,
-		Runtime:     runtime,
-		WebDir:      webDir,
-		Now:         time.Now,
-		Outbox:      outbox,
-		Settings:    st,
-		FallbackLLM: settings.LLM{BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model},
-		Device:      hub,
-		DeviceGuard: deviceGuard,
+		PhoneRelay:   phoneRelay,
+		Inbox:        inboxSvc,
+		Repos:        repos,
+		Runtime:      runtime,
+		WebDir:       webDir,
+		Now:          time.Now,
+		Outbox:       outbox,
+		Settings:     st,
+		RemoteMemory: remoteMemory,
+		Delivery:     deliveryClient,
+		FallbackLLM:  settings.LLM{BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model},
+		Device:       hub,
+		DeviceGuard:  deviceGuard,
 		// 语音口令判定：唤醒词、10s 指令窗、4s 片段合并、30s 上下文全在 Go。
 		Voice: voice.NewService(voice.Config{}, time.Now),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	if nativeMemory != nil {
+	if remoteMemory != nil {
+		go remoteMemory.Start(ctx)
+	} else if nativeMemory != nil {
 		go nativeMemory.Start(ctx)
 	}
 	// 通知中心：每 30s 扫描到期 snooze 并推入 outbox（手机端轮询转系统通知）。

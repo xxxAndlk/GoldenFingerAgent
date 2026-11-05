@@ -26,6 +26,8 @@ type Agent struct {
 	Description  string   `json:"description"`
 	Capabilities []string `json:"capabilities"`
 	Detail       string   `json:"detail,omitempty"`
+	// ProtocolVersion 是从 Agent Card 接口选出的 A2A 协议版本（0.3 / 1.0）。
+	ProtocolVersion string `json:"protocol_version,omitempty"`
 	// Weight 是未被显式指定目标时的派发优先级（越大越优先）。
 	Weight int `json:"weight"`
 }
@@ -41,6 +43,8 @@ type Endpoint struct {
 	Name  string `json:"name"`
 	URL   string `json:"url"`
 	Token string `json:"token,omitempty"`
+	// ProtocolVersion 在 Agent Card 未声明版本时显式指定兼容版本（0.3 / 1.0）。
+	ProtocolVersion string `json:"protocol_version,omitempty"`
 }
 
 type endpointFile struct {
@@ -58,6 +62,19 @@ type Invocation struct {
 	Question   string             `json:"question,omitempty"`
 	QuestionID string             `json:"question_id,omitempty"`
 	Options    []InvocationOption `json:"options,omitempty"`
+	// Artifacts 是外部 Agent 返回的文件产物；正文不进入 Output。
+	Artifacts []AgentArtifact `json:"artifacts,omitempty"`
+}
+
+// AgentArtifact 是外部 Agent 返回的文件产物元数据。
+type AgentArtifact struct {
+	ID          string `json:"id,omitempty"`
+	Name        string `json:"name"`
+	MediaType   string `json:"media_type"`
+	Size        int64  `json:"size_bytes"`
+	SHA256      string `json:"sha256,omitempty"`
+	ExternalURI string `json:"external_uri,omitempty"`
+	LocalPath   string `json:"local_path,omitempty"`
 }
 
 type InvocationOption struct {

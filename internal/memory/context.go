@@ -4,25 +4,71 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"goldenfinger/agent/internal/store"
 )
 
-// BuildContext 组装注入系统提示的记忆块，
-// 在 token 预算内按优先级打包（文档：按 token 预算注入，不堆全量）。
-//
-// 优先级：用户画像 > 待办备注 > 进行中任务 > 人物 > 事实。
-// 溢出时优先截断最低优先级的区块。
+// BuildContext 组装不依赖当前问题的记忆块（兼容旧调用）。
 func (s *Service) BuildContext(ctx context.Context, ownerID, userType, tz string, budgetTokens int) (string, error) {
+	return s.buildContext(ctx, ownerID, userType, tz, "", budgetTokens)
+}
+
+// BuildContextForQuery 先按当前问题检索共享长期记忆，再补充本地人物与事实。
+// 检索超时/失败不会阻断整轮回答，只是缺少“相关长期记忆”区块。
+func (s *Service) BuildContextForQuery(ctx context.Context, ownerID, userType, tz, query string, budgetTokens int) (string, error) {
+	return s.buildContext(ctx, ownerID, userType, tz, query, budgetTokens)
+}
+
+// buildContext 在 token 预算内按优先级打包：用户 > 相关长期记忆 > 人物 > 事实 > 最近片段。
+func (s *Service) buildContext(ctx context.Context, ownerID, userType, tz, query string, budgetTokens int) (string, error) {
 	if budgetTokens <= 0 {
 		budgetTokens = 1500
 	}
 	var sections []section
+	seenFacts := map[string]bool{}
 
 	sections = append(sections, section{
 		title: "用户",
 		body:  fmt.Sprintf("类型: %s, 时区: %s", userType, tz),
 	})
+
+	// 与当前问题相关的共享长期记忆。超时上限要短于一轮回答的整体预算。
+	if s.longTerm != nil && strings.TrimSpace(query) != "" {
+		searchCtx, cancel := context.WithTimeout(ctx, 1200*time.Millisecond)
+		facts, err := s.longTerm.Search(searchCtx, MemoryQuery{
+			OwnerID: ownerID, Query: query, Limit: 6,
+		})
+		cancel()
+		if err == nil && len(facts) > 0 {
+			var b strings.Builder
+			for _, fact := range facts {
+				text := strings.TrimSpace(fact.Text)
+				if text == "" || seenFacts[normalizeFactText(text)] {
+					continue
+				}
+				seenFacts[normalizeFactText(text)] = true
+				note := ""
+				switch fact.Status {
+				case "confirmed":
+					note = "（已确认）"
+				case "conflicted":
+					note = "（有冲突）"
+				}
+				when := ""
+				if fact.ValidAt != nil {
+					when = "，自 " + fact.ValidAt.Format("2006-01-02")
+				}
+				if fact.InvalidAt != nil {
+					when += "，截至 " + fact.InvalidAt.Format("2006-01-02")
+				}
+				fmt.Fprintf(&b, "- %s%s%s\n", text, note, when)
+			}
+			if b.Len() > 0 {
+				sections = append(sections, section{title: "相关长期记忆", body: strings.TrimRight(b.String(), "\n")})
+			}
+		}
+	}
 
 	// 认识的人名单。
 	persons, err := s.persons.ListByOwner(ctx, ownerID)
@@ -48,6 +94,9 @@ func (s *Service) BuildContext(ctx context.Context, ownerID, userType, tz string
 		for i, f := range facts {
 			if i >= 10 {
 				break
+			}
+			if seenFacts[normalizeFactText(f.ValueText)] {
+				continue
 			}
 			personName := personNameByID(persons, f.PersonID)
 			status := ""
@@ -113,6 +162,10 @@ func trimToTokens(s string, budget int) string {
 		return s
 	}
 	return string(runes[:maxRunes]) + "…"
+}
+
+func normalizeFactText(text string) string {
+	return strings.ToLower(strings.Join(strings.Fields(text), " "))
 }
 
 func personNameByID(persons []store.Person, id string) string {

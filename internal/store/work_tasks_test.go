@@ -49,8 +49,14 @@ func TestWorkTaskUpgradeBackfillsLegacyJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	if len(applied) != 5 {
-		t.Fatalf("applied=%v", applied)
+	foundWorkTasks := false
+	for _, name := range applied {
+		if name == "0011_work_tasks.sql" {
+			foundWorkTasks = true
+		}
+	}
+	if !foundWorkTasks {
+		t.Fatalf("0011_work_tasks.sql not applied: %v", applied)
 	}
 	repos := store.NewRepos(db)
 	task, err := repos.WorkTasks.Get(ctx, "u1", "legacy-job-old")

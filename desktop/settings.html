@@ -49,6 +49,34 @@
     </section>
 
     <section class="window-section">
+      <div class="section-heading"><h2>云端共享记忆</h2><span>电脑与手机共用长期记忆</span></div>
+      <p class="section-description">开启后以云端为主副本，不再本机双写。保存后需重启应用生效；Token 只保存在本机。</p>
+      <div class="setting-row">
+        <span>启用云端共享记忆</span>
+        <label class="switch"><input id="cloud-memory-enabled" type="checkbox"><span></span></label>
+      </div>
+      <form id="cloud-memory-form" class="settings-form">
+        <label for="cloud-memory-url">云端地址</label>
+        <input id="cloud-memory-url" type="url" placeholder="https://cloud.example.com">
+        <label for="cloud-memory-device">Device ID</label>
+        <input id="cloud-memory-device" type="text" placeholder="desktop-01">
+        <label for="cloud-memory-owner">Owner User ID（可选）</label>
+        <input id="cloud-memory-owner" type="text" placeholder="留空自动使用本机用户">
+        <label for="cloud-memory-token">设备 Token</label>
+        <input id="cloud-memory-token" type="password" autocomplete="off" placeholder="留空或保留掩码则不修改">
+        <div class="setting-row">
+          <span>允许文件交付</span>
+          <label class="switch"><input id="cloud-memory-delivery" type="checkbox"><span></span></label>
+        </div>
+        <div class="form-footer">
+          <span id="cloud-memory-status" class="status-text" role="status">正在读取…</span>
+          <button id="cloud-memory-test" type="button" class="secondary-button">测试连接</button>
+          <button id="cloud-memory-save" type="submit" class="primary-button">保存</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="window-section">
       <div class="section-heading"><h2>协作模式</h2><span>授权后才开始观察</span></div>
       <p class="section-description">记录页面标题和可见正文；内容变化时保存本地截图，密码区域会跳过。</p>
       <div class="setting-row">

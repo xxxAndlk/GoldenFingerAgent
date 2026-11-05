@@ -112,6 +112,48 @@ func (r *LongTermEdgeRepo) PendingEpisodes(ctx context.Context, limit int) ([]Lo
 	return out, rows.Err()
 }
 
+// ListEpisodes 列出某用户的全部片段（迁移导出使用）。
+func (r *LongTermEdgeRepo) ListEpisodes(ctx context.Context, ownerID string) ([]LongTermEpisode, error) {
+	rows, err := r.q.QueryContext(ctx, `
+		SELECT source_id, owner_user_id, text, source, role, reference_time, status, attempts,
+			last_error, embedding, created_at, updated_at
+		FROM mem_episode WHERE owner_user_id = ? ORDER BY reference_time`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LongTermEpisode
+	for rows.Next() {
+		var e LongTermEpisode
+		var blob []byte
+		if err := rows.Scan(&e.SourceID, &e.OwnerUserID, &e.Text, &e.Source, &e.Role,
+			&e.ReferenceTime, &e.Status, &e.Attempts, &e.LastError, &blob,
+			&e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, err
+		}
+		e.Embedding, _ = parseBlob(blob)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ImportEpisode 原样写入迁移来的片段（保留状态与向量）。
+func (r *LongTermEdgeRepo) ImportEpisode(ctx context.Context, e *LongTermEpisode) error {
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = nowForDB()
+	}
+	if e.UpdatedAt.IsZero() {
+		e.UpdatedAt = e.CreatedAt
+	}
+	_, err := r.q.ExecContext(ctx, `INSERT INTO mem_episode
+		(source_id, owner_user_id, text, source, role, reference_time, status, attempts,
+		 last_error, embedding, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.SourceID, e.OwnerUserID, e.Text, e.Source, e.Role, e.ReferenceTime, e.Status,
+		e.Attempts, e.LastError, vecToBlob(e.Embedding), e.CreatedAt, e.UpdatedAt)
+	return err
+}
+
 // MarkEpisode 记录抽取结果；失败时保留片段以便重试。
 func (r *LongTermEdgeRepo) MarkEpisode(ctx context.Context, sourceID, status, lastError string) error {
 	_, err := r.q.ExecContext(ctx, `
@@ -133,6 +175,32 @@ func (r *LongTermEdgeRepo) Episode(ctx context.Context, sourceID string) (LongTe
 		return e, ErrNotFound
 	}
 	return e, err
+}
+
+// EpisodeCountsByOwner 返回某个 owner 的片段数（健康检查必须按 owner 隔离）。
+func (r *LongTermEdgeRepo) EpisodeCountsByOwner(ctx context.Context, ownerID string) (pending, done, failed int, err error) {
+	rows, qerr := r.q.QueryContext(ctx,
+		`SELECT status, count(*) FROM mem_episode WHERE owner_user_id = ? GROUP BY status`, ownerID)
+	if qerr != nil {
+		return 0, 0, 0, qerr
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return 0, 0, 0, err
+		}
+		switch status {
+		case LongTermStatusPending:
+			pending = n
+		case LongTermStatusDone:
+			done = n
+		case LongTermStatusFailed:
+			failed = n
+		}
+	}
+	return pending, done, failed, rows.Err()
 }
 
 // EpisodeCounts 返回按状态统计的片段数（供健康检查展示）。

@@ -82,6 +82,17 @@
             </intent-filter>
         </service>
 
+        <!-- 交付物分享：只暴露 App 私有 deliveries/ 目录的只读 URI。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- 转述通知上的「稍后处理」动作 -->
         <receiver
             android:name=".notify.SnoozeActionReceiver"

@@ -18,6 +18,7 @@ type agentCard struct {
 	Name                string `json:"name"`
 	Description         string `json:"description"`
 	URL                 string `json:"url"`
+	ProtocolVersion     string `json:"protocolVersion,omitempty"`
 	SupportedInterfaces []struct {
 		URL             string `json:"url"`
 		ProtocolBinding string `json:"protocolBinding"`
@@ -75,14 +76,26 @@ func (m *Manager) discoverA2A(parent context.Context, endpoint Endpoint) Agent {
 		agent.Description = card.Description
 	}
 	agent.Endpoint = strings.TrimRight(card.URL, "/")
+	version := endpoint.ProtocolVersion
 	for _, item := range card.SupportedInterfaces {
 		if item.URL != "" && (item.ProtocolBinding == "" || strings.EqualFold(item.ProtocolBinding, "JSONRPC")) {
 			agent.Endpoint = strings.TrimRight(item.URL, "/")
+			if item.ProtocolVersion != "" {
+				version = item.ProtocolVersion
+			}
 			break
 		}
 	}
 	if agent.Endpoint == "" {
 		agent.Endpoint = endpoint.URL
+	}
+	if version == "" {
+		version = card.ProtocolVersion
+	}
+	agent.ProtocolVersion = normalizeA2AVersion(version)
+	if agent.ProtocolVersion == "" {
+		// 未声明版本时保持旧式 v0.3 报文，不能默认标成 1.0。
+		agent.ProtocolVersion = "0.3"
 	}
 	for _, skill := range card.Skills {
 		name := skill.Name
@@ -97,35 +110,6 @@ func (m *Manager) discoverA2A(parent context.Context, endpoint Endpoint) Agent {
 	return agent
 }
 
-type a2aPart struct {
-	Kind string `json:"kind,omitempty"`
-	Type string `json:"type,omitempty"`
-	Text string `json:"text,omitempty"`
-}
-
-type a2aMessage struct {
-	Kind      string    `json:"kind,omitempty"`
-	Role      string    `json:"role"`
-	Parts     []a2aPart `json:"parts"`
-	MessageID string    `json:"messageId"`
-	TaskID    string    `json:"taskId,omitempty"`
-	ContextID string    `json:"contextId,omitempty"`
-}
-
-type a2aResult struct {
-	Kind   string    `json:"kind"`
-	ID     string    `json:"id"`
-	Parts  []a2aPart `json:"parts"`
-	Status struct {
-		State   string     `json:"state"`
-		Message a2aMessage `json:"message"`
-	} `json:"status"`
-	Artifacts []struct {
-		Parts []a2aPart `json:"parts"`
-	} `json:"artifacts"`
-	History []a2aMessage `json:"history"`
-}
-
 func (m *Manager) invokeA2A(ctx context.Context, agent Agent, task string) (Invocation, error) {
 	endpoints, err := m.endpoints()
 	if err != nil {
@@ -138,11 +122,12 @@ func (m *Manager) invokeA2A(ctx context.Context, agent Agent, task string) (Invo
 			break
 		}
 	}
+	codec := codecFor(agent.ProtocolVersion)
 	payload := map[string]any{
-		"jsonrpc": "2.0", "id": uuid.NewString(), "method": "message/send",
+		"jsonrpc": "2.0", "id": uuid.NewString(), "method": codec.Method(),
 		"params": map[string]any{
-			"message":       a2aMessage{Role: "user", MessageID: uuid.NewString(), Parts: []a2aPart{{Kind: "text", Text: task}}},
-			"configuration": map[string]any{"blocking": true, "acceptedOutputModes": []string{"text/plain"}},
+			"message":       codec.Message(task),
+			"configuration": map[string]any{"blocking": true, "acceptedOutputModes": codec.OutputModes()},
 		},
 	}
 	raw, _ := json.Marshal(payload)
@@ -151,7 +136,7 @@ func (m *Manager) invokeA2A(ctx context.Context, agent Agent, task string) (Invo
 		return Invocation{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("A2A-Version", "1.0")
+	req.Header.Set("A2A-Version", codec.Version())
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -167,44 +152,25 @@ func (m *Manager) invokeA2A(ctx context.Context, agent Agent, task string) (Invo
 	if resp.StatusCode != http.StatusOK {
 		return Invocation{}, fmt.Errorf("A2A HTTP %d：%s", resp.StatusCode, truncateText(string(body), 1000))
 	}
-	var rpc struct {
-		Result a2aResult `json:"result"`
-		Error  *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+	parsed, err := codec.Parse(body)
+	if err != nil {
+		return Invocation{}, err
 	}
-	if err := json.Unmarshal(body, &rpc); err != nil {
-		return Invocation{}, fmt.Errorf("A2A 响应解析失败：%w", err)
+	artifacts, err := m.materializeArtifacts(parsed.Artifacts)
+	if err != nil {
+		return Invocation{}, err
 	}
-	if rpc.Error != nil {
-		return Invocation{}, fmt.Errorf("A2A %d：%s", rpc.Error.Code, rpc.Error.Message)
-	}
-	result := rpc.Result
-	output := partsText(result.Parts)
-	if output == "" {
-		output = partsText(result.Status.Message.Parts)
+	output := parsed.Text
+	if output == "" && len(artifacts) > 0 {
+		output = fmt.Sprintf("外部 Agent 返回了 %d 个文件产物。", len(artifacts))
 	}
 	if output == "" {
-		for _, artifact := range result.Artifacts {
-			output += partsText(artifact.Parts)
-		}
+		return Invocation{}, errors.New("A2A 已响应，但没有文本或文件结果")
 	}
-	if output == "" && len(result.History) > 0 {
-		output = partsText(result.History[len(result.History)-1].Parts)
-	}
-	if output == "" {
-		return Invocation{}, errors.New("A2A 已响应，但没有文本结果")
-	}
-	return Invocation{AgentID: agent.ID, Kind: agent.Kind, Output: output, TaskID: result.ID, State: result.Status.State}, nil
-}
-
-func partsText(parts []a2aPart) string {
-	var out strings.Builder
-	for _, part := range parts {
-		out.WriteString(part.Text)
-	}
-	return out.String()
+	return Invocation{
+		AgentID: agent.ID, Kind: agent.Kind, Output: output,
+		TaskID: parsed.TaskID, State: parsed.State, Artifacts: artifacts,
+	}, nil
 }
 
 func truncateText(text string, max int) string {

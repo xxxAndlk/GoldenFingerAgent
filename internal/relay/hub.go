@@ -98,6 +98,8 @@ type Endpoint struct {
 	id        string // desktop id 或 channel id
 	channel   string
 	desktopID string
+	// version 是端在 WS URL（?pv=2）声明的最高协议版本。
+	version int
 
 	send      chan []byte
 	closed    chan struct{}
@@ -364,8 +366,20 @@ func (h *Hub) Attach(ep *Endpoint) (*Envelope, []*Envelope) {
 		delete(h.queues, qk)
 	}
 
+	for _, env := range pending {
+		if ep.role == RolePhone && ep.version < ProtocolVersionV2 {
+			stripArtifacts(env)
+		}
+		if env.V > ep.version && ep.version > 0 {
+			env.V = ep.version
+		}
+	}
+
 	hello := &Envelope{V: ProtocolVersion, Kind: KindHello, ID: "hello-" + key, TS: h.cfg.Now().UnixMilli(), Channel: ep.channel}
-	payload := HelloPayload{Role: ep.role, Channel: ep.channel}
+	if ep.version >= ProtocolVersionV2 {
+		hello.V = ProtocolVersionV2
+	}
+	payload := HelloPayload{Role: ep.role, Channel: ep.channel, Version: ep.version}
 	if ep.role == RoleDesktop {
 		payload.DesktopID = ep.desktopID
 		if d, ok := h.desktops[ep.desktopID]; ok {
@@ -463,6 +477,18 @@ func (h *Hub) Handle(ep *Endpoint, env *Envelope) error {
 		targetID = channel
 	}
 
+	// 按目标端能力裁剪：v1 端不会收到 ArtifactRef。
+	if targetRole == RolePhone {
+		if target, ok := h.conns[connKey(targetRole, targetID)]; ok {
+			if target.version < ProtocolVersionV2 {
+				stripArtifacts(env)
+				env.V = ProtocolVersion
+			} else if ep.version >= ProtocolVersionV2 {
+				env.V = ProtocolVersionV2
+			}
+		}
+	}
+
 	data, err := json.Marshal(env)
 	if err != nil {
 		return err
@@ -491,6 +517,22 @@ func (h *Hub) Handle(ep *Endpoint, env *Envelope) error {
 	h.queues[qk] = append(batch, env)
 	ep.Send(mustJSONEnv(ack, AckPayload{Status: "accepted", Queued: true}))
 	return nil
+}
+
+// stripArtifacts 把 result 报文降级为 v1 语义（移除交付物引用）。
+func stripArtifacts(env *Envelope) {
+	if env == nil || env.Kind != KindResult || len(env.Payload) == 0 {
+		return
+	}
+	var payload ResultPayload
+	if json.Unmarshal(env.Payload, &payload) != nil || len(payload.Artifacts) == 0 {
+		return
+	}
+	payload.Artifacts = nil
+	if raw, err := json.Marshal(payload); err == nil {
+		env.Payload = raw
+	}
+	env.V = ProtocolVersion
 }
 
 func mustJSON(v any) json.RawMessage {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"goldenfinger/agent/internal/llm"
 	"goldenfinger/agent/internal/skill"
 )
 
@@ -26,6 +27,11 @@ type MemoryContext interface {
 	BuildContext(ctx context.Context, ownerID, userType, tz string, budgetTokens int) (string, error)
 }
 
+// QueryMemoryContext 能按当前问题检索相关长期记忆（可选能力）。
+type QueryMemoryContext interface {
+	BuildContextForQuery(ctx context.Context, ownerID, userType, tz, query string, budgetTokens int) (string, error)
+}
+
 // UserContext 为提示头提供当前用户画像。
 type UserContext struct {
 	UserID   string
@@ -39,7 +45,13 @@ type UserContext struct {
 func (b *PromptBuilder) Stable() string { return butlerPrompt }
 
 // BuildDynamic 构建只附加到本轮用户消息末尾的动态上下文，不写回会话历史。
+// 查询取会话中最后一条用户消息，保证非对话循环调用也能按问题召回。
 func (b *PromptBuilder) BuildDynamic(ctx context.Context, s *Session, now time.Time) (string, error) {
+	return b.BuildDynamicFor(ctx, s, now, lastUserText(s))
+}
+
+// BuildDynamicFor 使用当前轮用户原话检索共享长期记忆。
+func (b *PromptBuilder) BuildDynamicFor(ctx context.Context, s *Session, now time.Time, query string) (string, error) {
 	var sb strings.Builder
 	user := UserContext{UserID: s.UserID, TZ: "Asia/Shanghai"}
 	if b.UserFn != nil {
@@ -50,7 +62,13 @@ func (b *PromptBuilder) BuildDynamic(ctx context.Context, s *Session, now time.T
 		now.In(loadLocation(user.TZ)).Format("2006-01-02 15:04 (周一)"), user.TZ)
 
 	if b.Memory != nil {
-		block, err := b.Memory.BuildContext(ctx, user.UserID, user.UserType, user.TZ, 1500)
+		var block string
+		var err error
+		if queryMemory, ok := b.Memory.(QueryMemoryContext); ok && strings.TrimSpace(query) != "" {
+			block, err = queryMemory.BuildContextForQuery(ctx, user.UserID, user.UserType, user.TZ, query, 1500)
+		} else {
+			block, err = b.Memory.BuildContext(ctx, user.UserID, user.UserType, user.TZ, 1500)
+		}
 		if err == nil && strings.TrimSpace(block) != "" {
 			sb.WriteString("\n## 关于这位用户（你的记忆）\n")
 			sb.WriteString(block)
@@ -75,6 +93,15 @@ func (b *PromptBuilder) Build(ctx context.Context, s *Session, now time.Time) (s
 		return "", err
 	}
 	return b.Stable() + dynamic, nil
+}
+
+func lastUserText(s *Session) string {
+	for i := len(s.Messages) - 1; i >= 0; i-- {
+		if s.Messages[i].Role == llm.RoleUser {
+			return s.Messages[i].Content
+		}
+	}
+	return ""
 }
 
 func loadLocation(tz string) *time.Location {

@@ -19,8 +19,10 @@ import (
 	"goldenfinger/agent/internal/agent"
 	"goldenfinger/agent/internal/agenthub"
 	"goldenfinger/agent/internal/collection"
+	"goldenfinger/agent/internal/deliveryclient"
 	"goldenfinger/agent/internal/device"
 	"goldenfinger/agent/internal/inbox"
+	"goldenfinger/agent/internal/memory"
 	"goldenfinger/agent/internal/settings"
 	"goldenfinger/agent/internal/skill"
 	"goldenfinger/agent/internal/store"
@@ -41,6 +43,10 @@ type Server struct {
 	// FallbackLLM 描述 config.yaml 的对话模型，在没有运行时覆盖时
 	// 显示在设置 UI 中。
 	FallbackLLM settings.LLM
+	// RemoteMemory 在云端共享模式下非空，用于连接测试与同步状态展示。
+	RemoteMemory *memory.Remote
+	// Delivery 是云端文件交付客户端；nil 时 /api/delivery* 返回 503。
+	Delivery *deliveryclient.Client
 	// Outbox 收集 "app" 渠道的提醒投递，供 Web UI 轮询。
 	Outbox *Outbox
 	// Device 是设备操控通道（WS/屏幕缓存）；nil 时相关路由返回 503。
@@ -182,6 +188,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/settings/models/{id}", s.handleDeleteModel)
 	mux.HandleFunc("PUT /api/settings/search", s.handlePutSearch)
 	mux.HandleFunc("PUT /api/settings/relay", s.handlePutRelay)
+	mux.HandleFunc("GET /api/settings/cloud-memory", s.handleGetCloudMemory)
+	mux.HandleFunc("PUT /api/settings/cloud-memory", s.handlePutCloudMemory)
+	mux.HandleFunc("POST /api/cloud-memory/test", s.handleTestCloudMemory)
+	mux.HandleFunc("GET /api/cloud-memory/status", s.handleCloudMemoryStatus)
+	mux.HandleFunc("GET /api/delivery/inbox", s.handleDeliveryInbox)
+	mux.HandleFunc("GET /api/delivery/status", s.handleDeliveryStatus)
+	mux.HandleFunc("GET /api/delivery/{id}/content", s.handleDeliveryContent)
+	mux.HandleFunc("POST /api/delivery/{id}/ack", s.handleDeliveryAck)
+	mux.HandleFunc("DELETE /api/delivery/{id}", s.handleDeliveryDelete)
 	mux.HandleFunc("POST /api/chat/stream", s.handleChatStream)
 	mux.HandleFunc("POST /api/summarize", s.handleSummarize)
 	mux.HandleFunc("GET /api/agents", s.handleListAgents)

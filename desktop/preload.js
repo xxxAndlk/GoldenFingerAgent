@@ -122,6 +122,10 @@ contextBridge.exposeInMainWorld('desktopAssistant', {
   deleteModel: id => ipcRenderer.invoke('settings:delete-model', id),
   saveSearch: search => ipcRenderer.invoke('settings:save-search', search),
   saveRelay: relay => ipcRenderer.invoke('settings:save-relay', relay),
+  getCloudMemory: () => ipcRenderer.invoke('settings:get-cloud-memory'),
+  saveCloudMemory: config => ipcRenderer.invoke('settings:save-cloud-memory', config),
+  testCloudMemory: config => ipcRenderer.invoke('cloud:test-memory', config),
+  cloudMemoryStatus: () => ipcRenderer.invoke('cloud:memory-status'),
   getDesktopSettings: () => ipcRenderer.invoke('settings:get-desktop'),
   setTheme: theme => ipcRenderer.invoke('settings:set-theme', theme),
   onThemeChanged: callback => {

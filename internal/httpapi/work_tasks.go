@@ -3,7 +3,10 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -437,22 +440,49 @@ func (s *Server) handleDownloadArtifact(w http.ResponseWriter, r *http.Request) 
 	if u == nil {
 		return
 	}
-	version, err := strconv.Atoi(r.PathValue("version"))
-	if err != nil || version <= 0 {
+	versionNo, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil || versionNo <= 0 {
 		writeError(w, 400, "version 无效")
 		return
 	}
-	item, err := s.Artifacts.GetVersion(r.Context(), u.ID, r.PathValue("id"), version)
+	item, err := s.Artifacts.GetVersion(r.Context(), u.ID, r.PathValue("id"), versionNo)
 	if err != nil {
 		writeWorkTaskError(w, err)
 		return
 	}
-	filename := "artifact-" + r.PathValue("id") + "-v" + strconv.Itoa(version) + ".txt"
-	w.Header().Set("Content-Type", firstNonEmpty(item.MimeType, "text/plain"))
-	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
-	w.Header().Set("X-Content-Hash", item.ContentHash)
-	w.WriteHeader(200)
-	_, _ = w.Write([]byte(item.ContentText))
+	filename := "artifact-" + r.PathValue("id") + "-v" + strconv.Itoa(versionNo) + ".txt"
+	if item.StorageKind == store.ArtifactStorageFile && item.OriginalName != "" {
+		filename = item.OriginalName
+	}
+	reader, meta, err := s.Artifacts.OpenVersion(r.Context(), u.ID, r.PathValue("id"), versionNo)
+	if err != nil {
+		writeWorkTaskError(w, err)
+		return
+	}
+	defer reader.Close()
+	w.Header().Set("Content-Type", firstNonEmpty(meta.MimeType, "application/octet-stream"))
+	w.Header().Set("Content-Disposition", contentDisposition(filename))
+	w.Header().Set("X-Content-Hash", meta.ContentHash)
+	http.ServeContent(w, r, filename, meta.CreatedAt, reader)
+}
+
+// contentDisposition 同时提供 ASCII 回退文件名与 RFC 5987 UTF-8 文件名。
+func contentDisposition(filename string) string {
+	filename = filepath.Base(strings.ReplaceAll(filename, "\\", "/"))
+	var ascii strings.Builder
+	for _, r := range filename {
+		if r < 32 || r > 126 || r == '"' || r == '\\' {
+			ascii.WriteByte('_')
+			continue
+		}
+		ascii.WriteRune(r)
+	}
+	fallback := ascii.String()
+	if fallback == "" || fallback == "." {
+		fallback = "download"
+	}
+	return fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`,
+		fallback, url.PathEscape(filename))
 }
 
 func (s *Server) handleDiffArtifact(w http.ResponseWriter, r *http.Request) {

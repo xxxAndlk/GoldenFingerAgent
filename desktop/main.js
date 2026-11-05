@@ -745,9 +745,9 @@ function refreshTrayMenu() {
   tray.setContextMenu(buildTrayMenu());
 }
 
-// Windows 11 默认把新托盘图标放进「^」隐藏图标区；若系统里已有本程序的
-// NotifyIconSettings 记录，把 isPromoted 置 1，让它回到任务栏。
-function promoteTrayIcon() {
+// Windows 11 默认把新托盘图标放进「^」隐藏图标区；这里确保本程序的图标
+// 留在隐藏区：把 NotifyIconSettings 里的 isPromoted 置 0，点任务栏「^」展开可见。
+function demoteTrayIcon() {
   if (process.platform !== 'win32' || LOW_INTEGRITY) return false;
   const run = args => execFileSync('reg.exe', args, { encoding: 'utf8', windowsHide: true, timeout: 4000 });
   const root = 'HKCU\\Control Panel\\NotifyIconSettings';
@@ -764,19 +764,19 @@ function promoteTrayIcon() {
         keys.push(current);
       }
     }
-    let promoted = false;
+    let demoted = false;
     for (const key of keys) {
-      let already = false;
-      try { already = /0x1\b/i.test(run(['query', key, '/v', 'isPromoted'])); } catch { /* 值不存在 */ }
-      if (already) continue;
+      let promoted = false;
+      try { promoted = /0x1\b/i.test(run(['query', key, '/v', 'isPromoted'])); } catch { /* 值不存在 */ }
+      if (!promoted) continue;
       try {
-        run(['add', key, '/v', 'isPromoted', '/t', 'REG_DWORD', '/d', '1', '/f']);
-        promoted = true;
+        run(['add', key, '/v', 'isPromoted', '/t', 'REG_DWORD', '/d', '0', '/f']);
+        demoted = true;
       } catch (error) {
-        console.error(`托盘图标提升失败：${error.message}`);
+        console.error(`托盘图标隐藏失败：${error.message}`);
       }
     }
-    return promoted;
+    return demoted;
   } catch (error) {
     console.error(`读取托盘设置失败：${error.message}`);
     return false;
@@ -798,7 +798,7 @@ function announceTrayHidden() {
   if (!Notification.isSupported()) return;
   new Notification({
     title: '金手指管家 · 托盘图标在隐藏图标区',
-    body: '点击任务栏的「^」找到金色「金」图标，把它拖到任务栏即可固定。点击图标会展开主对话；也可以直接点悬浮球。',
+    body: '点任务栏的「^」展开隐藏图标区，就能看到深色圆形图标。点它展开主对话；也可以直接点悬浮球。',
   }).show();
   saveSettings({ trayOverflowHintShown: true });
 }
@@ -820,7 +820,7 @@ function announceTrayOnce() {
   if (tray && !tray.isDestroyed()) {
     tray.displayBalloon({
       title: '金手指管家已在运行',
-      content: '点托盘图标展开对话；右键可以打开设置、立即总结或退出。',
+      content: '图标在任务栏「^」隐藏区，展开后点它即可打开对话；右键可以打开工作台、立即总结或退出。',
     });
   }
   saveSettings({ trayHintShown: true });
@@ -1218,9 +1218,9 @@ app.whenReady().then(async () => {
         return;
       }
       console.log(`托盘状态：${tray && !tray.isDestroyed() ? JSON.stringify(tray.getBounds()) : '未创建'}`);
-      // Win11 新托盘图标默认进隐藏区；若系统已有记录则提升回任务栏。
-      const promoted = promoteTrayIcon();
-      if (promoted && !trayVisible()) {
+      // 托盘图标留在隐藏区：点任务栏「^」展开即可看到，需要时再自行固定。
+      const demoted = demoteTrayIcon();
+      if (demoted && trayVisible()) {
         try {
           if (tray && !tray.isDestroyed()) tray.destroy();
           tray = null;
@@ -1601,6 +1601,10 @@ ipcMain.handle('settings:activate-model', async (_event, id) => { await ensureSe
 ipcMain.handle('settings:delete-model', async (_event, id) => { await ensureServer(); return api.deleteModel(id); });
 ipcMain.handle('settings:save-search', async (_event, search) => { await ensureServer(); return api.saveSearch(search); });
 ipcMain.handle('settings:save-relay', async (_event, relay) => { await ensureServer(); return api.saveRelay(relay); });
+ipcMain.handle('settings:get-cloud-memory', async () => { await ensureServer(); return api.getCloudMemory(); });
+ipcMain.handle('settings:save-cloud-memory', async (_event, config) => { await ensureServer(); return api.saveCloudMemory(config); });
+ipcMain.handle('cloud:test-memory', async (_event, config) => { await ensureServer(); return api.testCloudMemory(config); });
+ipcMain.handle('cloud:memory-status', async () => { await ensureServer(); return api.cloudMemoryStatus(); });
 ipcMain.handle('relay:status', async () => { await ensureServer(); return api.relayStatus(); });
 ipcMain.handle('relay:pair-code', async () => { await ensureServer(); return api.relayPairCode(); });
 ipcMain.handle('relay:channels', async () => { await ensureServer(); return api.relayChannels(); });

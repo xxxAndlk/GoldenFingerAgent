@@ -60,6 +60,9 @@ class MainActivity : AppCompatActivity() {
         @Suppress("DEPRECATION")
         ws.userAgentString = ws.userAgentString + " GoldenFingerButler/0.1"
 
+        // 交付物下载/校验/保存/分享在 Kotlin 完成，WebView 只提供列表。
+        webView.addJavascriptInterface(DeliveryBridge(this), "gfaDelivery")
+
         webView.webViewClient = object : WebViewClient() {
             // 拦截所有非本机请求（本应用只访问 127.0.0.1 的 Go 服务）
             @SuppressLint("WebViewClientOnReceivedHttpError")

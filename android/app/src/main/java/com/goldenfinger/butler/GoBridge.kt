@@ -28,6 +28,8 @@ object GoBridge {
         if (started) return
         try {
             val dataDir = context.filesDir.absolutePath
+            // 必须在 Go 读取云端 Token 前注册；Android 不允许明文文件回退。
+            gosvc.Gosvc.setSecretStore(AndroidSecretStore())
             val info = gosvc.Gosvc.startServer(dataDir)
             if (info.isNullOrEmpty()) {
                 Log.e(TAG, "startServer 返回空 info")

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -243,7 +244,7 @@ func (p *Phone) wsURL(st PhoneState) string {
 	} else {
 		base = "ws://" + strings.TrimPrefix(base, "http://")
 	}
-	return base + "/v1/ws?role=phone&id=" + st.ChannelID
+	return base + "/v1/ws?role=phone&id=" + st.ChannelID + "&pv=" + strconv.Itoa(ProtocolVersionV2)
 }
 
 // connect 建立与中继的 WS 连接，并启动读循环分发结果。

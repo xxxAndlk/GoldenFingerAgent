@@ -29,6 +29,54 @@ function el(tag, className, text) {
   return node;
 }
 
+// setStatus 更新顶栏状态胶囊；kind 为 ok / error / pending / 空。
+function setStatus(text, kind = '') {
+  statusEl.textContent = text;
+  statusEl.dataset.state = kind;
+}
+
+// collapseSection 生成可展开/收起的区块：点标题展开，再点一次收起。
+function collapseSection(title, options = {}) {
+  const open = Boolean(options.open);
+  const root = el('section', `collapse${open ? ' open' : ''}`);
+  const head = el('button', 'collapse-head');
+  head.type = 'button';
+  head.setAttribute('aria-expanded', open ? 'true' : 'false');
+  const titleWrap = el('div', 'collapse-title');
+  titleWrap.append(el('span', 'collapse-label', title));
+  if (options.badge) {
+    titleWrap.append(el('span', `collapse-badge${options.badgeMuted ? ' muted' : ''}`, options.badge));
+  }
+  const state = el('span', 'collapse-state', open ? '收起' : '展开');
+  head.append(titleWrap, state, el('span', 'collapse-chevron'));
+  head.addEventListener('click', () => {
+    const expanded = root.classList.toggle('open');
+    head.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    state.textContent = expanded ? '收起' : '展开';
+  });
+  const body = el('div', 'collapse-body');
+  root.append(head, body);
+  return { root, body };
+}
+
+function foldSummary(text) {
+  const summary = el('summary', '', text);
+  summary.append(el('span', 'collapse-chevron'));
+  return summary;
+}
+
+function statTile(value, label, tone = '') {
+  const node = el('div', `stat${tone ? ' ' + tone : ''}`);
+  node.append(el('b', '', String(value)), el('span', '', label));
+  return node;
+}
+
+function kvRow(label, value) {
+  const row = el('div', 'kv');
+  row.append(el('b', '', label), el('span', '', value));
+  return row;
+}
+
 function splitList(value) {
   return String(value || '')
     .split(/[,，\n]/)
@@ -88,7 +136,7 @@ function actionButton(label, onClick, variant = '') {
     try {
       await onClick();
     } catch (error) {
-      statusEl.textContent = `操作失败：${error.message}`;
+      setStatus(`操作失败：${error.message}`, 'error');
     } finally {
       button.disabled = false;
       refresh();
@@ -238,9 +286,9 @@ function renderTaskDetail(detail, events) {
       if (!text) throw new Error('请先输入要补充的内容');
       const result = await api.messageWorkTask(task.id, text, task.version);
       input.value = '';
-      statusEl.textContent = result && result.job
+      setStatus(result && result.job
         ? '已收到，新执行段已排队。'
-        : '已收到，当前执行段到安全位置后会处理。';
+        : '已收到，当前执行段到安全位置后会处理。', 'ok');
       await loadTaskDetail(task.id, false);
     });
     row.append(input, send);
@@ -301,8 +349,8 @@ function renderTaskDetail(detail, events) {
     wrap.append(list);
   }
 
-  const advanced = el('details', 'fold');
-  advanced.append(el('summary', '', '交付物与授权（高级）'));
+  const advanced = el('details', 'fold compact');
+  advanced.append(foldSummary('交付物与授权（高级）'));
   const advancedBody = el('div');
 
   advancedBody.append(el('h2', '', '新建交付物草稿'));
@@ -432,8 +480,7 @@ function renderTasks() {
   const panel = panels.tasks;
   panel.replaceChildren();
 
-  const intro = el('article', 'card');
-  intro.append(el('h3', '', '工作台怎么用'));
+  const guide = collapseSection('工作台怎么用', { open: false, badgeMuted: true });
   const steps = el('ol', 'steps');
   [
     ['告诉管家要做什么', '在下面写清楚目标，点「开始执行」。'],
@@ -444,8 +491,8 @@ function renderTasks() {
     item.append(el('strong', '', title), el('span', '', `：${text}`));
     steps.append(item);
   });
-  intro.append(steps);
-  panel.append(intro);
+  guide.body.append(steps);
+  panel.append(guide.root);
 
   const form = el('article', 'card');
   form.append(el('h3', '', '新建任务'));
@@ -465,8 +512,8 @@ function renderTasks() {
     option.value = value;
     profile.append(option);
   });
-  const advanced = el('details', 'fold');
-  advanced.append(el('summary', '', '高级设置'));
+  const advanced = el('details', 'fold compact');
+  advanced.append(foldSummary('高级设置'));
   advanced.append(title, criteria, profile);
   const create = actionButton('开始执行', async () => {
     const goalText = goal.value.trim();
@@ -482,7 +529,7 @@ function renderTasks() {
     title.value = '';
     goal.value = '';
     criteria.value = '';
-    statusEl.textContent = '任务已创建，管家会开始处理';
+    setStatus('任务已创建，管家会开始处理', 'ok');
     if (result && result.task) await loadTaskDetail(result.task.id, true);
   });
   const quick = el('div', 'quick-actions');
@@ -882,14 +929,14 @@ function webSiteCard(site, isNew = false) {
       });
       credentialUser.value = '';
       credentialPassword.value = '';
-      statusEl.textContent = '凭据已加密保存';
+      setStatus('凭据已加密保存', 'ok');
     }, 'secondary'));
     actions.append(actionButton('删除凭据', async () => {
       const ref = credentialRef.value.trim();
       if (!ref) return;
       if (!window.confirm(`删除凭据 ${ref}？`)) return;
       await api.deleteBrowserCredential(ref);
-      statusEl.textContent = '凭据已删除';
+      setStatus('凭据已删除', 'ok');
     }, 'secondary'));
     actions.append(actionButton('停止', async () => {
       await api.stopBrowserSite(site.id);
@@ -898,7 +945,7 @@ function webSiteCard(site, isNew = false) {
       const url = window.prompt('输入该站点授权范围内的页面 URL', (site.start_urls || [])[0] || '');
       if (!url) return;
       const result = await api.readCurrentPage(site.id, url);
-      statusEl.textContent = `已读取 ${result.extractedBy}（${result.completeness}）：${String(result.text || '').slice(0, 80)}`;
+      setStatus(`已读取 ${result.extractedBy}（${result.completeness}）：${String(result.text || '').slice(0, 80)}`, 'ok');
     }, 'secondary'));
     actions.append(actionButton('删除站点', async () => {
       if (!window.confirm(`确定删除站点 ${site.id}？已采集记录不会删除。`)) return;
@@ -935,12 +982,14 @@ function wechatPolicyAllows(sourceId) {
 }
 
 async function loadWeChatChats() {
-  statusEl.textContent = '正在读取本机微信会话列表…';
+  setStatus('正在读取本机微信会话列表…', 'pending');
   try {
     state.wechatChats = await api.listWeChatChats(state.wechatQuery, 50);
     state.wechatError = '';
+    setStatus(`已读取 ${state.wechatChats.length} 个会话`, 'ok');
   } catch (error) {
     state.wechatError = error.message;
+    setStatus(`读取会话失败：${error.message}`, 'error');
   }
   renderHealth();
 }
@@ -959,9 +1008,28 @@ async function setWeChatChatAllowed(chat, allowed) {
   }
   await api.updateChannelPolicy({ channel: 'wechat_desktop', source: chat.source_id, allowed });
   await api.refreshChannelCache?.();
-  statusEl.textContent = `${allowed ? '已授权' : '已撤销'}会话「${chat.display_name}」`;
+  setStatus(`${allowed ? '已授权' : '已撤销'}会话「${chat.display_name}」`, 'ok');
   await refresh();
   await loadWeChatChats();
+}
+
+// chatCard 把一个微信会话渲染成单独卡片：主标题是联系人名字，下方一行灰色小字。
+function chatCard(chat, allowed) {
+  const name = chat.display_name || chat.chat_key || '未命名会话';
+  const card = el('article', `chat-card${allowed ? ' allowed' : ''}`);
+  card.title = chat.source_id || '';
+  card.append(el('span', 'chat-avatar', Array.from(name)[0] || '?'));
+  const info = el('div', 'chat-info');
+  const kind = chat.chat_type === 'group' ? '群聊' : '私聊';
+  const recent = chat.last_message_at ? `最近 ${new Date(chat.last_message_at).toLocaleString()}` : '暂无消息';
+  info.append(el('strong', 'chat-name', name), el('span', 'chat-meta', `${kind} · ${recent}`));
+  card.append(info);
+  const slot = el('div', 'btn-slot');
+  slot.append(actionButton(allowed ? '撤销授权' : '授权', async () => {
+    await setWeChatChatAllowed(chat, !allowed);
+  }, allowed ? 'danger sm' : 'sm'));
+  card.append(slot);
+  return card;
 }
 
 function renderHealth() {
@@ -970,40 +1038,62 @@ function renderHealth() {
   const health = state.health || {};
   const wechat = health.wechat || {};
   const spool = health.spool || {};
-  const root = el('article', 'card');
-  root.append(el('h3', '', '感知采集状态'));
+
+  const section = collapseSection('感知采集状态', { open: true });
+  const body = section.body;
   const stateLabel = WECHAT_STATE_LABELS[wechat.state] || wechat.state || '未知';
-  const lines = [
-    `微信：${stateLabel} · 数据源=本地数据库只读`,
-    `已授权会话：${wechat.authorizedChats || 0} · 最近读库：${wechat.lastObservedAt ? new Date(wechat.lastObservedAt).toLocaleString() : '尚未读取'}`,
-    `最近新消息：${wechat.lastEventAt ? new Date(wechat.lastEventAt).toLocaleString() : '尚未发现'}`,
-    `最近入库：${wechat.lastDeliveredAt ? new Date(wechat.lastDeliveredAt).toLocaleString() : '尚未确认入库'}`,
-    `待发 ${wechat.pending || 0} · 过滤 ${wechat.filtered || 0} · 失败 ${wechat.failed || 0} · 越权丢弃 ${wechat.denied || 0}`,
-  ];
-  if (wechat.lastError) lines.push(`最近错误：${wechat.lastError}`);
-  root.append(el('div', 'body', lines.join('\n')));
+
+  const kv = el('div', 'kv-list');
+  kv.append(kvRow('微信', `${stateLabel} · 数据源=本地数据库只读`));
+  kv.append(kvRow('最近读库', wechat.lastObservedAt ? new Date(wechat.lastObservedAt).toLocaleString() : '尚未读取'));
+  kv.append(kvRow('最近新消息', wechat.lastEventAt ? new Date(wechat.lastEventAt).toLocaleString() : '尚未发现'));
+  kv.append(kvRow('最近入库', wechat.lastDeliveredAt ? new Date(wechat.lastDeliveredAt).toLocaleString() : '尚未确认入库'));
+  body.append(kv);
+
+  const stats = el('div', 'stat-grid');
+  stats.append(statTile(wechat.authorizedChats || 0, '已授权会话', 'good'));
+  stats.append(statTile(wechat.pending || 0, '待发', (wechat.pending || 0) > 0 ? 'warn' : ''));
+  stats.append(statTile(wechat.filtered || 0, '过滤'));
+  stats.append(statTile(wechat.failed || 0, '失败', (wechat.failed || 0) > 0 ? 'bad' : ''));
+  stats.append(statTile(wechat.denied || 0, '越权丢弃'));
+  body.append(stats);
+
+  if (wechat.lastError) body.append(el('div', 'hint', `最近错误：${wechat.lastError}`));
 
   const actions = el('div', 'actions');
   actions.append(actionButton('加载授权会话', loadWeChatChats, 'secondary'));
   actions.append(actionButton('测试数据库连接', async () => {
-    if (!state.wechatChats.length) await loadWeChatChats();
+    if (!state.wechatChats.length) {
+      await loadWeChatChats();
+      if (!state.wechatChats.length) throw new Error('没有可测试的会话，请先加载授权会话');
+    }
     const chat = state.wechatChats.find(item => wechatPolicyAllows(item.source_id)) || state.wechatChats[0];
-    if (!chat) throw new Error('没有可测试的会话');
-    statusEl.textContent = '正在读取数据库最近一条消息…';
+    setStatus(`正在用「${chat.display_name || chat.chat_key}」读取数据库最近一条消息…`, 'pending');
     const result = await api.testWeChatDb({ chatKey: chat.chat_key, sourceId: chat.source_id });
     state.wechatPreview = result;
-    statusEl.textContent = result.ok ? `数据库连接正常：${chat.display_name}` : '数据库连接测试失败';
+    setStatus(result.ok ? `数据库连接正常：${chat.display_name || chat.chat_key}` : '数据库连接测试失败', result.ok ? 'ok' : 'error');
     renderHealth();
   }, 'secondary'));
-  root.append(actions);
+  body.append(actions);
+  body.append(el('div', 'hint',
+    '「加载授权会话」只读取会话名单，不碰消息正文；「测试数据库连接」会真正读一条最近消息，用来验证只读连接是否可用。'));
 
-  if (state.wechatError) root.append(el('div', 'hint', `读取会话失败：${state.wechatError}`));
+  if (state.wechatError) body.append(el('div', 'hint', `读取会话失败：${state.wechatError}`));
   if (state.wechatPreview && state.wechatPreview.preview) {
     const preview = state.wechatPreview.preview;
-    root.append(el('div', 'body',
+    body.append(el('div', 'body',
       `测试消息：${preview.sender || '未知发送者'} · ${preview.direction} · ${preview.message_type}\n${preview.text || '（无正文）'}`));
   }
 
+  const browserSites = (health.browser && health.browser.sites || []).length;
+  body.append(el('div', 'hint',
+    `网页采集：${browserSites} 个站点有检查点；活动片段：${health.activity && health.activity.enabled ? '协作模式开启' : '协作模式关闭'}；待发队列 ${spool.pending || 0} 条。`));
+
+  const chats = collapseSection('微信会话授权', {
+    open: true,
+    badge: state.wechatChats.length ? `${state.wechatChats.length} 个会话` : '未加载',
+    badgeMuted: !state.wechatChats.length,
+  });
   const queryRow = el('div', 'row');
   const query = el('input');
   query.type = 'text';
@@ -1015,30 +1105,18 @@ function renderHealth() {
     await loadWeChatChats();
   }, 'secondary');
   queryRow.append(query, search);
-  root.append(queryRow);
+  chats.body.append(queryRow);
 
   if (state.wechatChats.length) {
-    const list = el('div', 'task-detail');
-    state.wechatChats.forEach(chat => {
-      const allowed = wechatPolicyAllows(chat.source_id);
-      const row = el('div', 'row');
-      const text = el('div', 'body',
-        `${chat.display_name || chat.chat_key} · ${chat.chat_type} · 最近 ${chat.last_message_at ? new Date(chat.last_message_at).toLocaleString() : '无'}\n${chat.source_id}`);
-      const toggle = actionButton(allowed ? '撤销授权' : '授权', async () => {
-        await setWeChatChatAllowed(chat, !allowed);
-      }, allowed ? 'danger' : '');
-      row.append(text, toggle);
-      list.append(row);
-    });
-    root.append(el('div', 'meta', '会话授权（按稳定 source_id，不按显示名）'), list);
+    const grid = el('div', 'chat-grid');
+    state.wechatChats.forEach(chat => grid.append(chatCard(chat, wechatPolicyAllows(chat.source_id))));
+    chats.body.append(grid);
+    chats.body.append(el('div', 'hint', '授权按稳定 source_id 生效，改了显示名也不受影响。'));
   } else {
-    root.append(el('div', 'hint', '点「加载授权会话」查看本机数据库中的会话，再逐个授权。'));
+    chats.body.append(el('div', 'empty', '还没有会话。点「加载授权会话」读取本机数据库里的会话，再逐个授权。'));
   }
 
-  const browserSites = (health.browser && health.browser.sites || []).length;
-  root.append(el('div', 'hint',
-    `网页采集：${browserSites} 个站点有检查点；活动片段：${health.activity && health.activity.enabled ? '协作模式开启' : '协作模式关闭'}；待发队列 ${spool.pending || 0} 条。`));
-  healthPanel.append(root);
+  healthPanel.append(section.root, chats.root);
 }
 
 function renderAccess() {
@@ -1111,7 +1189,8 @@ async function refresh() {
     const pendingTotal = actionable + state.outbox.length;
     pendingCountEl.hidden = pendingTotal === 0;
     pendingCountEl.textContent = String(pendingTotal);
-    statusEl.textContent = results.some(result => result.status === 'rejected') ? '部分数据读取失败' : '已连接';
+    setStatus(results.some(result => result.status === 'rejected') ? '部分数据读取失败' : '已连接',
+      results.some(result => result.status === 'rejected') ? 'error' : 'ok');
     render();
   }, 50);
 }
@@ -1135,7 +1214,7 @@ if (api.onAgentEvent) {
 }
 
 api.listWorkTasks('', 100)
-  .then(() => { statusEl.textContent = '已连接'; })
-  .catch(error => { statusEl.textContent = `未连接：${error.message}`; });
+  .then(() => { setStatus('已连接', 'ok'); })
+  .catch(error => { setStatus(`未连接：${error.message}`, 'error'); });
 refresh();
 setInterval(refresh, 20000);

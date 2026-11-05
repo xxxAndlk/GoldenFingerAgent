@@ -8,7 +8,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+
+	"goldenfinger/agent/internal/secretstore"
 )
 
 // LLM 保存可从 Web UI 编辑的对话模型连接参数与生成参数。
@@ -48,6 +51,20 @@ type Search struct {
 // Relay 保存手机端中继地址。
 type Relay struct {
 	URL string `json:"url,omitempty"`
+}
+
+// CloudMemory 保存云端共享记忆与跨端交付的端侧连接参数。
+// Token 由 secretstore 加密保存（Windows DPAPI），settings.json 只保留引用。
+type CloudMemory struct {
+	Enabled  bool   `json:"enabled,omitempty"`
+	BaseURL  string `json:"base_url,omitempty"`
+	DeviceID string `json:"device_id,omitempty"`
+	OwnerID  string `json:"owner_user_id,omitempty"`
+	// Token 仅用于兼容旧版本；新版本写入 TokenRef 后该字段应为空。
+	Token    string `json:"token,omitempty"`
+	TokenRef string `json:"token_ref,omitempty"`
+	// DeliveryEnabled 单独控制文件交付，异常时可只关闭交付不影响记忆。
+	DeliveryEnabled bool `json:"delivery_enabled,omitempty"`
 }
 
 // Email 保存可选的 IMAP 收件配置；密码只落本地 settings.json，不写日志。
@@ -98,12 +115,13 @@ type Web struct {
 }
 
 type fileShape struct {
-	LLM    LLM     `json:"llm"`
-	Models []Model `json:"models,omitempty"`
-	Search Search  `json:"search,omitempty"`
-	Relay  Relay   `json:"relay,omitempty"`
-	Email  Email   `json:"email,omitempty"`
-	Web    Web     `json:"web,omitempty"`
+	LLM         LLM         `json:"llm"`
+	Models      []Model     `json:"models,omitempty"`
+	Search      Search      `json:"search,omitempty"`
+	Relay       Relay       `json:"relay,omitempty"`
+	Email       Email       `json:"email,omitempty"`
+	Web         Web         `json:"web,omitempty"`
+	CloudMemory CloudMemory `json:"cloud_memory,omitempty"`
 }
 
 // Shape 是全部设置的完整快照，供 Save 的回调直接编辑各分区。
@@ -184,6 +202,65 @@ func (s *Store) Relay() Relay {
 	defer s.mu.Unlock()
 	s.reloadLocked()
 	return s.data.Relay
+}
+
+// CloudMemory 返回云端共享记忆配置。
+func (s *Store) CloudMemory() CloudMemory {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reloadLocked()
+	return s.data.CloudMemory
+}
+
+// SaveCloudMemory 替换云端共享记忆配置。
+func (s *Store) SaveCloudMemory(v CloudMemory) error {
+	return s.Save(func(f *fileShape) { f.CloudMemory = v })
+}
+
+func (s *Store) cloudTokenPath() string { return s.path + ".cloud-token" }
+
+// CloudToken 返回明文 Token：优先旧字段，其次解密本机密钥文件。
+func (s *Store) CloudToken() string {
+	s.mu.Lock()
+	s.reloadLocked()
+	legacy := strings.TrimSpace(s.data.CloudMemory.Token)
+	ref := s.data.CloudMemory.TokenRef
+	s.mu.Unlock()
+	if legacy != "" {
+		if ref == "" {
+			// 旧版本明文 Token 首次读取时自动迁移到加密存储。
+			if err := s.SaveCloudToken(legacy); err == nil {
+				return legacy
+			}
+		}
+		return legacy
+	}
+	if ref == "" {
+		return ""
+	}
+	raw, err := secretstore.Load(s.cloudTokenPath())
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// HasCloudToken 报告是否已有可用 Token（不返回正文）。
+func (s *Store) HasCloudToken() bool { return s.CloudToken() != "" }
+
+// SaveCloudToken 加密保存 Token，并从 settings.json 清除明文。
+func (s *Store) SaveCloudToken(token string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return errors.New("settings: token 为空")
+	}
+	if err := secretstore.Save(s.cloudTokenPath(), []byte(token)); err != nil {
+		return err
+	}
+	return s.Save(func(f *fileShape) {
+		f.CloudMemory.Token = ""
+		f.CloudMemory.TokenRef = "cloud-token.bin"
+	})
 }
 
 // Email 返回 IMAP 收件配置。

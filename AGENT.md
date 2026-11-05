@@ -122,6 +122,18 @@ docker run --rm -v "$PWD:/work" gfa-android-build:latest bash /work/docker/andro
 改了 `web/` 必须重新执行构建（脚本内含 `scripts/sync-webassets.sh`），
 否则手机会继续加载旧页面。`go test ./android/gosvc` 可在宿主直接跑（纯 Go，会真实起服务）。
 
+手机版 H5 电脑调试：
+
+```bash
+npm run dev -- --host 127.0.0.1 --port 7100
+npm run test:mobile-h5
+```
+
+- `web/` 是共享页面源；`desktop/server/web/` 与 `android/gosvc/webassets/` 必须保持一致，不要只改其中一个副本。
+- H5 服务只监听本机回环地址。数据库、运行时设置、上传文件写入 `artifacts/mobile-h5-dev/`，不得读写正式 `data/gfa.db` 或根目录 `settings.json`。
+- 默认 `GFA_MEMORY_DISABLE=1`，需要完整长期记忆链路时显式设为 `0`。自动验证使用模拟 Responses / Embeddings，不消耗真实模型额度。
+- H5 可验证页面、HTTP API、聊天、历史、设置和浏览器文件下载；Android Keystore、语音唤醒、无障碍、通知监听、原生保存/分享不能用 H5 结果替代真机验收。
+
 完整桌面版启动：
 
 ```bat

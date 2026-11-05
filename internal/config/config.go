@@ -21,6 +21,17 @@ type Config struct {
 	Scheduler  Scheduler  `yaml:"scheduler"`
 	Digest     Digest     `yaml:"digest"`
 	Memory     Memory     `yaml:"memory"`
+	Cloud      Cloud      `yaml:"cloud"`
+}
+
+// Cloud 配置云端共享记忆与临时文件交付服务（cmd/cloudserver）。
+type Cloud struct {
+	Addr             string        `yaml:"addr"`
+	Database         string        `yaml:"database"`
+	PublicBaseURL    string        `yaml:"public_base_url"`
+	DeliveryDir      string        `yaml:"delivery_dir"`
+	DeliveryTTL      time.Duration `yaml:"delivery_ttl"`
+	DeliveryMaxBytes int64         `yaml:"delivery_max_bytes"`
 }
 
 type Server struct {
@@ -151,6 +162,21 @@ func (c *Config) applyDefaults() {
 	if c.Search.Count == 0 {
 		c.Search.Count = 8
 	}
+	if c.Cloud.Addr == "" {
+		c.Cloud.Addr = ":8090"
+	}
+	if c.Cloud.Database == "" {
+		c.Cloud.Database = "data/cloud.db"
+	}
+	if c.Cloud.DeliveryDir == "" {
+		c.Cloud.DeliveryDir = "data/delivery"
+	}
+	if c.Cloud.DeliveryTTL == 0 {
+		c.Cloud.DeliveryTTL = 72 * time.Hour
+	}
+	if c.Cloud.DeliveryMaxBytes == 0 {
+		c.Cloud.DeliveryMaxBytes = 100 << 20
+	}
 }
 
 func (c *Config) applyEnv() {
@@ -197,6 +223,40 @@ func (c *Config) applyEnv() {
 	if v := os.Getenv("GFA_SEARCH_API_KEY"); v != "" {
 		c.Search.APIKey = v
 	}
+	if v := os.Getenv("GFA_CLOUD_ADDR"); v != "" {
+		c.Cloud.Addr = v
+	}
+	if v := os.Getenv("GFA_CLOUD_DATABASE"); v != "" {
+		c.Cloud.Database = v
+	}
+	if v := os.Getenv("GFA_CLOUD_PUBLIC_BASE_URL"); v != "" {
+		c.Cloud.PublicBaseURL = v
+	}
+	if v := os.Getenv("GFA_CLOUD_DELIVERY_DIR"); v != "" {
+		c.Cloud.DeliveryDir = v
+	}
+	if v := os.Getenv("GFA_CLOUD_DELIVERY_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.Cloud.DeliveryTTL = d
+		}
+	}
+	if v := os.Getenv("GFA_CLOUD_DELIVERY_MAX_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			c.Cloud.DeliveryMaxBytes = n
+		}
+	}
+}
+
+// LoadEnv 在没有配置文件时只使用默认值与环境变量。
+// 云端服务常以纯环境变量部署时使用。
+func LoadEnv() (*Config, error) {
+	var c Config
+	c.applyDefaults()
+	c.applyEnv()
+	if err := c.validate(); err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 func (c *Config) validate() error {

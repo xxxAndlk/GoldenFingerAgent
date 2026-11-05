@@ -169,7 +169,8 @@ func classifyTool(t Tool) ToolDescriptor {
 	risk, grant := classifyToolName(spec.Name)
 	return ToolDescriptor{
 		Spec: spec, Risk: risk, Environments: []string{"desktop"}, RequiresGrant: grant,
-		WorkTaskOnly: spec.Name == "create_artifact",
+		WorkTaskOnly: spec.Name == "create_artifact" || spec.Name == "create_file_artifact" ||
+			spec.Name == "deliver_artifact" || spec.Name == "download_agent_artifact",
 	}
 }
 
@@ -187,7 +188,10 @@ func classifyToolName(name string) (RiskLevel, bool) {
 		return RiskPrepare, false
 	case "write":
 		return RiskPrepare, false
-	case "bash", "delegate_agent", "configure_collection_channel":
+	case "create_file_artifact", "deliver_artifact":
+		// 读取任意本地文件 / 跨端交付都需要任务授权。
+		return RiskPrepare, true
+	case "bash", "delegate_agent", "download_agent_artifact", "configure_collection_channel":
 		return RiskSensitive, true
 	case "switch_claude_provider":
 		return RiskExternalWrite, true

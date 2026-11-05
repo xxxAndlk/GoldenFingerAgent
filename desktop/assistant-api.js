@@ -99,6 +99,28 @@ class AssistantApi {
     });
   }
 
+  getCloudMemory() {
+    return this.request('/api/settings/cloud-memory', { method: 'GET' });
+  }
+
+  saveCloudMemory(config) {
+    return this.request('/api/settings/cloud-memory', {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    });
+  }
+
+  testCloudMemory(config) {
+    return this.request('/api/cloud-memory/test', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
+  }
+
+  cloudMemoryStatus() {
+    return this.request('/api/cloud-memory/status', { method: 'GET' });
+  }
+
   saveRelay(relay) {
     return this.request('/api/settings/relay', {
       method: 'PUT',

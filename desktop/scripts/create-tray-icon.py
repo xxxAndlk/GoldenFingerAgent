@@ -1,7 +1,7 @@
 """生成金手指管家的应用图标与托盘图标。
 
-源图：desktop/scripts/app-icon-source.png（蓝底金色手指 + 房子）。
-裁出圆角方形后生成：
+源图：desktop/scripts/app-icon-source.png（深色圆形 + 原子图案，透明背景）。
+生成：
   - app-icon.png / app-icon.ico   窗口标题栏、任务栏、快捷方式
   - tray-icon.png / tray-icon.ico 系统托盘空闲态
   - tray-icon-busy.*              系统托盘执行态（右下角状态点）
@@ -15,37 +15,24 @@ import io
 import struct
 from pathlib import Path
 
-import numpy as np
 from PIL import Image, ImageDraw
 
 OUT = Path(__file__).resolve().parent.parent
 SOURCE = Path(__file__).resolve().parent / "app-icon-source.png"
 ICO_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
-CORNER_RATIO = 0.215
 BUSY_DOT = (48, 209, 88)
-SOURCE_THRESHOLD = 16
 
 
 def load_master():
-    """从源图裁出圆角方形，并去掉四周的纯黑底色。"""
+    """载入源图：源图本身已是透明背景的圆形图标，按实际内容裁成正方形。"""
     image = Image.open(SOURCE).convert("RGBA")
-    rgb = np.asarray(image.convert("RGB"), dtype=np.int16)
-    bright = rgb.max(axis=2)
-    ys, xs = np.where(bright > SOURCE_THRESHOLD)
-    left, top, right, bottom = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
-    side = max(right - left, bottom - top)
-    cx, cy = (left + right) // 2, (top + bottom) // 2
-    left = max(0, min(cx - side // 2, image.width - side))
-    top = max(0, min(cy - side // 2, image.height - side))
-    crop = image.crop((left, top, left + side, top + side))
-
-    big = side * 2
-    mask = Image.new("L", (big, big), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        (0, 0, big - 1, big - 1), radius=round(big * CORNER_RATIO), fill=255
-    )
-    crop.putalpha(mask.resize((side, side), Image.LANCZOS))
-    return crop
+    bbox = image.getbbox()
+    if bbox:
+        image = image.crop(bbox)
+    side = max(image.size)
+    square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    square.paste(image, ((side - image.width) // 2, (side - image.height) // 2))
+    return square
 
 
 def render(master, size):
@@ -143,7 +130,9 @@ def main():
             continue
         preview.alpha_composite(render(master, size).resize((32, 32), Image.NEAREST), (x, 0))
         x += 40
-    preview.save(OUT / "scripts" / "icon-preview.png")
+    artifacts = OUT / "artifacts"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    preview.save(artifacts / "icon-preview.png")
     print(OUT / "app-icon.ico")
     print(OUT / "tray-icon.ico")
 

@@ -7,24 +7,46 @@
   <style>
     :root {
       color-scheme: light dark;
-      --bg: #f5f5f7;
+      --bg: #f3f5f9;
       --panel: #ffffff;
-      --text: #1d1d1f;
-      --muted: #6e6e73;
-      --line: rgba(0, 0, 0, .1);
-      --accent: #0a84ff;
-      --danger: #ff3b30;
-      --ok: #34c759;
-      --warn: #ff9f0a;
+      --panel-soft: #f7f9fc;
+      --text: #0f172a;
+      --muted: #64748b;
+      --faint: #94a3b8;
+      --line: rgba(15, 23, 42, .10);
+      --line-soft: rgba(15, 23, 42, .06);
+      --accent: #2f62e4;
+      --accent-soft: rgba(47, 98, 228, .12);
+      --danger: #d92d20;
+      --danger-soft: rgba(217, 45, 32, .12);
+      --ok: #12915a;
+      --ok-soft: rgba(18, 145, 90, .12);
+      --warn: #b54708;
+      --warn-soft: rgba(181, 71, 8, .14);
+      --radius-lg: 18px;
       --radius: 14px;
+      --radius-sm: 10px;
+      --shadow: 0 1px 2px rgba(15, 23, 42, .05), 0 10px 26px rgba(15, 23, 42, .06);
     }
     @media (prefers-color-scheme: dark) {
       :root {
-        --bg: #1c1c1e;
-        --panel: #2c2c2e;
-        --text: #f5f5f7;
-        --muted: #98989d;
-        --line: rgba(255, 255, 255, .12);
+        --bg: #0f1216;
+        --panel: #191d23;
+        --panel-soft: #14181d;
+        --text: #e8ebf0;
+        --muted: #9aa4b2;
+        --faint: #6b7684;
+        --line: rgba(255, 255, 255, .10);
+        --line-soft: rgba(255, 255, 255, .06);
+        --accent: #6f9bff;
+        --accent-soft: rgba(111, 155, 255, .16);
+        --danger: #ff6b5e;
+        --danger-soft: rgba(255, 107, 94, .16);
+        --ok: #47d19a;
+        --ok-soft: rgba(71, 209, 154, .16);
+        --warn: #ffb454;
+        --warn-soft: rgba(255, 180, 84, .16);
+        --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 12px 28px rgba(0, 0, 0, .35);
       }
     }
     * { box-sizing: border-box; }
@@ -34,53 +56,97 @@
       background: var(--bg);
       color: var(--text);
       font-size: 14px;
+      -webkit-font-smoothing: antialiased;
     }
-    header {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      padding: 16px 20px;
-      border-bottom: 1px solid var(--line);
-      background: color-mix(in srgb, var(--panel) 88%, transparent);
+
+    /* ---------- 顶栏 ---------- */
+    .appbar {
       position: sticky;
       top: 0;
-      backdrop-filter: blur(20px);
-      z-index: 2;
-    }
-    .head-text { flex: 1; min-width: 0; }
-    h1 { font-size: 18px; margin: 0; }
-    .subtitle { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
-    .status { color: var(--muted); font-size: 12px; }
-    button {
-      border: 0;
-      border-radius: 9px;
-      padding: 7px 12px;
-      background: var(--accent);
-      color: #fff;
-      font: inherit;
-      cursor: pointer;
-    }
-    button.secondary { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
-    button.danger { background: var(--danger); }
-    button:disabled { opacity: .45; cursor: default; }
-    nav {
+      z-index: 5;
       display: flex;
-      gap: 6px;
-      padding: 12px 20px 0;
-      flex-wrap: wrap;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--line-soft);
+      background: color-mix(in srgb, var(--panel) 82%, transparent);
+      backdrop-filter: blur(18px) saturate(140%);
     }
-    nav button {
+    .appbar-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .appbar-logo {
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      object-fit: contain;
+      background: var(--panel-soft);
+      box-shadow: 0 2px 8px rgba(15, 23, 42, .12);
+    }
+    .appbar-text { min-width: 0; }
+    .appbar-text h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: .2px; }
+    .appbar-text p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
+    .appbar-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 11px;
+      border-radius: 99px;
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12.5px;
+      white-space: nowrap;
+    }
+    .status-pill::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 99px;
+      background: var(--faint);
+      flex: 0 0 auto;
+    }
+    .status-pill[data-state="ok"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
+    .status-pill[data-state="ok"]::before { background: var(--ok); }
+    .status-pill[data-state="error"] { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 30%, transparent); }
+    .status-pill[data-state="error"]::before { background: var(--danger); }
+
+    /* ---------- 标签栏 ---------- */
+    .tabs {
+      position: sticky;
+      top: 67px;
+      z-index: 4;
+      display: flex;
+      gap: 4px;
+      padding: 12px 24px;
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(18px);
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .tabs button {
+      border: 0;
       background: transparent;
       color: var(--muted);
-      padding: 8px 12px;
+      border-radius: 99px;
+      padding: 7px 15px;
+      font: inherit;
+      font-weight: 550;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background .15s ease, color .15s ease;
     }
-    nav button.active { background: var(--panel); color: var(--text); }
+    .tabs button:hover { color: var(--text); background: var(--panel-soft); }
+    .tabs button.active {
+      background: var(--panel);
+      color: var(--text);
+      box-shadow: 0 1px 2px rgba(15, 23, 42, .06), 0 4px 12px rgba(15, 23, 42, .07);
+    }
     .nav-count {
       display: inline-grid;
       place-items: center;
       min-width: 18px;
       height: 18px;
-      margin-left: 4px;
       padding: 0 5px;
       border-radius: 99px;
       background: var(--danger);
@@ -88,100 +154,339 @@
       font-size: 11px;
       line-height: 1;
     }
-    main { padding: 16px 20px 32px; max-width: 980px; }
+
+    main { padding: 20px 24px 40px; max-width: 1120px; margin: 0 auto; }
+    main > section > h2 { font-size: 15px; font-weight: 650; margin: 22px 0 10px; }
+
+    /* ---------- 折叠区块 ---------- */
+    .collapse {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+      margin-bottom: 16px;
+      overflow: hidden;
+    }
+    .collapse-head {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 18px;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+      cursor: pointer;
+      text-align: left;
+    }
+    .collapse-head:hover { background: var(--panel-soft); }
+    .collapse-title { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+    .collapse-label { font-size: 15px; font-weight: 650; }
+    .collapse-badge {
+      padding: 2px 9px;
+      border-radius: 99px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 11.5px;
+      font-weight: 600;
+    }
+    .collapse-badge.muted { background: var(--panel-soft); color: var(--muted); border: 1px solid var(--line); }
+    .collapse-state { color: var(--muted); font-size: 12.5px; }
+    .collapse-chevron {
+      width: 9px;
+      height: 9px;
+      border-right: 2px solid var(--faint);
+      border-bottom: 2px solid var(--faint);
+      transform: rotate(45deg) translate(-2px, -2px);
+      transition: transform .18s ease;
+      flex: 0 0 auto;
+    }
+    .collapse.open .collapse-chevron { transform: rotate(-135deg) translate(-2px, -2px); }
+    .collapse-body {
+      display: none;
+      padding: 2px 18px 18px;
+      border-top: 1px solid var(--line-soft);
+    }
+    .collapse.open > .collapse-body { display: block; }
+    .collapse-body > :first-child { margin-top: 16px; }
+
+    /* ---------- 卡片 ---------- */
     .card {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: var(--radius);
-      padding: 14px 16px;
+      padding: 16px 18px;
       margin-bottom: 12px;
+      box-shadow: var(--shadow);
     }
-    .card h3 { margin: 0 0 6px; font-size: 15px; }
-    .meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
-    .body { white-space: pre-wrap; line-height: 1.55; overflow-wrap: anywhere; }
-    .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+    .collapse .card { box-shadow: none; background: var(--panel-soft); border-color: var(--line-soft); }
+    .card h3 { margin: 0 0 6px; font-size: 15px; font-weight: 650; }
+    .meta { color: var(--muted); font-size: 12.5px; margin-bottom: 8px; }
+    .body { white-space: pre-wrap; line-height: 1.6; overflow-wrap: anywhere; }
+    .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
     .badge {
       display: inline-block;
-      padding: 2px 8px;
+      padding: 3px 9px;
       border-radius: 99px;
-      font-size: 11px;
-      background: color-mix(in srgb, var(--text) 10%, transparent);
+      font-size: 11.5px;
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
       color: var(--muted);
     }
-    .badge.running { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
-    .badge.pending { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
-    .badge.failed { background: color-mix(in srgb, var(--danger) 16%, transparent); color: var(--danger); }
-    .empty { color: var(--muted); padding: 24px 4px; }
-    pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.6; margin: 0; }
-    input[type="text"], input[type="date"], input[type="number"], select, textarea {
+    .badge.running { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+    .badge.pending { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+    .badge.failed { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+    .badge.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+    .empty {
+      color: var(--muted);
+      padding: 26px 16px;
+      text-align: center;
+      border: 1px dashed var(--line);
+      border-radius: var(--radius);
+      background: var(--panel-soft);
+    }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.65; margin: 0; }
+
+    /* ---------- 按钮 ---------- */
+    button {
+      border: 0;
+      border-radius: var(--radius-sm);
+      padding: 8px 14px;
+      background: var(--accent);
+      color: #fff;
+      font: inherit;
+      font-weight: 550;
+      cursor: pointer;
+      transition: filter .15s ease, background .15s ease;
+    }
+    button:hover:not(:disabled) { filter: brightness(1.06); }
+    button:disabled { opacity: .45; cursor: default; }
+    button.secondary {
+      background: var(--panel-soft);
+      color: var(--text);
       border: 1px solid var(--line);
-      border-radius: 9px;
-      padding: 7px 10px;
-      background: var(--bg);
+    }
+    button.danger { background: var(--danger); }
+    button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+    button.sm { padding: 5px 11px; font-size: 12.5px; border-radius: 9px; }
+    .icon-btn {
+      display: inline-grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      border-radius: 10px;
+      background: var(--panel-soft);
+      border: 1px solid var(--line);
+      color: var(--text);
+    }
+    .icon-btn svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+
+    /* ---------- 表单 ---------- */
+    input[type="text"], input[type="date"], input[type="number"], input[type="password"], select, textarea {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      padding: 9px 12px;
+      background: var(--panel);
       color: var(--text);
       font: inherit;
       width: 100%;
-      margin-bottom: 7px;
+      margin-bottom: 8px;
+      transition: border-color .15s ease, box-shadow .15s ease;
     }
-    textarea { resize: vertical; line-height: 1.5; }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    textarea { resize: vertical; line-height: 1.55; }
     .actions input, .actions select { width: auto; margin-bottom: 0; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-    .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
-    .subcard { margin-left: 14px; background: color-mix(in srgb, var(--panel) 84%, var(--bg)); }
+    .row > input[type="text"], .row > input[type="password"] { flex: 1 1 220px; width: auto; margin-bottom: 0; }
+    .hint { color: var(--muted); font-size: 12.5px; line-height: 1.55; }
+    .subcard { margin-left: 14px; background: var(--panel-soft); }
     .task-detail {
       margin-top: 14px;
       padding-top: 12px;
       border-top: 1px dashed var(--line);
     }
-    .task-detail h2 { font-size: 14px; margin: 18px 0 8px; }
+    .task-detail h2 { font-size: 14px; margin: 18px 0 8px; font-weight: 650; }
     .timeline { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; }
     .timeline-row { border-left: 2px solid var(--line); padding-left: 10px; }
-    .timeline-row .body { font-size: 12px; color: var(--muted); }
+    .timeline-row .body { font-size: 12.5px; color: var(--muted); }
     .task-input { min-width: 220px; }
-
     .task-head { display: flex; align-items: flex-start; gap: 10px; }
     .task-head h3 { flex: 1; margin: 0; overflow-wrap: anywhere; }
     .task-head .badge { flex: 0 0 auto; margin-top: 1px; }
-    .steps { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 13px; line-height: 1.75; }
+    .steps { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 13px; line-height: 1.8; }
     .steps strong { color: var(--text); font-weight: 600; }
     .quick-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
-    .quick-actions .hint { margin: 0; }
-    .fold { margin: 0 0 12px; }
-    .fold > summary {
-      cursor: pointer;
-      padding: 11px 14px;
+    .fold {
+      margin: 0 0 16px;
       border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .fold > summary {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+      padding: 14px 18px;
+      color: var(--text);
+      font-weight: 650;
+      font-size: 15px;
+      list-style: none;
+      user-select: none;
+    }
+    .fold > summary::-webkit-details-marker { display: none; }
+    .fold > summary:hover { background: var(--panel-soft); }
+    .fold[open] > summary { border-bottom: 1px solid var(--line-soft); }
+    .fold[open] > summary .collapse-chevron { transform: rotate(-135deg) translate(-2px, -2px); }
+    .fold > summary .collapse-chevron { margin-left: auto; }
+    .fold > section, .fold > .card { margin: 16px 18px 18px; }
+    .fold.compact {
+      margin: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      overflow: visible;
+    }
+    .fold.compact > summary {
+      width: fit-content;
+      gap: 8px;
+      padding: 8px 13px;
+      font-size: 13px;
+      font-weight: 550;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+      background: var(--panel-soft);
+    }
+    .fold.compact[open] > summary { border-bottom: 1px solid var(--line); }
+    .fold.compact > summary .collapse-chevron { margin-left: 0; }
+    .detail-controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 4px; }
+    .access-intro { margin-bottom: 4px; }
+
+    /* ---------- 状态统计 ---------- */
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 10px;
+      margin: 14px 0;
+    }
+    .stat {
+      padding: 12px 14px;
+      border-radius: var(--radius);
+      background: var(--panel-soft);
+      border: 1px solid var(--line-soft);
+    }
+    .stat b {
+      display: block;
+      font-size: 20px;
+      font-weight: 650;
+      line-height: 1.2;
+      letter-spacing: .2px;
+    }
+    .stat span { color: var(--muted); font-size: 12px; }
+    .stat.warn b { color: var(--warn); }
+    .stat.bad b { color: var(--danger); }
+    .stat.good b { color: var(--ok); }
+
+    .kv-list { display: grid; gap: 6px; margin: 10px 0 4px; }
+    .kv {
+      display: flex;
+      gap: 12px;
+      align-items: baseline;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .kv b { color: var(--text); font-weight: 550; flex: 0 0 auto; }
+    .kv span { overflow-wrap: anywhere; }
+
+    /* ---------- 微信会话卡片 ---------- */
+    .chat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+    .chat-card {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 12px 13px;
       border-radius: var(--radius);
       background: var(--panel);
-      color: var(--text);
-      font-weight: 600;
-      list-style-position: inside;
+      border: 1px solid var(--line);
+      transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease;
     }
-    .fold[open] > summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-    .fold > section, .fold > .card { margin-top: 0; }
-    .detail-controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 4px; }
-    .access-intro { margin-bottom: 12px; }
-    @media (max-width: 620px) {
-      header { flex-wrap: wrap; }
-      .head-text { flex-basis: 100%; }
-      main { padding: 14px; }
+    .chat-card:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); transform: translateY(-1px); }
+    .chat-card.allowed { border-color: color-mix(in srgb, var(--ok) 42%, transparent); }
+    .chat-avatar {
+      flex: 0 0 auto;
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-size: 15px;
+      font-weight: 650;
+      color: #fff;
+      background: linear-gradient(140deg, #4b76e8, #7a4fe0);
+      box-shadow: 0 2px 8px rgba(15, 23, 42, .16);
+    }
+    .chat-info { flex: 1; min-width: 0; }
+    .chat-name {
+      display: block;
+      font-size: 14px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .chat-meta {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .chat-card .btn-slot { flex: 0 0 auto; }
+
+    @media (max-width: 720px) {
+      .appbar { flex-wrap: wrap; padding: 12px 14px; }
+      .appbar-actions { width: 100%; justify-content: space-between; }
+      .tabs { padding: 10px 14px; }
+      main { padding: 16px 14px 32px; }
     }
   </style>
 </head>
 <body>
-  <header>
-    <div class="head-text">
-      <h1>管家工作台</h1>
-      <span class="subtitle">安排任务、处理待办、查看今天的简报</span>
+  <header class="appbar">
+    <div class="appbar-brand">
+      <img class="appbar-logo" src="app-icon.png" alt="">
+      <div class="appbar-text">
+        <h1>管家工作台</h1>
+        <p>安排任务 · 处理待办 · 查看今日简报</p>
+      </div>
     </div>
-    <span id="status" class="status">正在连接…</span>
-    <button id="refresh" class="secondary" type="button">刷新</button>
+    <div class="appbar-actions">
+      <span id="status" class="status-pill">正在连接…</span>
+      <button id="refresh" class="icon-btn" type="button" title="刷新" aria-label="刷新">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.4-5.7"/><path d="M20 4v4.5h-4.5"/></svg>
+      </button>
+    </div>
   </header>
-  <nav>
-    <button type="button" data-tab="tasks" class="active">任务</button>
-    <button type="button" data-tab="pending">待处理 <span id="pending-count" class="nav-count" hidden>0</span></button>
-    <button type="button" data-tab="brief">今日简报</button>
-    <button type="button" data-tab="access">接入设置</button>
+  <nav class="tabs" role="tablist">
+    <button type="button" data-tab="tasks" class="active" role="tab">任务</button>
+    <button type="button" data-tab="pending" role="tab">待处理 <span id="pending-count" class="nav-count" hidden>0</span></button>
+    <button type="button" data-tab="brief" role="tab">今日简报</button>
+    <button type="button" data-tab="access" role="tab">接入设置</button>
   </nav>
   <main>
     <section id="panel-tasks"></section>
@@ -191,11 +496,11 @@
       <div class="hint access-intro">接入设置是可选的。日常只需要在「任务」里告诉管家做什么，不需要先配置这里。</div>
       <section id="panel-health"></section>
       <details class="fold">
-        <summary>渠道与邮箱</summary>
+        <summary>渠道与邮箱<span class="collapse-chevron"></span></summary>
         <section id="panel-channels"></section>
       </details>
       <details class="fold">
-        <summary>网页采集（高级）</summary>
+        <summary>网页采集（高级）<span class="collapse-chevron"></span></summary>
         <section id="panel-web"></section>
       </details>
     </section>

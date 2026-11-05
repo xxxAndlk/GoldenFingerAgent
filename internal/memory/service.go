@@ -332,6 +332,17 @@ func (s *Service) SaveNote(ctx context.Context, ownerID, text, rawRef string, so
 	return e, nil
 }
 
+// SaveSystemEvent 写入系统生成的跨端事件摘要（交付完成等），
+// 以 system 角色入库，避免被抽取成机主本人的意愿。
+func (s *Service) SaveSystemEvent(ctx context.Context, ownerID, text, rawRef string) (*store.Episode, error) {
+	e := &store.Episode{OwnerUserID: ownerID, Summary: text, RawRef: rawRef}
+	if err := s.eps.Create(ctx, e); err != nil {
+		return nil, err
+	}
+	s.mirrorEpisode(ctx, rawRef, ownerID, text, "system", RoleSystem, e.CreatedAt)
+	return e, nil
+}
+
 // SaveWorkerResult 先把 Worker 结论同步写成片段（立即可检索），
 // 再异步补向量并镜像长期记忆；嵌入失败不影响结论已经进入统一记忆。
 func (s *Service) SaveWorkerResult(ctx context.Context, ownerID, text, rawRef string) (*store.Episode, error) {

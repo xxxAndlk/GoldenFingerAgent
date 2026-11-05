@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,8 @@ type Client struct {
 	Name string
 	// Handle 执行指令；必填。
 	Handle Handler
+	// Enrich 在回传结果前补充交付物引用（可选）。
+	Enrich func(ctx context.Context, payload *ResultPayload)
 	// CommandTimeout 单条指令的执行上限。
 	CommandTimeout time.Duration
 	// Logger 默认 log.Printf。
@@ -205,6 +208,7 @@ func (c *Client) wsURL() string {
 	q := url.Values{}
 	q.Set("role", RoleDesktop)
 	q.Set("id", c.DesktopID)
+	q.Set("pv", strconv.Itoa(ProtocolVersionV2))
 	return u + "/v1/ws?" + q.Encode()
 }
 
@@ -272,6 +276,9 @@ func (c *Client) execute(ctx context.Context, ws *websocket.Conn, env Envelope) 
 		if result.Error == "" {
 			result.Error = err.Error()
 		}
+	}
+	if c.Enrich != nil {
+		c.Enrich(runCtx, &result)
 	}
 	reply := &Envelope{
 		V: ProtocolVersion, ID: newMessageID(), Kind: KindResult,

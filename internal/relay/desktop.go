@@ -22,6 +22,8 @@ type Desktop struct {
 	StatePath string
 	// Handle 执行手机指令。
 	Handle Handler
+	// Enrich 在回传结果前补充交付物引用（可选）。
+	Enrich func(ctx context.Context, payload *ResultPayload)
 	Logger func(format string, args ...any)
 
 	mu     sync.Mutex
@@ -138,7 +140,7 @@ func (d *Desktop) ClientFor(ctx context.Context) (*Client, error) {
 	}
 	d.client = &Client{
 		BaseURL: d.state.BaseURL, DesktopID: d.state.DesktopID, Token: d.state.Token,
-		Name: d.Name, Handle: d.Handle, Logger: d.Log(),
+		Name: d.Name, Handle: d.Handle, Enrich: d.Enrich, Logger: d.Log(),
 	}
 	return d.client, nil
 }

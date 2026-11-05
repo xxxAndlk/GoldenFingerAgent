@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -224,12 +225,22 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	// ?pv=2 声明支持 v2（ArtifactRef）；缺省视为 v1，保证旧端不受影响。
+	version := ProtocolVersion
+	if raw := r.URL.Query().Get("pv"); raw != "" {
+		if parsed, convErr := strconv.Atoi(raw); convErr == nil && parsed >= ProtocolVersion {
+			version = parsed
+			if version > ProtocolVersionV2 {
+				version = ProtocolVersionV2
+			}
+		}
+	}
 	ws, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return // Upgrade 已写响应
 	}
 	ep := &Endpoint{
-		role: role, id: id, channel: channel, desktopID: desktopID, ws: ws,
+		role: role, id: id, channel: channel, desktopID: desktopID, version: version, ws: ws,
 		send: make(chan []byte, 32), closed: make(chan struct{}),
 	}
 	defer func() {

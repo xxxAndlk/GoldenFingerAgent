@@ -165,7 +165,8 @@ func TestBMAA2ADiscoveryAndDelegate(t *testing.T) {
 				"skills":              []map[string]string{{"id": "build", "name": "项目构建"}},
 			})
 		case "/a2a":
-			authorized = r.Header.Get("Authorization") == "Bearer secret" && r.Header.Get("A2A-Version") == "1.0"
+			// 卡片未声明版本 → 按 v0.3 报文发送，不能把旧式报文标成 1.0。
+			authorized = r.Header.Get("Authorization") == "Bearer secret" && r.Header.Get("A2A-Version") == "0.3"
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 				t.Error(err)
@@ -193,6 +194,51 @@ func TestBMAA2ADiscoveryAndDelegate(t *testing.T) {
 	}
 	if result.Output != "BMA 已完成构建" || result.TaskID != "task-1" || !authorized {
 		t.Fatalf("result = %+v, authorized = %v", result, authorized)
+	}
+}
+
+func TestA2AV1Negotiation(t *testing.T) {
+	var sawVersion, sawMethod, sawRole string
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/agent-card.json":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"name": "V1 Agent",
+				"supportedInterfaces": []map[string]string{{
+					"url": server.URL + "/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0",
+				}},
+			})
+		case "/a2a":
+			sawVersion = r.Header.Get("A2A-Version")
+			var request map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			sawMethod, _ = request["method"].(string)
+			if params, ok := request["params"].(map[string]any); ok {
+				if message, ok := params["message"].(map[string]any); ok {
+					sawRole, _ = message["role"].(string)
+				}
+			}
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"1","result":{"id":"t1","status":{"state":"TASK_STATE_COMPLETED"},"parts":[{"text":"v1 ok"}]}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	manager := testManager(t)
+	agent, err := manager.RegisterA2A(Endpoint{ID: "v1", URL: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.ProtocolVersion != "1.0" {
+		t.Fatalf("protocol version=%q", agent.ProtocolVersion)
+	}
+	result, err := manager.Delegate(context.Background(), "v1", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "v1 ok" || sawVersion != "1.0" || sawMethod != "SendMessage" || sawRole != "ROLE_USER" {
+		t.Fatalf("result=%+v version=%q method=%q role=%q", result, sawVersion, sawMethod, sawRole)
 	}
 }
 

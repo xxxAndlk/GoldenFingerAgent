@@ -44,6 +44,11 @@ type Repos struct {
 	PersonalPolicies    *PersonalPolicyRepo
 	Devices             *DeviceRepo
 	ConnectorStatuses   *ConnectorStatusRepo
+	CloudDevices        *CloudDeviceRepo
+	CloudEpisodes       *CloudEpisodeMetaRepo
+	CloudDeliveries     *CloudDeliveryRepo
+	MemoryOutbox        *MemoryOutboxRepo
+	DeliveryOutbox      *DeliveryOutboxRepo
 }
 
 // NewRepos 在一个 Querier 之上构建仓储（用 WithTx 可得到事务范围的仓储）。
@@ -94,5 +99,10 @@ func NewRepos(q Querier) *Repos {
 		PersonalPolicies:    NewPersonalPolicyRepo(q),
 		Devices:             NewDeviceRepo(q),
 		ConnectorStatuses:   NewConnectorStatusRepo(q),
+		CloudDevices:        NewCloudDeviceRepo(q),
+		CloudEpisodes:       NewCloudEpisodeMetaRepo(q),
+		CloudDeliveries:     NewCloudDeliveryRepo(q),
+		MemoryOutbox:        NewMemoryOutboxRepo(q),
+		DeliveryOutbox:      NewDeliveryOutboxRepo(q),
 	}
 }

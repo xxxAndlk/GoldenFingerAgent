@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 交付物只暴露 App 私有目录下的 deliveries/，不暴露其他文件。 -->
+    <files-path name="deliveries" path="deliveries/" />
+</paths>

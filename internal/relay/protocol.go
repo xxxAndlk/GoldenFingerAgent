@@ -20,7 +20,11 @@ import (
 )
 
 // 协议版本。字段变更必须升版本，不能悄悄改语义。
-const ProtocolVersion = 1
+// v2 新增 ArtifactRef；双方都声明支持时才下发，v1 端继续收到原报文。
+const (
+	ProtocolVersion   = 1
+	ProtocolVersionV2 = 2
+)
 
 // 消息类型。
 const (
@@ -64,6 +68,20 @@ type HelloPayload struct {
 	Channel   string `json:"channel,omitempty"`
 	DesktopID string `json:"desktop_id,omitempty"`
 	Desktop   string `json:"desktop_name,omitempty"`
+	// Version 是协商后的协议版本（1 或 2）。
+	Version int `json:"version,omitempty"`
+}
+
+// ArtifactRef 是异步任务／对话结果中的交付物引用。
+// 中继只传元数据，不传文件正文，也不传公开长期 URL。
+type ArtifactRef struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
+	DeliveryID string `json:"delivery_id,omitempty"`
+	Name       string `json:"name"`
+	MIME       string `json:"mime_type"`
+	Size       int64  `json:"size_bytes"`
+	SHA256     string `json:"sha256"`
 }
 
 // ResultPayload 是电脑端回传的执行结果。Reply 面向用户，Error 面向排障。
@@ -78,6 +96,8 @@ type ResultPayload struct {
 	Status string `json:"status,omitempty"`
 	// Events 是任务状态事件文本，用于在手机上显示进度。
 	Events []string `json:"events,omitempty"`
+	// Artifacts 是可选交付物引用；仅协议 v2 端会收到。
+	Artifacts []ArtifactRef `json:"artifacts,omitempty"`
 }
 
 // 中继错误。

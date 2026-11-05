@@ -24,6 +24,9 @@ const (
 	ArtifactKindEmail    = "email_draft"
 	ArtifactKindFile     = "file"
 	ArtifactKindExternal = "external_ref"
+
+	ArtifactStorageText = "text"
+	ArtifactStorageFile = "file"
 )
 
 type Artifact struct {
@@ -45,12 +48,16 @@ type ArtifactVersion struct {
 	OwnerUserID    string          `json:"owner_user_id"`
 	ArtifactID     string          `json:"artifact_id"`
 	Version        int             `json:"version"`
+	StorageKind    string          `json:"storage_kind"`
 	RelativePath   string          `json:"relative_path,omitempty"`
+	OriginalName   string          `json:"original_name,omitempty"`
 	ContentText    string          `json:"content_text,omitempty"`
 	ContentHash    string          `json:"content_hash"`
 	MimeType       string          `json:"mime_type"`
 	SizeBytes      int64           `json:"size_bytes"`
 	SourceRefs     json.RawMessage `json:"source_refs,omitempty"`
+	SourceKind     string          `json:"source_kind,omitempty"`
+	SourceRef      string          `json:"source_ref,omitempty"`
 	ChangeSummary  string          `json:"change_summary,omitempty"`
 	CreatedByJobID string          `json:"created_by_job_id,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
@@ -152,17 +159,21 @@ func NewArtifactVersionRepo(q Querier) *ArtifactVersionRepo { return &ArtifactVe
 
 func (d *DB) ArtifactVersions() *ArtifactVersionRepo { return NewArtifactVersionRepo(d) }
 
-const artifactVersionColumns = `id, owner_user_id, artifact_id, version, relative_path,
-	content_text, content_hash, mime_type, size_bytes, source_refs_json, change_summary,
-	created_by_job_id, created_at`
+const artifactVersionColumns = `id, owner_user_id, artifact_id, version, storage_kind,
+	relative_path, original_name, content_text, content_hash, mime_type, size_bytes,
+	source_refs_json, source_kind, source_ref, change_summary, created_by_job_id, created_at`
 
 func scanArtifactVersion(row interface{ Scan(...any) error }) (*ArtifactVersion, error) {
 	var v ArtifactVersion
 	var refs []byte
-	if err := row.Scan(&v.ID, &v.OwnerUserID, &v.ArtifactID, &v.Version, &v.RelativePath,
-		&v.ContentText, &v.ContentHash, &v.MimeType, &v.SizeBytes, &refs,
-		&v.ChangeSummary, &v.CreatedByJobID, &v.CreatedAt); err != nil {
+	if err := row.Scan(&v.ID, &v.OwnerUserID, &v.ArtifactID, &v.Version, &v.StorageKind,
+		&v.RelativePath, &v.OriginalName, &v.ContentText, &v.ContentHash, &v.MimeType,
+		&v.SizeBytes, &refs, &v.SourceKind, &v.SourceRef, &v.ChangeSummary,
+		&v.CreatedByJobID, &v.CreatedAt); err != nil {
 		return nil, err
+	}
+	if v.StorageKind == "" {
+		v.StorageKind = ArtifactStorageText
 	}
 	v.SourceRefs = refs
 	return &v, nil
@@ -175,15 +186,20 @@ func (r *ArtifactVersionRepo) Add(ctx context.Context, v *ArtifactVersion) error
 	if len(v.SourceRefs) == 0 {
 		v.SourceRefs = json.RawMessage(`[]`)
 	}
+	if v.StorageKind == "" {
+		v.StorageKind = ArtifactStorageText
+	}
 	if v.CreatedAt.IsZero() {
 		v.CreatedAt = nowForDB()
 	}
 	_, err := r.q.ExecContext(ctx, `INSERT INTO artifact_version
-		(id, owner_user_id, artifact_id, version, relative_path, content_text, content_hash,
-		 mime_type, size_bytes, source_refs_json, change_summary, created_by_job_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		v.ID, v.OwnerUserID, v.ArtifactID, v.Version, v.RelativePath, v.ContentText,
-		v.ContentHash, v.MimeType, v.SizeBytes, string(v.SourceRefs), v.ChangeSummary,
+		(id, owner_user_id, artifact_id, version, storage_kind, relative_path, original_name,
+		 content_text, content_hash, mime_type, size_bytes, source_refs_json, source_kind,
+		 source_ref, change_summary, created_by_job_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		v.ID, v.OwnerUserID, v.ArtifactID, v.Version, v.StorageKind, v.RelativePath,
+		v.OriginalName, v.ContentText, v.ContentHash, v.MimeType, v.SizeBytes,
+		string(v.SourceRefs), v.SourceKind, v.SourceRef, v.ChangeSummary,
 		v.CreatedByJobID, v.CreatedAt)
 	if isUniqueViolation(err) {
 		return ErrConflict

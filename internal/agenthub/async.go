@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"goldenfinger/agent/internal/store"
+	"goldenfinger/agent/internal/worktask"
 )
 
 // DelegateFunc 是后台任务实际执行通道，默认使用 Manager.DelegateAt。
@@ -25,6 +26,9 @@ type Dispatcher struct {
 	Manager  *Manager
 	Delegate DelegateFunc
 	Timeout  time.Duration
+	// Artifacts / Tasks 用于把外部 Agent 返回的文件转为 WorkTask 交付物。
+	Artifacts *worktask.ArtifactService
+	Tasks     *worktask.Service
 
 	wake   chan struct{}
 	mu     sync.Mutex
@@ -219,6 +223,15 @@ func (d *Dispatcher) runNext() error {
 		}
 	}()
 	invocation, runErr := delegate(ctx, job.AgentID, job.Task, job.WorkDir)
+	if runErr == nil && len(invocation.Artifacts) > 0 {
+		note, importErr := d.importArtifacts(ctx, job, invocation.Artifacts)
+		if note != "" {
+			invocation.Output = strings.TrimSpace(invocation.Output) + note
+		}
+		if importErr != nil {
+			invocation.Output = strings.TrimSpace(invocation.Output) + "\n\n文件产物导入失败：" + importErr.Error()
+		}
+	}
 	// 必须在 cancel() 之前取快照：否则 ctx.Err() 恒为 Canceled，
 	// 会让所有失败/超时任务都被误标成“已取消”。
 	ctxErr := ctx.Err()
@@ -254,6 +267,40 @@ func (d *Dispatcher) runNext() error {
 		}
 		return repos.AgentNotifications.Add(context.Background(), job.OwnerUserID, job.ID, body, now)
 	})
+}
+
+// importArtifacts 把异步 Agent 任务的文件产物转为 WorkTask 交付物。
+// 没有现成 WorkTask 时创建一个独立任务，保证文件仍可被用户查看和交付。
+func (d *Dispatcher) importArtifacts(ctx context.Context, job *store.AgentJob, items []AgentArtifact) (string, error) {
+	if d.Artifacts == nil {
+		return "", errors.New("Artifact 服务不可用")
+	}
+	taskID := job.WorkTaskID
+	if taskID == "" {
+		if d.Tasks == nil {
+			return "", errors.New("没有可用的 WorkTask")
+		}
+		task, err := d.Tasks.Create(ctx, worktask.CreateInput{
+			OwnerID: job.OwnerUserID,
+			Title:   "外部 Agent 文件产物",
+			Goal:    "接收 " + job.AgentID + " 返回的文件产物",
+		})
+		if err != nil {
+			return "", err
+		}
+		taskID = task.ID
+	}
+	imported, err := d.Manager.ImportArtifacts(ctx, d.Artifacts, job.OwnerUserID, taskID,
+		job.ID, job.AgentID, items)
+	if len(imported) == 0 {
+		return "", err
+	}
+	names := make([]string, 0, len(imported))
+	for _, item := range imported {
+		names = append(names, fmt.Sprintf("%s（v%d）", item.Name, item.Version))
+	}
+	return fmt.Sprintf("\n\n已把 %d 个文件产物转为交付物（任务 %s）：%s",
+		len(imported), taskID, strings.Join(names, "、")), err
 }
 
 func agentJobNotification(agentID, jobID, status, output, errorText string) string {
