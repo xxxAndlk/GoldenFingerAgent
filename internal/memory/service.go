@@ -38,6 +38,7 @@ type Service struct {
 	audit           *store.AuditRepo
 	embed           llm.Embedder
 	longTerm        LongTermMemory
+	slots           *store.SharedMemorySlotRepo
 	th              nlu.Thresholds
 	recencyHalfLife time.Duration
 	now             func() time.Time
@@ -104,8 +105,14 @@ func (s *Service) EnsurePerson(ctx context.Context, ownerID, name, relation stri
 	if err := s.persons.AddAlias(ctx, p.ID, name); err != nil {
 		return nil, err
 	}
+	// 初始备注（关系）同样进共享长期记忆：手机记录的联系人信息
+	// 电脑要能检索到。
+	syncErr := s.mirrorPersonNotes(ctx, ownerID, p, p.Notes)
 	owner := ownerID
 	_ = s.audit.Append(ctx, &owner, "agent", "person_create", p.ID, nil)
+	if syncErr != nil {
+		return p, fmt.Errorf("联系人已在本机保存，但共享记忆同步任务保存失败: %w", syncErr)
+	}
 	return p, nil
 }
 
@@ -203,7 +210,7 @@ func (s *Service) SaveFact(ctx context.Context, in SaveFactInput) (Outcome, *sto
 	if err := s.facts.Insert(ctx, f); err != nil {
 		return "", nil, err
 	}
-	s.mirrorEpisode(ctx, "fact:"+f.ID, in.OwnerUserID,
+	syncErr := s.mirrorEpisode(ctx, factSourceID(f.ID), in.OwnerUserID,
 		fmt.Sprintf("%s 的 %s：%s", in.PersonName, in.FactType, in.ValueText), "person_fact", RoleOwner, now)
 	owner := in.OwnerUserID
 	detail, _ := json.Marshal(map[string]any{"fact_id": f.ID, "status": status})
@@ -216,6 +223,9 @@ func (s *Service) SaveFact(ctx context.Context, in SaveFactInput) (Outcome, *sto
 		outcome = OutcomeSuperseded
 	}
 	log.Printf("[memory] fact %s: person=%s type=%s value=%q conf=%.2f status=%s", outcome, in.PersonName, in.FactType, in.ValueText, in.Confidence, status)
+	if syncErr != nil {
+		return outcome, f, fmt.Errorf("联系人事实已在本机保存，但共享记忆同步任务保存失败: %w", syncErr)
+	}
 	return outcome, f, nil
 }
 
@@ -226,20 +236,39 @@ func (s *Service) ForgetPerson(ctx context.Context, ownerID, personID string) er
 	if err != nil {
 		return err
 	}
+	// 事实要先取出来：级联删除会把事实行硬删掉，
+	// 之后再列就拿不到它们的长期记忆引用了。
+	facts, err := s.facts.ListByPerson(ctx, personID)
+	if err != nil {
+		return err
+	}
 	if err := s.persons.SoftDeleteCascade(ctx, ownerID, personID); err != nil {
 		return err
 	}
 	_ = s.eps.ClearPersonRefs(ctx, ownerID, p.CanonicalName)
+	var syncErrors []error
+	// 共享长期记忆里的备注也要删掉：只删本机那份的话，
+	// 另一端写的版本仍能被检索到，「忘了这个人」就只是半途。
+	if err := s.ForgetShared(ctx, ownerID, PersonNotesSlot(p.CanonicalName)); err != nil {
+		log.Printf("[memory] 遗忘共享备注失败 (%s): %v", p.CanonicalName, err)
+		syncErrors = append(syncErrors, fmt.Errorf("备注: %w", err))
+	}
 	// 长期记忆里由该人物派生的事实也要真删，否则“忘了它”只是半途。
-	if facts, err := s.facts.ListByPerson(ctx, personID); err == nil {
-		for _, f := range facts {
-			s.forgetLongTerm(ctx, ForgetRequest{OwnerID: ownerID, FactID: f.ID})
+	// 按来源引用删：事实的长期记忆片段来源是 fact:<id>，
+	// 用本机事实 ID 删不到云端派生出来的那条。
+	for _, f := range facts {
+		if err := s.forgetLongTerm(ctx, ForgetRequest{OwnerID: ownerID, SourceID: factSourceID(f.ID)}); err != nil {
+			syncErrors = append(syncErrors, fmt.Errorf("事实 %s: %w", f.ID, err))
 		}
 	}
 	log.Printf("[memory] forget person: %q (%s) — cascade: aliases+facts hard-deleted, episode refs scrubbed", p.CanonicalName, personID)
 	owner := ownerID
 	// 审计只保留删除动作本身，不保留内容（PIPL）。
-	return s.audit.Append(ctx, &owner, "user", "person_forget", personID, nil)
+	auditErr := s.audit.Append(ctx, &owner, "user", "person_forget", personID, nil)
+	if len(syncErrors) > 0 {
+		return fmt.Errorf("联系人已在本机遗忘，但共享记忆删除任务保存失败: %w", errors.Join(syncErrors...))
+	}
+	return auditErr
 }
 
 // ForgetFact 硬删除一条事实。
@@ -259,10 +288,16 @@ func (s *Service) ForgetFact(ctx context.Context, ownerID, factID string) error 
 	if err := s.facts.HardDelete(ctx, factID); err != nil {
 		return err
 	}
-	s.forgetLongTerm(ctx, ForgetRequest{OwnerID: ownerID, FactID: factID})
+	// 云端派生记忆按来源引用删除：本机事实 ID 与云端的派生条目 ID 不同，
+	// 按 ID 删会删不到。
+	syncErr := s.forgetLongTerm(ctx, ForgetRequest{OwnerID: ownerID, SourceID: factSourceID(factID)})
 	log.Printf("[memory] forget fact: %s (%q)", factID, f.ValueText)
 	owner := ownerID
-	return s.audit.Append(ctx, &owner, "user", "fact_forget", factID, nil)
+	auditErr := s.audit.Append(ctx, &owner, "user", "fact_forget", factID, nil)
+	if syncErr != nil {
+		return fmt.Errorf("事实已在本机删除，但共享记忆删除任务保存失败: %w", syncErr)
+	}
+	return auditErr
 }
 
 // PersonView 是 wiki 风格的人物页（事实分组展示）。
@@ -299,12 +334,55 @@ func (s *Service) ListPersons(ctx context.Context, ownerID string) ([]store.Pers
 }
 
 // UpdateNotes 编辑人物备注（memory 可改）。
+//
+// 备注同时写进共享长期记忆：手机与电脑只共享同一份长期记忆，
+// 联系人备注是必须共享的那一类内容。
 func (s *Service) UpdateNotes(ctx context.Context, ownerID, personID, notes string) error {
 	if err := s.persons.UpdateNotes(ctx, ownerID, personID, notes); err != nil {
 		return err
 	}
+	var syncErr error
+	person, err := s.persons.Get(ctx, ownerID, personID)
+	switch {
+	case err != nil:
+		syncErr = err
+	case person != nil:
+		syncErr = s.mirrorPersonNotes(ctx, ownerID, person, notes)
+	}
 	owner := ownerID
-	return s.audit.Append(ctx, &owner, "user", "person_edit", personID, nil)
+	auditErr := s.audit.Append(ctx, &owner, "user", "person_edit", personID, nil)
+	if syncErr != nil {
+		return fmt.Errorf("联系人备注已在本机保存，但共享记忆同步任务保存失败: %w", syncErr)
+	}
+	return auditErr
+}
+
+// mirrorPersonNotes 把联系人备注写入（或清空）共享长期记忆。
+func (s *Service) mirrorPersonNotes(ctx context.Context, ownerID string, person *store.Person, notes string) error {
+	if person == nil || s.longTerm == nil {
+		return nil
+	}
+	slot := PersonNotesSlot(person.CanonicalName)
+	text := strings.TrimSpace(notes)
+	if text == "" {
+		// 备注被清空：共享记忆里的那份也要删掉。
+		if err := s.ForgetShared(ctx, ownerID, slot); err != nil {
+			log.Printf("[memory] 清空共享备注失败 (%s): %v", slot, err)
+			return err
+		}
+		return nil
+	}
+	if err := s.SaveShared(ctx, SharedInput{
+		OwnerUserID: ownerID,
+		Slot:        slot,
+		Text:        fmt.Sprintf("%s 的备注：%s", person.CanonicalName, text),
+		Source:      SharedSlotPersonNotes,
+		At:          s.now(),
+	}); err != nil {
+		log.Printf("[memory] 共享备注写入失败 (%s): %v", slot, err)
+		return err
+	}
+	return nil
 }
 
 // SaveNote 把语音笔记持久化为一个片段（可检索），可带任务链接。
@@ -369,19 +447,28 @@ func (s *Service) SaveWorkerResult(ctx context.Context, ownerID, text, rawRef st
 	return e, nil
 }
 
+// factSourceID 是事实在长期记忆里的来源 ID。
+//
+// 事实的长期记忆片段用它做来源，遗忘时也用它删除：
+// 云端派生出来的条目用的是来源引用，不是本机事实 ID。
+func factSourceID(factID string) string {
+	return "fact:" + factID
+}
+
 // FactLine 把一条事实渲染为一行提示文本。
 func FactLine(f *store.Fact) string {
 	return fmt.Sprintf("%s: %s", f.FactType, f.ValueText)
 }
 
 // forgetLongTerm 把遗忘请求同步到可替换长期记忆后端。
-// 后端不支持删除时只记录日志：SQLite 侧的删除已经生效，
-// 但不能对用户谎称“全部忘掉”。
-func (s *Service) forgetLongTerm(ctx context.Context, request ForgetRequest) {
+// 本机删除先生效时，由调用方把后端错误包装成明确的同步失败。
+func (s *Service) forgetLongTerm(ctx context.Context, request ForgetRequest) error {
 	if s.longTerm == nil {
-		return
+		return nil
 	}
-	if err := s.longTerm.Forget(ctx, request); err != nil && !errors.Is(err, ErrUnsupported) {
-		log.Printf("[memory] long-term forget deferred (%+v): %v", request, err)
+	if err := s.longTerm.Forget(ctx, request); err != nil {
+		log.Printf("[memory] long-term forget failed (%+v): %v", request, err)
+		return err
 	}
+	return nil
 }

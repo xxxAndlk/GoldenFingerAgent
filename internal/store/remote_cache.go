@@ -108,8 +108,16 @@ func (r *RemotePendingRepo) Enqueue(ctx context.Context, item RemotePending) (Re
 }
 
 // matchExisting 判断同键请求是不是同一条指令。
+//
+// 必须同时比对 owner、指令类型和 payload：
+//   - 只比 payload，另一个 owner 的同键请求会读到别人已完成的结果或失败原因；
+//   - 不比 kind，同一个 owner 用同一个键换一种操作会被误判成同一条指令。
+//
+// 三者任一不同都按冲突处理：宁可让调用方换键，也不能悄悄替换或复用。
 func matchExisting(existing, incoming RemotePending) (RemotePending, bool, error) {
-	if !sameJSON(existing.Payload, incoming.Payload) {
+	if existing.OwnerUserID != incoming.OwnerUserID ||
+		existing.Kind != incoming.Kind ||
+		!sameJSON(existing.Payload, incoming.Payload) {
 		return RemotePending{}, false, ErrConflict
 	}
 	return existing, false, nil

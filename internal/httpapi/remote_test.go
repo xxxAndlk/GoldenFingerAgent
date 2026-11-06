@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -667,6 +668,54 @@ func TestRemoteQueueReportsExistingState(t *testing.T) {
 	}
 	if decodeMap(t, rec)["_queued"] == true {
 		t.Fatalf("失败的指令不能报告已排队：%s", rec.Body)
+	}
+}
+
+// 同一个幂等键不能跨 owner 或跨指令类型复用：
+// 否则一个用户会拿到别人的执行结果，同一个用户换一种操作也会被误判成同一条指令。
+func TestRemoteQueueRejectsCrossOwnerAndCrossKind(t *testing.T) {
+	srv, remote := newRemoteServer(t)
+	h := srv.Handler()
+	remote.offline = true
+	ctx := context.Background()
+
+	ownerA := ownerUser(t, srv.Repos, "甲用户")
+	ownerB := ownerUser(t, srv.Repos, "乙用户")
+
+	post := func(owner, path, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-User-Id", owner)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	rec := post(ownerA.ID, "/api/remote/work-tasks/wt-1/messages",
+		`{"text":"继续","idempotency_key":"key-owner"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("first status=%d body=%s", rec.Code, rec.Body)
+	}
+
+	// 另一个 owner 用同一个键：冲突，不能读到对方的排队记录。
+	rec = post(ownerB.ID, "/api/remote/work-tasks/wt-1/messages",
+		`{"text":"继续","idempotency_key":"key-owner"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("cross-owner status=%d body=%s", rec.Code, rec.Body)
+	}
+	pending, err := srv.Repos.RemotePending.ListPending(ctx, ownerB.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("owner-b 队列里不该出现别人的指令：%+v", pending)
+	}
+
+	// 同一个 owner、同一个键，但换一种操作类型：同样冲突。
+	rec = post(ownerA.ID, "/api/remote/work-tasks/wt-1/pause",
+		`{"idempotency_key":"key-owner"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("cross-kind status=%d body=%s", rec.Code, rec.Body)
 	}
 }
 

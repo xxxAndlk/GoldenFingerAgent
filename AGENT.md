@@ -24,7 +24,7 @@
 - 管理窗口：`Agent 调度` 与 `设置` 在同一个窗口中切换。
 - CC Switch：独立窗口，管理供应商、用量与额度。
 - 工作轨迹：独立半透明浮窗，不随主对话收起而关闭；标题栏可自由拖动，拖到屏幕边缘会吸附；窗口被拖出屏幕边缘超过自身尺寸 20% 时自动收成贴边小条（点击小条展开原尺寸）。展开且贴边时，轨迹窗左侧外侧显示一个独立收回按钮（32×46 小窗口，样式与贴边展开小条一致、箭头相反；不占卡片宽度、不留透明空列；卡片左侧空间不足时自动放到右侧）；拖回中间、不贴边或收起后该按钮隐藏。`×` 是完全隐藏。轨迹窗高度上限固定为 340，启动时按上限裁剪旧配置，不做自动移动/避让；主对话面板不贴边。透明度和显示开关在设置页。
-- 系统托盘：金色「金」球图标（idle/忙碌两态）；点击图标展开主对话。菜单含展开/收起对话、显示/展开/隐藏轨迹、立即总结、设置、CC Switch 与退出。Windows 11 新托盘图标默认在「^」隐藏区，程序会尝试把已有记录提升回任务栏。不要用 `--no-sandbox` 启动：Electron 会因此落到 Low 完整性，Windows 会拒绝它的托盘图标；正常启动请用「启动管家服务.bat」或桌面快捷方式。
+- 系统托盘：原子图标（idle/忙碌两态，忙碌态右下角带绿色状态点）；点击图标展开主对话。菜单含展开/收起对话、显示/展开/隐藏轨迹、立即总结、设置、CC Switch 与退出。Windows 11 新托盘图标默认在「^」隐藏区，程序会尝试把已有记录提升回任务栏。不要用 `--no-sandbox` 启动：Electron 会因此落到 Low 完整性，Windows 会拒绝它的托盘图标；正常启动请用「启动管家服务.bat」或桌面快捷方式。
 - **应用树必须带 Medium 完整性标签**。仓库根目录若被标成 Low，新建的文件会继承 Low：Electron 主进程在 Low 下无法初始化 Chromium 沙箱，表现为双击后立即静默退出（退出码 3、无任何日志），Go 连接器也读不到微信进程内存。发布前用 `icacls D:\WebData\github\GoldenFingerAgent /setintegritylevel M /T` 修正，并确认 `desktop/dist/GoldenFinger-win/GoldenFinger.exe`、`resources/app/server/goldenfinger-server.exe`、`resources/app/connectors/wechat-db/wechat-db-connector.exe` 的标签都是 `Medium Mandatory Level`。排查“启动即退出”时先看 `icacls <exe>`，再看日志。
 - 模型设置：推理强度只有 low / high / max 三档（与 DeepSeek 对齐）。
 - 聊天回复：支持 Markdown。
@@ -110,6 +110,12 @@ Windows 构建与打包：
 CGO_ENABLED=0 ./.bma/tools/go/bin/go.exe build -o server-dist/goldenfinger-server.exe ./cmd/server
 npm --prefix desktop run dist
 ```
+
+应用图标（窗口/任务栏、托盘 idle/busy、悬浮球、H5 favicon 与头像、Android 启动图标）全部由
+`python desktop/scripts/create-tray-icon.py` 从同一张母版生成，**产物勿手改**。母版优先取
+Electron 自带的 `node_modules/electron/dist/resources/default_app.asar` 里的 1024px `icon.png`；
+取不到才回退到 `desktop/scripts/app-icon-source.png`。截图重建的母版会糊，不要用
+`extract-icon-source.py` 覆盖母版。改完图标要重新打包桌面端并同步 `web/`。
 
 Android 构建（宿主无需 Android 工具链，全部在 Docker 内完成）：
 
@@ -298,6 +304,20 @@ env -u ELECTRON_RUN_AS_NODE ./desktop/dist/GoldenFinger-win/GoldenFinger.exe --s
 - **Worker 会话的输入只能经任务 Inbox**：桌面打开 Worker 会话时不得修改主聊天会话指针（`chatSessionId`），输入走 `messageWorkTask`；手机同理。终态（`completed`/`cancelled`）任务前后端都禁止追加，需先 `reopen`。
 - **会话投影与旧接口并存**：`/api/conversations` 是新界面的统一投影，`/api/sessions` 语义不变（仍过滤 worker/router）。`source_device` 必须是会话事实源设备，不是发起请求的设备。
 - **渠道开关必须对应真实设备**：手机端显示三态——本机可用（如手机通知微信）／需电脑在线（电脑微信、工作轨迹、授权网页）／未接入（飞书、钉钉、邮箱）。保存远程配置要等桌面真实回执，失败时保留原状态。连接器健康看心跳，不用「历史上有消息」推断正在采集。
+
+### 双端共享的长期记忆
+
+- **共享范围只有长期记忆**：手机与电脑共享同一份长期记忆；原始聊天记录与会话历史**不要求**跨端同步。判断一项能力是否达标，看「任一端写入后另一端能否从同一份长期记忆检索到」，不看聊天历史是否一致。
+- **必须共享的三类内容**：协作阶段的最终总结、每日工作简报、联系人事实与备注。三者都要经 `memory.Service.SaveShared` 写进长期记忆，不能只落在本机表里。
+- **共享条目用「槽位 + 内容寻址」**：来源 ID 为 `<槽位>:<内容哈希>`，同样的内容在两端是同一个 ID（云端去重不会出两条）；内容变了必须换 ID，云端不允许同 ID 改内容。
+- **「同一槽位只保留最新版」由后端保证**：本机 Native 与云端都在事务里删旧版本、写新版本。**不能只靠各端自己的槽位表**——另一端写过的版本本机根本不知道，只删本机那版会新旧两条并存。
+- **旧请求不能覆盖新内容**：写入带 `slot_updated_at`（毫秒），后端判定过期就丢弃并回 `stale`；端侧用云端返回的 `server_time` 校正时钟偏差。
+- **槽位用跨端一致的名字**（`brief:<日期>`、`person_notes:<规范名>`、`collab_summary:<阶段 ID>`），不能用本机行 ID——两端的本地 ID 不同。
+- **遗忘按前缀删**：`ForgetRequest.SourcePrefix` 一次删掉某个槽位的所有版本，另一端写的版本也要一起删；只删本机那一条会留下「本机已删、云端仍可召回」的内容。
+- **写入和删除都要进持久队列**：删除只走内存或只在联网时直发都会丢，`memory_sync_outbox.op` 区分 `upsert`/`delete`，断网时照常落队列、恢复后按顺序补发。失败项可查看（`failed` 计数）可重试（`POST /api/cloud-memory/retry`），界面要区分「已保存到本机、等待同步」与「云端已同步」。
+- **联系人备注必须走记忆服务**：`PUT /api/persons/{id}` 不能直接改 `person.notes`，否则备注不会进共享记忆；遗忘联系人同理。
+- **单条事实删除也要走记忆服务**：`DELETE /api/facts/{id}` 要经过 `Service.ForgetFact`，它按**来源引用**（`fact:<id>`）删云端派生记忆——用本机事实 ID 删不到云端那条。
+- **事实治理面板仍是本机视图**：`/api/memory/longterm` 列的是本机抽取出的事实；云端事实通过检索进入对话上下文，不在面板里展示。
 - **手机聊天配置电脑采集走远程命令**：Android 注册 `agent.RemoteCollectionTools`，由中继转发到电脑端的采集管理器执行；不要把桌面工具直接注册到手机，也不要让手机自己保存渠道配置。
 - **委派执行记录不是聊天**：`agent_job` 只是执行段。没有绑定会话时 `can_message=false`，前端不得伪造对话界面。
 - **通知要带去处**：`OutboxItem.route` 只能是 `brief` / `tasks` / `inbox`，由产生提醒的地方决定；手机点通知时按 route 打开对应面板，未知 route 只打开首页，不猜页面。

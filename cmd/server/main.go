@@ -113,6 +113,8 @@ func main() {
 	}
 	mem := memory.NewService(repos.Persons, repos.Facts, repos.Episodes, repos.Audit,
 		embedder, th, cfg.Memory.RecencyHalfLife, nil)
+	// 共享记忆槽位：记录每个位置当前对应哪条长期记忆来源，内容更新时据此清理旧版本。
+	mem.SetSharedSlots(repos.SharedSlots)
 	remoteMemory := setupLongTermMemory(ctx, mem, st, cfg, repos, llmClient, embedder)
 
 	// 通知中心：watch 命中经 Notify 复用 Outbox（Web/NotifyPoller 轮询）。
@@ -342,6 +344,9 @@ func main() {
 		RemoteMemory: remoteMemory,
 		Delivery:     deliveryClient,
 		Coordinator:  &superagent.Coordinator{Tasks: workTasks},
+		// 记忆服务：联系人备注、共享记忆写入都要经过它，
+		// 否则只写本机 SQLite，另一端检索不到。
+		Memory: mem,
 		// 桌面本机界面也是一个「设备」：已读游标按设备分别记录，
 		// 不能让桌面和手机的角标互相清掉。
 		DeviceID: "desktop",
@@ -356,6 +361,8 @@ func main() {
 	}
 	superAgent.Summarizer = superagent.NewSummarizer(db, llmFor)
 	briefs := superagent.NewBriefGenerator(db, llmFor)
+	// 简报正文写进共享长期记忆：手机与电脑只共享这一份记忆。
+	briefs.SharedMemory = mem
 	briefs.ChannelEnabled = func(ctx context.Context, ownerID, channel string) (bool, error) {
 		if channel == store.ChannelWeb {
 			return true, nil

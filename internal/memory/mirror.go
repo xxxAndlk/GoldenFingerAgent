@@ -10,11 +10,11 @@ import (
 //
 // 为什么需要它：SQLite 的 episode/fact 是「原始真相」，长期记忆后端负责
 // 抽取与检索；不镜像就会导致两边越用越不一致（新鲜对话进不了语义检索）。
-// 镜像失败不能影响主流程——SQLite 已经写成功，用户的操作是有效的，
-// 但必须留下日志，不能用静默失败假装后端正常。
-func (s *Service) mirrorEpisode(ctx context.Context, sourceID, ownerID, text, source, role string, at time.Time) {
+// SQLite 已经写成功时，调用方可以把镜像失败作为同步错误返回；
+// 普通聊天镜像可以忽略该错误，共享事实写入必须把它暴露给调用方。
+func (s *Service) mirrorEpisode(ctx context.Context, sourceID, ownerID, text, source, role string, at time.Time) error {
 	if s.longTerm == nil || text == "" {
-		return
+		return nil
 	}
 	episode := Episode{
 		SourceID:      sourceID,
@@ -26,7 +26,36 @@ func (s *Service) mirrorEpisode(ctx context.Context, sourceID, ownerID, text, so
 	}
 	if err := s.longTerm.Append(ctx, episode); err != nil {
 		log.Printf("[memory] long-term mirror failed (source=%s): %v", sourceID, err)
+		return err
 	}
+	return nil
+}
+
+// mirrorSharedEpisode 写入一条跨端共享的记忆。
+//
+// slot 让后端按槽位原子替换旧版本（同一位置只保留最新一版），
+// updatedAt 是这次写入的时刻：两端时钟有偏差时，后端据此判断谁更新，
+// 离线很久的旧请求恢复后不会把新内容覆盖掉。
+func (s *Service) mirrorSharedEpisode(ctx context.Context, sourceID, ownerID, text, source, slot string,
+	at, updatedAt time.Time) error {
+	if s.longTerm == nil || text == "" {
+		return nil
+	}
+	episode := Episode{
+		SourceID:      sourceID,
+		OwnerID:       ownerID,
+		Text:          text,
+		ReferenceTime: at,
+		Source:        source,
+		Role:          RoleOwner,
+		Slot:          slot,
+		UpdatedAt:     updatedAt,
+	}
+	if err := s.longTerm.Append(ctx, episode); err != nil {
+		log.Printf("[memory] 共享记忆写入失败 (slot=%s): %v", slot, err)
+		return err
+	}
+	return nil
 }
 
 // SetLongTermMemory 装配可替换的长期记忆后端；传 nil 表示只用 SQLite 检索。

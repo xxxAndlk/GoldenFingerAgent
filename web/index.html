@@ -7,6 +7,8 @@
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f2f2f7">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="icon" type="image/png" href="app-icon.png">
+<link rel="apple-touch-icon" href="app-icon.png">
 <title>金手指管家</title>
     <script src="./vendor/vue.global.prod.js"></script>
 <style>
@@ -303,20 +305,12 @@ header {
 }
 .avatar .icon { width: 22px; height: 22px; }
 
-/* 管家头像：应用图标式圆角方块 + 金色渐变 + 内高光 */
+/* 管家头像：应用图标，与桌面端任务栏/托盘/悬浮球同一张图 */
 .avatar.bot-av {
-  background: var(--gold-grad);
-  color: var(--on-gold);
-  border: .5px solid rgba(255, 255, 255, .55);
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: -.03em;
-  box-shadow:
-    0 2px 6px rgba(168, 112, 26, .28),
-    inset 0 1px 1px rgba(255, 255, 255, .75),
-    inset 0 -6px 12px rgba(140, 88, 12, .22);
+  background: url("app-icon.png") center / 100% 100% no-repeat;
+  box-shadow: 0 2px 6px rgba(20, 32, 48, .28);
 }
-.msg .avatar.bot-av { font-size: 13px; }
+.msg .avatar.bot-av { box-shadow: 0 1px 3px rgba(20, 32, 48, .22); }
 .avatar.user-av {
   background: var(--fill);
   border-radius: 50%;
@@ -1781,7 +1775,7 @@ body.child .panel-btn, body.child .adv { display: none; }
     <symbol id="i-attach" viewBox="0 0 24 24"><path d="M8.8 12.6l6.1-6.1a2.9 2.9 0 0 1 4.1 4.1l-7.4 7.4a4.3 4.3 0 0 1-6.1-6.1l6.8-6.8"/><path d="M8.2 15.8l6.2-6.2"/></symbol>
   </svg>
   <header>
-    <div class="avatar bot-av" aria-hidden="true">金</div>
+    <div class="avatar bot-av" aria-hidden="true"></div>
     <div class="htxt">
       <div class="title">金手指管家</div>
       <div class="sub" :class="online ? 'online' : 'offline'">{{ online ? '已连接本机管家' : '管家服务未连接' }}</div>
@@ -1849,7 +1843,7 @@ body.child .panel-btn, body.child .adv { display: none; }
       </div>
     </template>
     <div v-if="thinking" class="msg bot">
-      <div class="avatar bot-av" aria-hidden="true">金</div>
+      <div class="avatar bot-av" aria-hidden="true"></div>
       <div class="col"><div class="bubble typing"><i></i><i></i><i></i></div></div>
     </div>
   </div>
@@ -2486,6 +2480,11 @@ body.child .panel-btn, body.child .adv { display: none; }
           <button class="btn ghost" type="button" style="flex:1" :disabled="cloudSaving" @click="testCloudMemory">测试连接</button>
           <button class="btn" type="button" style="flex:1" :disabled="cloudSaving" @click="saveCloudMemory">{{ cloudSaving ? '保存中…' : '保存云端记忆' }}</button>
         </div>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn ghost" type="button" style="flex:1"
+                  :disabled="cloudSaving || !(cloudMemory.failed > 0)"
+                  @click="retryCloudMemory">重试失败项（{{ cloudMemory.failed || 0 }}）</button>
+        </div>
         <div class="model-status">{{ cloudStatus }}</div>
       </details>
       <div class="saveok" v-if="settingsSaved"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg>已保存，立即生效</div>
@@ -3023,7 +3022,7 @@ createApp({
             this.briefMeta = brief;
             this.briefCurrentId = brief.id || '';
           }
-          this.briefNotice = '已生成新版本。';
+          this.briefNotice = data.shared_sync_error || '已生成新版本。';
         }
       } catch (e) {
         this.briefError = '生成失败：' + (e.message || e);
@@ -4203,8 +4202,34 @@ createApp({
       const sync = data.mode === 'cloud'
         ? ` · ${data.ready ? '已连接' : '未连接'} · 待发 ${data.pending || 0} / 失败 ${data.failed || 0} / 暂停 ${data.paused || 0}`
         : '';
+      // 明确区分「已保存到本机、等待同步」和「云端已同步」。
+      const pending = data.mode === 'cloud' && (data.pending || 0) > 0
+        ? ' · 有内容已保存到本机，等待同步到云端'
+        : '';
       const detail = data.detail ? ' · ' + data.detail : '';
-      return mode + sync + detail;
+      return mode + sync + pending + detail;
+    },
+    async retryCloudMemory() {
+      this.cloudSaving = true;
+      this.cloudStatus = '正在重试失败的同步项…';
+      try {
+        const res = await apiFetch('/api/cloud-memory/retry', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+        if (data.status) {
+          this.cloudMemory = {
+            ...this.cloudMemory,
+            pending: data.status.pending || 0,
+            failed: data.status.failed || 0,
+            paused: data.status.paused || 0,
+          };
+          this.cloudStatus = this.cloudStatusText(data.status) + ' · 已重新排队 ' + (data.requeued || 0) + ' 项';
+        }
+      } catch (e) {
+        this.cloudStatus = '重试失败：' + e.message;
+      } finally {
+        this.cloudSaving = false;
+      }
     },
     async loadCloudMemory() {
       try {

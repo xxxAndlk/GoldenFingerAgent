@@ -196,7 +196,7 @@ func TestRemotePauseOnUnauthorized(t *testing.T) {
 	}
 }
 
-func TestRemoteForgetClearsPendingOutbox(t *testing.T) {
+func TestRemoteForgetQueuesDeleteAndSendsOnFlush(t *testing.T) {
 	f := newRemoteFixture(t)
 	ctx := context.Background()
 	if err := f.remote.Append(ctx, Episode{SourceID: "chat:4", OwnerID: "u1", Text: "x", Role: RoleOwner}); err != nil {
@@ -205,12 +205,24 @@ func TestRemoteForgetClearsPendingOutbox(t *testing.T) {
 	if err := f.remote.Forget(ctx, ForgetRequest{OwnerID: "u1", SourceID: "chat:4"}); err != nil {
 		t.Fatal(err)
 	}
+	// 遗忘先落本地队列：断网时删除不能丢。
 	pending, _, _, _ := store.NewRepos(f.localDB).MemoryOutbox.Counts(ctx, "u1")
-	if pending != 0 {
+	if pending != 1 {
 		t.Fatalf("pending after forget = %d", pending)
+	}
+	if len(f.cloud.forgets) != 0 {
+		t.Fatalf("遗忘不应在排队前就发出去：%v", f.cloud.forgets)
+	}
+	// 补发之后云端才真的删。
+	if sent := f.remote.Flush(ctx); sent != 1 {
+		t.Fatalf("sent = %d", sent)
 	}
 	if len(f.cloud.forgets) != 1 || f.cloud.forgets[0]["source_id"] != "chat:4" {
 		t.Fatalf("forgets = %v", f.cloud.forgets)
+	}
+	pending, _, _, _ = store.NewRepos(f.localDB).MemoryOutbox.Counts(ctx, "u1")
+	if pending != 0 {
+		t.Fatalf("pending after flush = %d", pending)
 	}
 }
 

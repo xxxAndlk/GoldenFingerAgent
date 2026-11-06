@@ -64,6 +64,34 @@ type Remote struct {
 	paused  bool
 	lastOK  time.Time
 	lastErr string
+	// clockOffset 是本机时钟与云端时钟的差值：两端设备时间不准时，
+	// 槽位的新旧判断才不会判反。
+	clockOffset time.Duration
+}
+
+// adjustedTime 把本机时间换算成云端时间轴上的时刻。
+func (r *Remote) adjustedTime(at time.Time) time.Time {
+	r.mu.Lock()
+	offset := r.clockOffset
+	r.mu.Unlock()
+	return at.Add(offset)
+}
+
+// noteServerTime 记录云端时间与本机时间的差值（最多采纳 10 分钟的偏差）。
+func (r *Remote) noteServerTime(serverTimeMs int64) {
+	if serverTimeMs <= 0 {
+		return
+	}
+	offset := time.UnixMilli(serverTimeMs).Sub(r.cfg.Now())
+	if offset > 10*time.Minute {
+		offset = 10 * time.Minute
+	}
+	if offset < -10*time.Minute {
+		offset = -10 * time.Minute
+	}
+	r.mu.Lock()
+	r.clockOffset = offset
+	r.mu.Unlock()
 }
 
 // NewRemote 创建云端记忆客户端。
@@ -90,6 +118,11 @@ type remoteEpisodePayload struct {
 	Role          string `json:"role"`
 	ReferenceTime string `json:"reference_time"`
 	ContentHash   string `json:"content_hash"`
+	// Slot 是共享内容的位置：云端按槽位原子替换旧版本。
+	Slot string `json:"slot,omitempty"`
+	// SlotUpdatedAt 是写入时间（毫秒）：云端据此判断新旧，
+	// 离线很久的旧请求恢复后不能覆盖更新的内容。
+	SlotUpdatedAt int64 `json:"slot_updated_at,omitempty"`
 }
 
 // Append 先持久化到 Outbox 再异步上传；页面/聊天主流程不会因网络失败而阻塞。
@@ -105,10 +138,18 @@ func (r *Remote) Append(ctx context.Context, episode Episode) error {
 	if role == "" {
 		role = RoleOwner
 	}
+	updatedAt := episode.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = r.cfg.Now()
+	}
 	payload, err := json.Marshal(remoteEpisodePayload{
 		SourceID: episode.SourceID, Text: episode.Text, Source: episode.Source,
 		Role: role, ReferenceTime: at.Format(time.RFC3339Nano),
 		ContentHash: contentHashOf(episode.Text),
+		Slot:        episode.Slot,
+		// 用云端时间校正过的写入时刻：两端时钟有偏差时，
+		// 「谁更新」才不会判错。
+		SlotUpdatedAt: r.adjustedTime(updatedAt).UnixMilli(),
 	})
 	if err != nil {
 		return err
@@ -165,7 +206,7 @@ func (r *Remote) Flush(ctx context.Context) int {
 		if ctx.Err() != nil {
 			break
 		}
-		_, status, retryAfter, err := r.uploadEpisode(ctx, entry.PayloadJSON)
+		status, retryAfter, err := r.deliver(ctx, entry)
 		now := r.cfg.Now()
 		switch {
 		case err == nil:
@@ -199,6 +240,23 @@ func (r *Remote) Flush(ctx context.Context) int {
 		}
 	}
 	return sent
+}
+
+// deliver 执行一条待发记录：写入片段，或执行删除指令。
+func (r *Remote) deliver(ctx context.Context, entry store.MemoryOutboxEntry) (int, time.Duration, error) {
+	if entry.Op == store.MemoryOutboxDelete {
+		return r.deleteRemote(ctx, entry.PayloadJSON)
+	}
+	_, status, retryAfter, err := r.uploadEpisode(ctx, entry.PayloadJSON)
+	return status, retryAfter, err
+}
+
+// RetryFailed 把失败条目重新排队（界面上「重试」按钮用）。
+func (r *Remote) RetryFailed(ctx context.Context, ownerID string) (int64, error) {
+	if ownerID == "" {
+		return 0, errors.New("memory: 重试失败条目需要 owner")
+	}
+	return r.outbox.RetryFailed(ctx, ownerID)
 }
 
 func errorText(err error) string {
@@ -284,10 +342,38 @@ func (r *Remote) uploadEpisode(ctx context.Context, payload string) (string, int
 			&httpError{Status: resp.StatusCode, Body: string(raw)}
 	}
 	var decoded struct {
-		Status string `json:"status"`
+		Status     string `json:"status"`
+		ServerTime int64  `json:"server_time"`
 	}
 	_ = json.Unmarshal(raw, &decoded)
+	r.noteServerTime(decoded.ServerTime)
 	return decoded.Status, resp.StatusCode, 0, nil
+}
+
+// forgetRemotePayload 是排队中的删除指令。
+type forgetRemotePayload struct {
+	SourceID     string `json:"source_id,omitempty"`
+	SourcePrefix string `json:"source_prefix,omitempty"`
+	FactID       string `json:"fact_id,omitempty"`
+}
+
+// deleteRemote 执行一条排队中的删除指令。
+func (r *Remote) deleteRemote(ctx context.Context, payload string) (int, time.Duration, error) {
+	resp, err := r.do(ctx, http.MethodPost, "/api/memory/v1/forget", strings.NewReader(payload))
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+	if resp.StatusCode == http.StatusGone {
+		// 已经是遗忘墓碑：视为完成。
+		return resp.StatusCode, 0, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp.StatusCode, parseRetryAfter(resp.Header.Get("Retry-After")),
+			&httpError{Status: resp.StatusCode, Body: string(raw)}
+	}
+	return resp.StatusCode, 0, nil
 }
 
 // Search 实时查询云端；错误原样返回，让调用方明确降级而不是伪造成“没有记忆”。
@@ -343,34 +429,44 @@ func (r *Remote) Search(ctx context.Context, query MemoryQuery) ([]MemoryFact, e
 
 // Forget 调用云端删除，并清理本机相同 SourceID 的待发事件。
 func (r *Remote) Forget(ctx context.Context, request ForgetRequest) error {
-	body := map[string]any{}
-	if request.FactID != "" {
-		body["fact_id"] = request.FactID
-	} else if request.SourceID != "" {
-		body["source_id"] = request.SourceID
-	} else {
-		return errors.New("memory: 遗忘需要 source_id 或 fact_id")
+	payload := forgetRemotePayload{}
+	key := ""
+	switch {
+	case request.FactID != "":
+		payload.FactID = request.FactID
+		key = "forget:fact:" + request.FactID
+	case request.SourcePrefix != "":
+		payload.SourcePrefix = request.SourcePrefix
+		key = "forget:" + request.SourcePrefix
+	case request.SourceID != "":
+		payload.SourceID = request.SourceID
+		key = "forget:" + request.SourceID
+	default:
+		return errors.New("memory: 遗忘需要 source_id、source_prefix 或 fact_id")
 	}
-	raw, err := json.Marshal(body)
+	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	resp, err := r.do(ctx, http.MethodPost, "/api/memory/v1/forget", bytes.NewReader(raw))
-	if err != nil {
+	if err := r.outbox.EnqueueDelete(ctx, &store.MemoryOutboxEntry{
+		OwnerUserID: request.OwnerID, SourceID: key,
+		PayloadJSON: string(raw), ContentHash: contentHashOf(string(raw)),
+	}); err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-	detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-	if resp.StatusCode == http.StatusGone {
-		// 已经是遗忘墓碑，视为成功。
-	} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &httpError{Status: resp.StatusCode, Body: string(detail)}
-	}
+	// 清掉本机同来源的待发与已发记录：删除已经排队，
+	// 之后再写同样的内容要能重新排队（来源 ID 按内容寻址，会重复）。
 	if request.SourceID != "" {
-		if err := r.outbox.DeleteBySource(ctx, request.OwnerID, request.SourceID); err != nil {
+		if err := r.outbox.PurgeBySource(ctx, request.OwnerID, request.SourceID); err != nil {
 			return err
 		}
 	}
+	if request.SourcePrefix != "" {
+		if err := r.outbox.PurgeBySourcePrefix(ctx, request.OwnerID, request.SourcePrefix); err != nil {
+			return err
+		}
+	}
+	r.wake()
 	return nil
 }
 

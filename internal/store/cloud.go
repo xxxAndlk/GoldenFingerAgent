@@ -194,3 +194,38 @@ func (r *CloudEpisodeMetaRepo) MarkForgotten(ctx context.Context, ownerID, origi
 		ownerID, original, stored, deviceID, at, at)
 	return err
 }
+
+// ListByOriginalPrefix 列出某个来源前缀下的全部映射。
+//
+// 共享记忆的一个槽位可能有多个版本（内容每次变化都换来源 ID），
+// 按前缀遗忘时要一次拿到所有版本。
+func (r *CloudEpisodeMetaRepo) ListByOriginalPrefix(ctx context.Context, ownerID, prefix string) ([]CloudEpisodeMeta, error) {
+	rows, err := r.q.QueryContext(ctx, `
+		SELECT `+cloudEpisodeMetaColumns+` FROM cloud_episode_meta
+		WHERE owner_user_id = ? AND original_source_id LIKE ? ESCAPE '\'
+		ORDER BY created_at`, ownerID, escapeLike(prefix)+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []CloudEpisodeMeta
+	for rows.Next() {
+		m, err := scanCloudEpisodeMeta(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+// Delete 彻底删除一条映射（连同墓碑）。
+//
+// 用于按前缀遗忘共享记忆：槽位内容以后可能被重新写入，
+// 留着墓碑会让同一份内容再也传不上去。
+func (r *CloudEpisodeMetaRepo) Delete(ctx context.Context, ownerID, original string) error {
+	_, err := r.q.ExecContext(ctx, `
+		DELETE FROM cloud_episode_meta WHERE owner_user_id = ? AND original_source_id = ?`,
+		ownerID, original)
+	return err
+}

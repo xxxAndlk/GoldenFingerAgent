@@ -16,6 +16,8 @@ fi
 rm -rf "$dst"
 mkdir -p "$dst"
 cp "$src/index.html" "$dst/index.html"
+# favicon 与页面内的管家头像都指向这张应用图标，必须一起同步。
+cp "$src/app-icon.png" "$dst/app-icon.png"
 if [[ -d "$src/vendor" ]]; then
   cp -r "$src/vendor" "$dst/vendor"
 fi

@@ -171,3 +171,27 @@ func (s *Server) handleTestCloudMemory(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCloudMemoryStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.cloudMemorySnapshot())
 }
+
+// handleRetryCloudMemory 把失败的共享记忆同步重新排队。
+//
+// 失败条目停在队列里等人处理：用户点「重试」后重新上传，
+// 不用重启应用，也不会因为一次网络抖动就丢掉删除或更新。
+func (s *Server) handleRetryCloudMemory(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(w, r)
+	if u == nil {
+		return
+	}
+	if s.RemoteMemory == nil {
+		writeError(w, 503, "云端共享记忆未启用")
+		return
+	}
+	ctx := r.Context()
+	requeued, err := s.RemoteMemory.RetryFailed(ctx, u.ID)
+	if err != nil {
+		writeError(w, 500, err.Error())
+		return
+	}
+	// 立刻补发一轮，让用户马上看到结果。
+	s.RemoteMemory.Flush(ctx)
+	writeJSON(w, 200, map[string]any{"requeued": requeued, "status": s.cloudMemorySnapshot()})
+}

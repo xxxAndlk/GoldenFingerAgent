@@ -45,6 +45,8 @@ type Server struct {
 	FallbackLLM settings.LLM
 	// RemoteMemory 在云端共享模式下非空，用于连接测试与同步状态展示。
 	RemoteMemory *memory.Remote
+	// Memory 是记忆业务层；nil 时涉及共享长期记忆的写入会退化为只写本机。
+	Memory *memory.Service
 	// Delivery 是云端文件交付客户端；nil 时 /api/delivery* 返回 503。
 	Delivery *deliveryclient.Client
 	// Outbox 收集 "app" 渠道的提醒投递，供 Web UI 轮询。
@@ -166,6 +168,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/intents/{id}", s.handleCancelIntent)
 	mux.HandleFunc("GET /api/memory/export.md", s.handleMemoryExport)
 	mux.HandleFunc("POST /api/memory/capture", s.handleCaptureEpisode)
+	mux.HandleFunc("POST /api/memory/shared", s.handleSaveSharedMemory)
 	mux.HandleFunc("GET /api/memory/longterm", s.handleListLongTermEdges)
 	mux.HandleFunc("POST /api/memory/longterm/{id}/confirm", s.handleConfirmLongTermEdge)
 	mux.HandleFunc("POST /api/memory/longterm/{id}/conflict", s.handleConflictLongTermEdge)
@@ -216,6 +219,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings/cloud-memory", s.handlePutCloudMemory)
 	mux.HandleFunc("POST /api/cloud-memory/test", s.handleTestCloudMemory)
 	mux.HandleFunc("GET /api/cloud-memory/status", s.handleCloudMemoryStatus)
+	mux.HandleFunc("POST /api/cloud-memory/retry", s.handleRetryCloudMemory)
 	mux.HandleFunc("GET /api/delivery/inbox", s.handleDeliveryInbox)
 	mux.HandleFunc("GET /api/delivery/status", s.handleDeliveryStatus)
 	mux.HandleFunc("GET /api/delivery/{id}/content", s.handleDeliveryContent)

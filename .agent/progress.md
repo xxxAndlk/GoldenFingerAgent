@@ -1,10 +1,19 @@
 # 当前进度与修改记录
 
-最后更新：2026-11-05
+最后更新：2026-11-06
 
 本文件记录**当前实现状态**与验证证据，不是「全部功能已验收」的证明。每条尽量区分：代码实现 / 自动测试 / 真实环境验证。
 
 > 阅读约定：已完成的条目不再保留「进行中」「未接线」等旧结论；被推翻的判断直接删除或改写，避免后来者按错误前提干活。
+
+## 〇.0、2026-11-06 应用图标统一与清晰化
+
+- **根因**：桌面端图标母版 `desktop/scripts/app-icon-source.png` 是用 `extract-icon-source.py` 从**任务栏截图重建**的（阈值 + alpha 混合），放大到 512px 后边缘发虚；悬浮球（屏幕 68px）与托盘（16px）因此都是糊的。三个 `.ico` 内容还完全相同，托盘忙碌态实际不可区分。
+- **修复**：`create-tray-icon.py` 改为优先从 Electron 自带 `desktop/node_modules/electron/dist/resources/default_app.asar` 里的 1024px `icon.png` 取母版，取不到才回退仓库里的 `app-icon-source.png`；一次输出 `app-icon.png/.ico`（16→256 九档）、`tray-icon.png/.ico`、`tray-icon-busy.png/.ico`（右下角绿色状态点）、`app-icon.css`（悬浮球位图，192px）、`web/app-icon.png`（H5 favicon 与头像）、`android/app/src/main/res/drawable-{mdpi,hdpi,xhdpi,xxhdpi,xxxhdpi}/ic_launcher_atom.png`（自适应图标前景，108dp 画布内放 66dp，留出系统裁切安全区）。
+- **手机端换成同一张图**：Android 启动图标前景由「灯泡+金手指」矢量改为原子图标位图，旧 `drawable/ic_launcher_foreground.xml` 删除，启动页 logo 同步指向新图；H5 页面加 `<link rel="icon">` 与 apple-touch-icon，管家头像由「金」字金色方块换成同一张应用图标。
+- **验证**：`desktop npm test` 162/162 通过；`go test ./android/gosvc` 通过（新 webassets 内嵌正常）；H5 `GFA_H5_VERIFY_PORT=17102 npm run test:mobile-h5` 输出 `H5_VERIFY_OK ... pageErrors=0`，截图 `artifacts/mobile-h5-verify/screenshots/home.png` 可见新头像；托盘 16px 帧放大后原子笔画清晰、忙碌态绿点可辨。
+- **未做**：Windows 任务栏/资源管理器显示的 exe 内嵌图标仍是 Electron 自带的（同一张图、分辨率较低）。要换成多分辨率版需要 `rcedit` 一类 PE 资源工具，本次未引入该依赖。
+- **环境坑（重要）**：`desktop/dist` 下任何新建的 `default_app.asar` 都会被 Kimi Work（Kimi.exe 主进程）独占锁定，`npm --prefix desktop run dist` 开头的 `rmSync` 必然报 EBUSY；仓库根目录另有继承的 `Everyone:(CI)(DENY)(DC)` ACL，连目录本身都删不掉。本次改为定点更新 `desktop/dist/GoldenFinger-win/resources/app/` 下的产物完成发布。
 
 ## 〇、2026-11-05 手机端与 SuperAgent 架构对齐（阶段 0-4）
 
@@ -107,6 +116,70 @@
 - 三份手机页面字节一致，md5 均为 `2c1402d38858b920c8b057b4aab1ee8f`。
 - 新增跨 owner 用例 `TestConversationMessagesRejectCrossOwner`：Worker 会话与委派执行记录都不能被其他用户读取，委派列表也不泄露标题。
 - **仍不能由本轮自动测试替代**：Android Kotlin 仍未编译（环境无 Java/SDK）；真实 TLS 中继、真机通知点击、真实模型/连接器、打包版运行验收仍需在真实环境完成。
+
+### 〇.3 校验报告问题修复（2026-11-06 第四轮）
+
+这一轮按最新产品口径做：**手机端与电脑端只共享同一份长期记忆，原始聊天记录与会话历史不要求跨端共享。**
+因此不再以「双端聊天历史一致」作为验收条件，改看「任一端写入后另一端能否从同一份长期记忆检索到」。
+
+| 缺陷 | 修复 | 证据（可复跑） |
+|---|---|---|
+| 离线队列同键去重只比 payload，跨 owner / 跨 kind 会误用别人的结果 | `matchExisting` 同时比对 owner、指令类型与规范化 payload，任一不同统一按冲突处理 | `internal/store/remote_cache_test.go`（跨 owner / 跨 kind / 跨内容 / 并发同键）、`internal/httpapi/remote_test.go` 的 `TestRemoteQueueRejectsCrossOwnerAndCrossKind` |
+| 最终协同总结只存在桌面阶段状态，没进长期记忆 | 桌面生成总结后调 `POST /api/memory/shared` 写进共享长期记忆（槽位 `collab_summary:<阶段 ID>`）；写失败会明确报出来，不假装共享完成 | `desktop/test/collaboration.test.js`（写入成功与失败两条路径） |
+| 工作简报只进 `DailyBriefs`，另一端检索不到 | `BriefGenerator.SharedMemory` 把正文写进共享长期记忆，正文带日期、版本与来源引用（槽位 `brief:<日期>`） | `internal/superagent/brief_test.go` 的 `TestBriefGeneratorWritesSharedMemory` |
+| 联系人备注直接改 `person.notes`，不进共享记忆；遗忘也不删共享记忆 | `PUT/DELETE /api/persons/{id}` 改走记忆服务；备注写入槽位 `person_notes:<规范名>`，遗忘联系人按**前缀**删掉该槽位的所有版本 | `internal/httpapi/memory_shared_test.go`、`internal/memory/shared_test.go`（备注写入、改备注删旧版、遗忘删共享） |
+| Ledger `Complete` 写失败没有专项测试 | 完成回执写失败时结果照常回给手机，但重启后只剩 `running`，按 `unknown` 处理不重跑 | `internal/relay/ledger_test.go` 的 `TestDesktopLedgerCompleteFailureKeepsResultAndBlocksRerun` |
+| 新会话消息接口缺 Worker / 委派跨 owner 用例 | 新增跨 owner 用例：Worker 会话与委派执行记录都不能被其他用户读取，委派列表不泄露标题 | `internal/httpapi/conversations_test.go` 的 `TestConversationMessagesRejectCrossOwner` |
+
+**共享记忆的机制（新增）**
+
+- 来源 ID **按内容寻址**：`<槽位>:<内容哈希>`。同样的内容在两端写入是同一个 ID，云端去重不会出两条；内容变了必须换 ID（旧版本在本机删掉）——云端不允许同 ID 改内容。
+- 槽位用**跨端一致的名字**（`brief:<日期>`、`person_notes:<规范名>`、`collab_summary:<阶段 ID>`），不用本机行 ID：两端的本地 ID 不同。
+- 遗忘支持**按前缀**删（`ForgetRequest.SourcePrefix` → 云端 `POST /api/memory/v1/forget`）：一个位置的多个版本一次删干净，不留下「本机已删、云端仍可召回」的内容。
+- 新增迁移 `0024_shared_memory_slots.sql`（`shared_memory_slot`）：记录每个槽位当前对应哪条来源 ID。
+
+**验证证据（2026-11-06 第四轮）**
+
+- `go build ./...`、`go vet ./...`、`go test ./... -count=1` 全部通过。
+- 桌面 `npm test` **162/162** 通过，`npm run check` 通过。
+- H5 `GFA_H5_VERIFY_PORT=17102 npm run test:mobile-h5` 通过：
+  `H5_VERIFY_OK viewport=390x844 settings=ok chat=mock persistence=ok history=ok delegated=readonly brief=markdown taskCenter=ok taskActions=work-tasks inbox=ok headerBrief=ok channels=tri-state route=ok horizontalOverflow=false pageErrors=0 responses=2`。
+- **双向云端回环测试**（`internal/memorycloud/cross_device_test.go`）：起真实的云端记忆服务与两台设备（desktop / android），
+  电脑写简报 → 手机检索得到；手机写备注 → 电脑检索得到；手机遗忘 → 电脑再也检索不到。
+  这是**本地回环**（同一套云端代码、同一个进程），不是公网部署环境的验收。
+- **仍不能由自动测试替代**：真实部署的云端记忆服务双端读写（需真实设备 Token 与公网地址）、
+  Android Kotlin 编译（环境无 Java/SDK）、真实 TLS 中继、真机通知点击、打包版运行验收。
+- **已知限制**：`/api/memory/longterm` 事实治理面板列的是**本机**抽取出的事实；
+  云端事实通过检索进入对话上下文，不在面板里展示（面板的确认/冲突操作也只作用于本机事实）。
+
+### 〇.4 共享长期记忆的一致性与可靠重试（2026-11-06 第五轮）
+
+复核指出三个实际问题和一组验收缺口，这一轮把它们落在云端与队列上。
+
+| 问题 | 修复 | 证据（可复跑） |
+|---|---|---|
+| 两端改同一内容会残留旧版本（各端只删自己那版） | 「同一槽位只保留最新版」移到后端：本机 Native 与云端都在**同一个事务**里删旧版本（连同派生事实）、写新版本；端侧不再自行删上一版 | `internal/memorycloud/cross_device_test.go` 的 `TestSharedMemoryAlternatingUpdatesKeepOneVersion` |
+| 旧请求恢复后可能覆盖新内容 | 写入带 `slot_updated_at`（毫秒），云端判定过期即丢弃并回 `stale`；端侧用云端返回的 `server_time` 校正时钟偏差（最多采纳 10 分钟）。槽位表新增 `revision`/`source_updated_at` | `internal/store/shared_memory.go` 的 `Apply`（过期直接返回 stale） |
+| 云端删除/写入失败没有可靠重试 | `memory_sync_outbox` 新增 `op` 列（`upsert`/`delete`）：删除也进持久队列，断网时本机操作照常成功、恢复后按创建顺序补发；失败项可查看（`failed` 计数）可重试（`POST /api/cloud-memory/retry`）；界面区分「已保存到本机、等待同步」与「云端已同步」 | `internal/memory/remote_test.go` 的 `TestRemoteForgetQueuesDeleteAndSendsOnFlush`、`internal/memorycloud/cross_device_test.go` 的 `TestSharedMemoryOfflineUpdateAndDeleteRecover` |
+| 单条事实删除绕过共享清理 | `DELETE /api/facts/{id}` 改走 `Service.ForgetFact`（含 owner 归属校验），并按**来源引用** `fact:<id>` 删云端派生记忆——本机事实 ID 与云端派生条目 ID 不同 | `internal/httpapi/memory_shared_test.go` 的 `TestForgetFactReachesSharedMemory`、`internal/memorycloud/native_backend_test.go` 的 `TestSharedMemoryFactDeletionAcrossDevices` |
+
+**新增验收（第五轮）**
+
+- 两端交替修改同一槽位：云端始终只有最新一版（电脑→手机→电脑各一轮）。
+- 断网更新 + 断网删除，恢复网络后自动补发，云端最终不再有该槽位。
+- 单条事实删除后，另一端检索不到。
+- 云端改用**真实 Native 抽取后端**（抽取模型用 mock）：写入 → 抽取 → 派生事实 → 另一端检索到的是抽取出的事实，遗忘后一起消失。
+
+**验证证据（2026-11-06 第五轮）**
+
+- `go build ./...`、`go vet ./...`、`go test ./... -count=1` 全部通过；桌面 `npm test` **162/162**、`npm run check` 通过。
+- H5 `GFA_H5_VERIFY_PORT=17103 npm run test:mobile-h5` 通过：
+  `H5_VERIFY_OK viewport=390x844 settings=ok chat=mock persistence=ok history=ok delegated=readonly brief=markdown taskCenter=ok taskActions=work-tasks inbox=ok headerBrief=ok channels=tri-state route=ok horizontalOverflow=false pageErrors=0 responses=2`。
+- 三份手机页面 md5 一致：`2964114eecc5f4945342d88e52d4e979`。
+- 新增迁移 `0025_memory_outbox_ops.sql`（Outbox 的 `op` 列）。
+- **仍不能由自动测试替代**：真实部署的云端服务双端读写（公网地址 + 真实设备 Token）、真实抽取模型（当前用 mock）、
+  Android Kotlin 编译（环境无 Java/SDK）、真机通知点击、打包版运行验收。
+  跨端用例跑的是同一套云端代码的**本地回环**，不等于真实部署环境验收。
 
 ## 〇、2026-11-05 工作台界面重做、图标替换与托盘隐藏区
 
@@ -696,6 +769,12 @@
 - **边界**：飞书/钉钉连接器按用户要求暂缓；自动登录已具备 DPAPI 加密存储和确定性填充，但尚未在真实 QQ 邮箱/BOSS 页面验收；网页调度游标只在进程内，重启后依赖服务端内容 hash 去重；尚未用真实邮箱与微信账号验收。
 
 **本轮未做（飞书/钉钉按要求暂缓）**：飞书官方 SDK、钉钉 Stream SDK、QQ 邮箱/BOSS 专用适配器、真实邮箱与微信账号验收、手机工作台/动态待办、relay v2 增量同步、ICS 日历、邮件发送器、Worker `route_to_worker` 执行上下文。
+
+### 2.38 每日简报重要性过滤（2026-11-06）
+
+- `internal/superagent/summary.go` 不再要求 Thread 摘要固定罗列空栏目，只保留决定、实际成果、真实进展、阻塞、明确待办与关键结论；窗口切换、查看文件、正常资源占用和 OCR 限制等观察过程不再写成事项。
+- `internal/superagent/brief.go` 要求跨来源合并与改写，背景默认留空，每类最多 3 条；无重要内容时保留模型返回的空栏目并显示“今日没有需要关注的重要变化”，不再回退填充原始流水账。确定性回退同步过滤伪进展。
+- 回归覆盖模型空简报、纯窗口/内存/远程桌面活动过滤，以及原有审批、完成、改期与版本语义。`go test ./...` 全通过，`go vet ./...` 无输出，服务端构建通过；尚未调用真实模型重新生成当日简报。
 
 ## 三、验证记录（2026-10-31 最新）
 

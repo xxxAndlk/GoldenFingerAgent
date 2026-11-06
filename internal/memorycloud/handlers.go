@@ -66,11 +66,21 @@ type episodeRequest struct {
 	Role          string `json:"role"`
 	ReferenceTime string `json:"reference_time"`
 	ContentHash   string `json:"content_hash"`
+	// Slot 是跨端共享内容的位置（简报日期、联系人备注等）。
+	// 同一个槽位只保留最新一版，云端在事务里替换旧版本。
+	Slot string `json:"slot"`
+	// SlotUpdatedAt 是写入方的写入时间（毫秒）：云端据此判断新旧，
+	// 旧请求恢复后不能覆盖更新的内容。
+	SlotUpdatedAt int64 `json:"slot_updated_at"`
 }
 
 type episodeResponse struct {
 	SourceID string `json:"source_id"`
 	Status   string `json:"status"`
+	// Revision 是槽位当前版本号；非槽位写入为 0。
+	Revision int `json:"revision,omitempty"`
+	// ServerTime 是云端时间（毫秒）：端侧据此校正自己的时钟偏差。
+	ServerTime int64 `json:"server_time,omitempty"`
 }
 
 func (s *Server) handleEpisode(w http.ResponseWriter, r *http.Request) {
@@ -124,9 +134,41 @@ func (s *Server) handleEpisode(w http.ResponseWriter, r *http.Request) {
 
 	ownerID := device.OwnerUserID
 	stored := StoredSourceID(ownerID, sourceID)
+	slot := strings.TrimSpace(req.Slot)
 	duplicate := false
+	stale := false
+	revision := 0
 	err := s.db.WithTx(r.Context(), func(tx *sql.Tx) error {
 		txr := store.NewRepos(tx)
+		if slot != "" {
+			// 共享槽位：同一位置只保留最新一版。
+			// 旧请求（写入时间更早）不能覆盖新内容，直接判为过期。
+			previous, isStale, err := txr.SharedSlots.Apply(r.Context(), ownerID, slot, sourceID,
+				req.SlotUpdatedAt, s.now())
+			if err != nil {
+				return err
+			}
+			if isStale {
+				stale = true
+				return nil
+			}
+			revision = previous.Revision + 1
+			if previous.SourceID != "" && previous.SourceID != sourceID {
+				// 旧版本连同派生事实一起删掉：不能新旧两条同时留在云端。
+				previousStored := StoredSourceID(ownerID, previous.SourceID)
+				if _, err := txr.LongTerm.DeleteEdgesBySource(r.Context(), ownerID, previousStored); err != nil {
+					return err
+				}
+				if err := txr.LongTerm.DeleteEpisode(r.Context(), previousStored); err != nil {
+					return err
+				}
+				// 映射一并删除（不留墓碑）：槽位内容以后可能被重新写入，
+				// 留着墓碑会让同一份内容再也传不上去。
+				if err := txr.CloudEpisodes.Delete(r.Context(), ownerID, previous.SourceID); err != nil {
+					return err
+				}
+			}
+		}
 		meta, err := txr.CloudEpisodes.GetByOriginal(r.Context(), ownerID, sourceID)
 		if err == nil {
 			if meta.ForgottenAt != nil {
@@ -165,14 +207,25 @@ func (s *Server) handleEpisode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "ingest failed"})
 		return
 	}
+	if stale {
+		// 旧请求：云端保留更新的版本，如实告诉端侧「这条已过期」。
+		writeJSON(w, http.StatusOK, episodeResponse{
+			SourceID: sourceID, Status: "stale", Revision: revision, ServerTime: s.now().UnixMilli(),
+		})
+		return
+	}
 	if duplicate {
-		writeJSON(w, http.StatusOK, episodeResponse{SourceID: sourceID, Status: "duplicate"})
+		writeJSON(w, http.StatusOK, episodeResponse{
+			SourceID: sourceID, Status: "duplicate", Revision: revision, ServerTime: s.now().UnixMilli(),
+		})
 		return
 	}
 	if s.wake != nil {
 		s.wake()
 	}
-	writeJSON(w, http.StatusOK, episodeResponse{SourceID: sourceID, Status: "accepted"})
+	writeJSON(w, http.StatusOK, episodeResponse{
+		SourceID: sourceID, Status: "accepted", Revision: revision, ServerTime: s.now().UnixMilli(),
+	})
 }
 
 type searchRequest struct {
@@ -261,6 +314,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 type forgetRequest struct {
 	SourceID string `json:"source_id"`
 	FactID   string `json:"fact_id"`
+	// SourcePrefix 按来源 ID 前缀遗忘，用于共享记忆的槽位。
+	SourcePrefix string `json:"source_prefix"`
 }
 
 func (s *Server) handleForget(w http.ResponseWriter, r *http.Request) {
@@ -275,8 +330,9 @@ func (s *Server) handleForget(w http.ResponseWriter, r *http.Request) {
 	}
 	req.SourceID = strings.TrimSpace(req.SourceID)
 	req.FactID = strings.TrimSpace(req.FactID)
-	if req.SourceID == "" && req.FactID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "source_id or fact_id required"})
+	req.SourcePrefix = strings.TrimSpace(req.SourcePrefix)
+	if req.SourceID == "" && req.FactID == "" && req.SourcePrefix == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "source_id, source_prefix or fact_id required"})
 		return
 	}
 	if req.FactID != "" {
@@ -300,6 +356,38 @@ func (s *Server) handleForget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ownerID := device.OwnerUserID
+	if req.SourcePrefix != "" {
+		// 按前缀遗忘共享记忆槽位：同一位置可能有多个版本，
+		// 只删一个版本会留下过期内容继续被检索到。
+		err := s.db.WithTx(r.Context(), func(tx *sql.Tx) error {
+			txr := store.NewRepos(tx)
+			metas, err := txr.CloudEpisodes.ListByOriginalPrefix(r.Context(), ownerID, req.SourcePrefix)
+			if err != nil {
+				return err
+			}
+			for _, meta := range metas {
+				if _, err := txr.LongTerm.DeleteEdgesBySource(r.Context(), ownerID, meta.StoredSourceID); err != nil {
+					return err
+				}
+				if err := txr.LongTerm.DeleteEpisode(r.Context(), meta.StoredSourceID); err != nil {
+					return err
+				}
+				// 彻底删除映射：槽位内容以后可能被重新写入，
+				// 留着墓碑会让同一份内容再也传不上去。
+				if err := txr.CloudEpisodes.Delete(r.Context(), ownerID, meta.OriginalSourceID); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			s.logf("[memorycloud] forget prefix failed: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "forget failed"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "forgotten"})
+		return
+	}
 	stored := StoredSourceID(ownerID, req.SourceID)
 	err := s.db.WithTx(r.Context(), func(tx *sql.Tx) error {
 		txr := store.NewRepos(tx)

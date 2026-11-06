@@ -83,7 +83,10 @@ func newTestServer(t *testing.T, script ...llm.ChatResponse) (*Server, *store.Re
 		SuperAgent:      superagent.New(db),
 		AgentDispatcher: agenthub.NewDispatcher(db, agenthub.New(t.TempDir(), "")),
 		Briefs:          superagent.NewBriefGenerator(db, nil),
+		Memory:          mem,
 	}
+	// 共享记忆槽位：联系人备注与共享条目都要经它写入长期记忆。
+	mem.SetSharedSlots(repos.SharedSlots)
 	return srv, repos
 }
 

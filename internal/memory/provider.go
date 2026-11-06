@@ -22,6 +22,15 @@ type Episode struct {
 	// system 是系统提示。抽取长期记忆时必须区分，否则会把别人的话
 	// 记成机主自己的意愿。
 	Role string
+	// Slot 是跨端共享内容的位置（简报日期、联系人备注等）。
+	//
+	// 同一个槽位只保留最新一版：后端按 Slot 原子替换旧版本，
+	// 两端先后修改时用 UpdatedAt 判断谁更新，旧请求不能覆盖新内容。
+	// 为空表示普通片段，不参与槽位替换。
+	Slot string
+	// UpdatedAt 是这次写入的发生时间（毫秒精度由后端截断），
+	// 用于槽位内的新旧判断。
+	UpdatedAt time.Time
 }
 
 // MemoryQuery 是与后端无关的长期记忆检索条件。
@@ -47,6 +56,11 @@ type ForgetRequest struct {
 	OwnerID  string
 	SourceID string
 	FactID   string
+	// SourcePrefix 按来源 ID 前缀遗忘。
+	//
+	// 用于跨端共享的记忆槽位：同一位置可能有多个版本（内容每次变化
+	// 都会换一个来源 ID），只删本机记着的那一条会留下另一端写的版本。
+	SourcePrefix string
 }
 
 // MemoryHealth 只暴露稳定的健康语义，不绑定任何后端的诊断字段。

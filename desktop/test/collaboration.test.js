@@ -194,6 +194,45 @@ test('summary writes a traceable phase record and carries the previous summary',
   assert.match(chats[0], /正文 A/);
 });
 
+test('final collaboration summary is written into shared long-term memory', async () => {
+  const shared = [];
+  const mode = new CollaborationMode({
+    readActiveWindow: async () => null,
+    api: {
+      capture: async () => {},
+      chat: async () => ({ reply: '本阶段完成了共享记忆接口' }),
+      saveSharedMemory: async payload => { shared.push(payload); },
+    },
+  });
+  mode.enabled = true;
+  mode.addObservation({ id: 'a', app: 'Code', title: 'main.js', content: '这是本阶段正文。', at: 1 });
+  const result = await mode.summarizeNow();
+  assert.equal(shared.length, 1);
+  assert.equal(shared[0].source, 'collab_summary');
+  // 槽位要用阶段 ID：同一阶段重复提交不能变成两条记忆。
+  assert.equal(shared[0].slot, `collab_summary:${result.phase_id}`);
+  assert.match(shared[0].text, /本阶段完成了共享记忆接口/);
+});
+
+test('shared memory failure does not break the phase summary', async () => {
+  const errors = [];
+  const mode = new CollaborationMode({
+    readActiveWindow: async () => null,
+    api: {
+      capture: async () => {},
+      chat: async () => ({ reply: '本阶段结论' }),
+      saveSharedMemory: async () => { throw new Error('云端不可达'); },
+    },
+    onSummary: payload => { if (payload && payload.error) errors.push(payload.error); },
+  });
+  mode.enabled = true;
+  mode.addObservation({ id: 'a', app: 'Code', title: 'main.js', content: '这是本阶段正文。', at: 1 });
+  const result = await mode.summarizeNow();
+  assert.equal(result.reply, '本阶段结论');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /共享记忆/);
+});
+
 test('clear removes pending observations and previous summary', () => {
   const mode = new CollaborationMode({
     readActiveWindow: async () => null,

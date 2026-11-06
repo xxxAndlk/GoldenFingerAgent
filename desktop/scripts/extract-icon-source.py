@@ -1,5 +1,8 @@
 """从用户提供的截图中提取深色圆形图标，重建为透明背景的高分辨率源图。
 
+这是**兜底**路径：母版现在优先取 Electron 自带 asar 里的 1024px 原图（清晰），
+截图重建的结果边缘发虚，不要用它覆盖母版。
+
 输入：任务栏截图（深色圆形图标 + 下方一条分隔短线）
 输出：desktop/scripts/app-icon-source.png（512x512，透明背景的圆形图标）
 用法：python desktop/scripts/extract-icon-source.py <截图路径>

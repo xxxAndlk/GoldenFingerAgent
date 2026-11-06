@@ -228,8 +228,30 @@ class CollaborationMode {
     return this.status();
   }
 
-  async summarizeNow() {
-    if (!this.enabled || this.observations.length === 0) {
+  // saveSharedSummary 把最终阶段总结写入共享长期记忆。
+  //
+  // 写不进去不影响本阶段总结本身（桌面阶段状态已经落盘），
+  // 但必须把失败说出来：不能假装共享已经完成。
+  async saveSharedSummary(phase, reply) {
+    if (!this.api || typeof this.api.saveSharedMemory !== 'function') return false;
+    const text = String(reply || '').trim();
+    if (!text) return false;
+    const startedAt = new Date(phase.startedAt || this.now()).toLocaleString('zh-CN');
+    try {
+      await this.api.saveSharedMemory({
+        slot: `collab_summary:${phase.id}`,
+        text: `协作阶段总结（${startedAt}）：${text}`,
+        source: 'collab_summary',
+        captured_at: new Date(phase.endedAt || this.now()).toISOString(),
+      });
+      return true;
+    } catch (error) {
+      this.onSummary({ error: `协作总结写入共享记忆失败：${error.message}` });
+      return false;
+    }
+  }
+
+  async summarizeNow() {    if (!this.enabled || this.observations.length === 0) {
       return { reply: '这段时间还没有采集到活动窗口。' };
     }
     const summary = summarizeObservations(this.observations, this.scanIntervalMs);
@@ -268,6 +290,9 @@ class CollaborationMode {
       phase.completedAt = this.lastSummaryAt;
       this.onSummarized(observations, phase);
       this.onPhase(phase);
+      // 最终总结进共享长期记忆：手机与电脑只共享这一份记忆，
+      // 另一端要能从同一份记忆里检索到这一阶段的结论。
+      await this.saveSharedSummary(phase, reply);
       // 按工作上下文拆分 Episode；每个 Episode 有自己的活动 Thread，不把一天的工作混在一起。
       const segments = segmentObservations(observations);
       for (const [index, segment] of segments.entries()) {

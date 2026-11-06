@@ -594,6 +594,16 @@ class AssistantApi {
       }),
     });
   }
+
+  // saveSharedMemory 写入一条跨端共享的长期记忆。
+  // 手机与电脑只共享这一份记忆：协同总结、工作简报、联系人备注
+  // 都要写进去，另一端才能检索到。
+  saveSharedMemory(payload) {
+    return this.request('/api/memory/shared', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    });
+  }
 }
 
 module.exports = { AssistantApi };

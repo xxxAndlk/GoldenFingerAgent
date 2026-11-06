@@ -147,6 +147,8 @@ func StartServer(dataDir string) (info string, err error) {
 	}
 	mem := memory.NewService(repos.Persons, repos.Facts, repos.Episodes, repos.Audit,
 		embedder, th, cfg.Memory.RecencyHalfLife, nil)
+	// 共享记忆槽位：手机改备注后，电脑端能从同一份长期记忆里检索到。
+	mem.SetSharedSlots(repos.SharedSlots)
 
 	st, err := settings.Open(filepath.Join(dataDir, "settings.json"))
 	if err != nil {
@@ -302,9 +304,12 @@ func StartServer(dataDir string) (info string, err error) {
 		Settings:     st,
 		RemoteMemory: remoteMemory,
 		Delivery:     deliveryClient,
-		FallbackLLM:  settings.LLM{BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model},
-		Device:       hub,
-		DeviceGuard:  deviceGuard,
+		// 记忆服务：手机记录的联系人事实与备注要进共享长期记忆，
+		// 电脑端才能从同一份记忆里检索到。
+		Memory:      mem,
+		FallbackLLM: settings.LLM{BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model},
+		Device:      hub,
+		DeviceGuard: deviceGuard,
 		// 本机设备标识：会话已读游标按设备分别记录，
 		// 手机读过的会话不会把电脑的角标一起清掉。
 		DeviceID: devID,

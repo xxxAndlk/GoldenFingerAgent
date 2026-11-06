@@ -14,9 +14,10 @@ import (
 type memoryLedger struct {
 	mu      sync.Mutex
 	entries map[string]memReceipt
-	// beginErr / lookupErr 用于故障注入。
-	beginErr  error
-	lookupErr error
+	// beginErr / lookupErr / completeErr 用于故障注入。
+	beginErr    error
+	lookupErr   error
+	completeErr error
 }
 
 type memReceipt struct {
@@ -57,6 +58,9 @@ func (m *memoryLedger) Begin(_ context.Context, key string, _ time.Time) error {
 func (m *memoryLedger) Complete(_ context.Context, key string, result []byte, _ time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.completeErr != nil {
+		return m.completeErr
+	}
 	m.entries[key] = memReceipt{status: CommandReceiptDone, result: result}
 	return nil
 }
@@ -274,5 +278,106 @@ func TestDesktopLedgerLookupFailureIsRetried(t *testing.T) {
 	defer mu.Unlock()
 	if executions != 1 {
 		t.Fatalf("实际执行了 %d 次，应恰好一次", executions)
+	}
+}
+
+// 完成回执写失败时，业务已经执行过，结果必须照常回给手机；
+// 但落库只剩 running，重启后这条指令只能按 unknown 处理，不能盲目重跑。
+func TestDesktopLedgerCompleteFailureKeepsResultAndBlocksRerun(t *testing.T) {
+	var executions int
+	var mu sync.Mutex
+	ledger := newMemoryLedger()
+	ledger.completeErr = errors.New("disk full")
+
+	hub, srv := startRelay(t)
+	desktopID, desktopToken, err := hub.RegisterDesktop("工作机")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := hub.CreatePairCode(desktopID, desktopToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle := func(_ context.Context, _ json.RawMessage) (ResultPayload, error) {
+		mu.Lock()
+		executions++
+		mu.Unlock()
+		return ResultPayload{OK: true, Reply: "已执行"}, nil
+	}
+	desktop := &Client{
+		BaseURL: srv.URL, DesktopID: desktopID, Token: desktopToken,
+		Handle: handle, Ledger: ledger, Logger: func(string, ...any) {},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go func() { _ = desktop.Run(ctx) }()
+	waitFor(t, func() bool { return hub.Stats().Online[RoleDesktop] > 0 })
+
+	phone := &Phone{
+		StatePath:   filepath.Join(t.TempDir(), "p1.json"),
+		SendTimeout: 5 * time.Second, Logger: func(string, ...any) {},
+	}
+	t.Cleanup(phone.Close)
+	if _, err := phone.Pair(context.Background(), srv.URL, code, "我的手机"); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := phone.SendWithID(context.Background(), "cmd-complete-fail", map[string]any{"text": "继续"})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if !result.OK || result.Reply != "已执行" {
+		t.Fatalf("回执写失败也要把真实结果回给手机: %+v", result)
+	}
+
+	// 完成回执没写进去，只剩一条 running。
+	status, _, found, err := ledger.Lookup(context.Background(), "cmd-complete-fail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || status != CommandReceiptRunning {
+		t.Fatalf("status=%q found=%v", status, found)
+	}
+
+	// 模拟电脑重启：同一份回执，新进程重新上线。
+	cancel()
+	waitFor(t, func() bool { return hub.Stats().Online[RoleDesktop] == 0 })
+
+	desktopID2, desktopToken2, err := hub.RegisterDesktop("工作机")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code2, _, err := hub.CreatePairCode(desktopID2, desktopToken2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desktop2 := &Client{
+		BaseURL: srv.URL, DesktopID: desktopID2, Token: desktopToken2,
+		Handle: handle, Ledger: ledger, Logger: func(string, ...any) {},
+	}
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	t.Cleanup(cancel2)
+	go func() { _ = desktop2.Run(ctx2) }()
+	waitFor(t, func() bool { return hub.Stats().Online[RoleDesktop] > 0 })
+
+	phone2 := &Phone{
+		StatePath:   filepath.Join(t.TempDir(), "p2.json"),
+		SendTimeout: 5 * time.Second, Logger: func(string, ...any) {},
+	}
+	t.Cleanup(phone2.Close)
+	if _, err := phone2.Pair(context.Background(), srv.URL, code2, "我的手机"); err != nil {
+		t.Fatal(err)
+	}
+	again, err := phone2.SendWithID(context.Background(), "cmd-complete-fail", map[string]any{"text": "继续"})
+	if err != nil {
+		t.Fatalf("send after restart: %v", err)
+	}
+	if again.OK || again.Command != CommandUnknown {
+		t.Fatalf("重启后只能按 unknown 处理: %+v", again)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if executions != 1 {
+		t.Fatalf("重启后不能重跑，实际执行了 %d 次", executions)
 	}
 }

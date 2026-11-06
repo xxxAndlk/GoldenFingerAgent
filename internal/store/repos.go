@@ -54,6 +54,7 @@ type Repos struct {
 	RemoteCache         *RemoteCacheRepo
 	RemotePending       *RemotePendingRepo
 	RelayReceipts       *RelayReceiptRepo
+	SharedSlots         *SharedMemorySlotRepo
 }
 
 // NewRepos 在一个 Querier 之上构建仓储（用 WithTx 可得到事务范围的仓储）。
@@ -114,5 +115,6 @@ func NewRepos(q Querier) *Repos {
 		RemoteCache:         NewRemoteCacheRepo(q),
 		RemotePending:       NewRemotePendingRepo(q),
 		RelayReceipts:       NewRelayReceiptRepo(q),
+		SharedSlots:         NewSharedMemorySlotRepo(q),
 	}
 }

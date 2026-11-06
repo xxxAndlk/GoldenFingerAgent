@@ -603,8 +603,9 @@ function renderBrief() {
   if (!state.brief) {
     panel.append(el('div', 'empty', state.briefError || '今天还没有简报。'));
     panel.append(actionButton('生成今天的简报', async () => {
-      await api.generateBrief(today());
+      const result = await api.generateBrief(today());
       await refresh();
+      if (result.shared_sync_error) throw new Error(result.shared_sync_error);
     }));
     return;
   }
@@ -617,8 +618,9 @@ function renderBrief() {
   root.append(body);
   const actions = el('div', 'actions');
   actions.append(actionButton('重新生成', async () => {
-    await api.generateBrief(today());
+    const result = await api.generateBrief(today());
     await refresh();
+    if (result.shared_sync_error) throw new Error(result.shared_sync_error);
   }, 'secondary'));
   if (brief.status !== 'delivered') {
     actions.append(actionButton('标记已读', async () => {

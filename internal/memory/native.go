@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -98,16 +99,25 @@ func (n *Native) Append(ctx context.Context, episode Episode) error {
 	if at.IsZero() {
 		at = n.cfg.Now()
 	}
+	updatedAt := episode.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = n.cfg.Now()
+	}
 	var embedding []float32
 	if n.cfg.Embed != nil {
 		if vecs, err := n.cfg.Embed.Embed(ctx, []string{episode.Text}); err == nil && len(vecs) == 1 {
 			embedding = vecs[0]
 		}
 	}
-	inserted, err := n.cfg.Repos.LongTerm.InsertEpisode(ctx, &store.LongTermEpisode{
+	entry := &store.LongTermEpisode{
 		SourceID: episode.SourceID, OwnerUserID: episode.OwnerID, Text: episode.Text,
 		Source: episode.Source, Role: episode.Role, ReferenceTime: at, Embedding: embedding,
-	})
+	}
+	if episode.Slot != "" {
+		// 共享槽位：同一位置只保留最新一版，替换在同一个事务里完成。
+		return n.appendSlotEpisode(ctx, episode, entry, updatedAt)
+	}
+	inserted, err := n.cfg.Repos.LongTerm.InsertEpisode(ctx, entry)
 	if err != nil {
 		return err
 	}
@@ -115,6 +125,58 @@ func (n *Native) Append(ctx context.Context, episode Episode) error {
 		return nil // 幂等：同一来源只抽取一次
 	}
 	n.wake()
+	return nil
+}
+
+// appendSlotEpisode 按槽位写入片段：事务内删掉旧版本、写入新版本。
+//
+// 旧请求（写入时间更早）不会覆盖新内容：比较结果过期时直接跳过。
+func (n *Native) appendSlotEpisode(ctx context.Context, episode Episode,
+	entry *store.LongTermEpisode, updatedAt time.Time) error {
+	db := n.cfg.Repos.DB
+	if db == nil {
+		// 没有事务能力时退回普通写入：至少内容不会丢。
+		inserted, err := n.cfg.Repos.LongTerm.InsertEpisode(ctx, entry)
+		if err != nil {
+			return err
+		}
+		if inserted {
+			n.wake()
+		}
+		return nil
+	}
+	inserted := false
+	err := db.WithTx(ctx, func(tx *sql.Tx) error {
+		txr := store.NewRepos(tx)
+		previous, stale, err := txr.SharedSlots.Apply(ctx, episode.OwnerID, episode.Slot,
+			episode.SourceID, updatedAt.UnixMilli(), n.cfg.Now())
+		if err != nil {
+			return err
+		}
+		if stale {
+			return nil // 旧请求：不覆盖新内容
+		}
+		if previous.SourceID != "" && previous.SourceID != episode.SourceID {
+			if _, err := txr.LongTerm.DeleteEdgesBySource(ctx, episode.OwnerID, previous.SourceID); err != nil {
+				return err
+			}
+			if err := txr.LongTerm.DeleteEpisode(ctx, previous.SourceID); err != nil {
+				return err
+			}
+		}
+		ok, err := txr.LongTerm.InsertEpisode(ctx, entry)
+		if err != nil {
+			return err
+		}
+		inserted = ok
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if inserted {
+		n.wake()
+	}
 	return nil
 }
 
@@ -388,14 +450,39 @@ func (n *Native) Forget(ctx context.Context, request ForgetRequest) error {
 	switch {
 	case request.FactID != "":
 		return n.cfg.Repos.LongTerm.DeleteEdge(ctx, request.OwnerID, request.FactID)
+	case request.SourcePrefix != "":
+		return n.forgetByPrefix(ctx, request.OwnerID, request.SourcePrefix)
 	case request.SourceID != "":
 		if _, err := n.cfg.Repos.LongTerm.DeleteEdgesBySource(ctx, request.OwnerID, request.SourceID); err != nil {
 			return err
 		}
 		return n.cfg.Repos.LongTerm.DeleteEpisode(ctx, request.SourceID)
 	default:
-		return errors.New("memory: 遗忘需要 source_id 或 fact_id")
+		return errors.New("memory: 遗忘需要 source_id、source_prefix 或 fact_id")
 	}
+}
+
+// forgetByPrefix 删除某个来源前缀下的全部片段及其派生事实。
+//
+// 共享记忆的同一个槽位可能有多个版本（内容每次变化都换来源 ID），
+// 只删一个版本会留下过期内容继续被检索到。
+func (n *Native) forgetByPrefix(ctx context.Context, ownerID, prefix string) error {
+	episodes, err := n.cfg.Repos.LongTerm.ListEpisodes(ctx, ownerID)
+	if err != nil {
+		return err
+	}
+	for _, ep := range episodes {
+		if !strings.HasPrefix(ep.SourceID, prefix) {
+			continue
+		}
+		if _, err := n.cfg.Repos.LongTerm.DeleteEdgesBySource(ctx, ownerID, ep.SourceID); err != nil {
+			return err
+		}
+		if err := n.cfg.Repos.LongTerm.DeleteEpisode(ctx, ep.SourceID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Health 如实报告内置后端状态。

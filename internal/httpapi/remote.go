@@ -211,7 +211,7 @@ func (s *Server) remoteMutate(w http.ResponseWriter, r *http.Request, ownerID, k
 	existing, inserted, err := s.Repos.RemotePending.Enqueue(ctx, pending)
 	if errors.Is(err, store.ErrConflict) {
 		writeJSON(w, http.StatusConflict, map[string]any{
-			"error":    "同一个幂等键对应了另一条指令内容，请换一个键再试。",
+			"error":    "这个幂等键已经对应了另一条指令（内容、操作类型或归属不同），请换一个键再试。",
 			"_command": relay.CommandRejected, "_queued": false,
 		})
 		return

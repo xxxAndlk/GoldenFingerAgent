@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"goldenfinger/agent/internal/store"
+	"goldenfinger/agent/internal/superagent"
 )
 
 func (s *Server) requireBriefs(w http.ResponseWriter) bool {
@@ -91,6 +92,13 @@ func (s *Server) handleGenerateBrief(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	brief, err := s.Briefs.Generate(ctx, u.ID, day)
+	var sharedSyncErr *superagent.BriefSharedSyncError
+	if errors.As(err, &sharedSyncErr) {
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"brief": brief, "shared_sync_error": sharedSyncErr.Error(),
+		})
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
