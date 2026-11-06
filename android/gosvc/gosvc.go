@@ -134,7 +134,7 @@ func StartServer(dataDir string) (info string, err error) {
 		case "sms":
 			return stub.SMS{}.Send(ctx, "phone", body)
 		default:
-			outbox.Push(u.ID, body, time.Now())
+			outbox.PushRoute(u.ID, body, httpapi.OutboxRouteTasks, time.Now())
 		}
 		return nil
 	})
@@ -213,7 +213,7 @@ func StartServer(dataDir string) (info string, err error) {
 	// 通知监听（NotifyListenerService）上报的事件就无处可去。
 	inboxSvc := inbox.NewService(repos, embedder, time.Now, cfg.Embedder.Dim)
 	inboxSvc.Notify = func(_ context.Context, ownerID, body string) {
-		outbox.Push(ownerID, body, time.Now())
+		outbox.PushRoute(ownerID, body, httpapi.OutboxRouteInbox, time.Now())
 	}
 
 	policy := scheduler.Policy{
@@ -263,10 +263,21 @@ func StartServer(dataDir string) (info string, err error) {
 		}
 		return agent.UserContext{UserID: u.ID, UserName: u.Name, UserType: u.UserType, TZ: u.TZ}
 	}
+	// 生活管家 → 工作助手：手机侧中继客户端（配对后把指令交给电脑执行）。
+	phoneRelay := &relay.Phone{StatePath: filepath.Join(dataDir, "relay-phone.json")}
+	if err := phoneRelay.Load(); err != nil {
+		log.Printf("[gosvc] 读取手机配对失败（需要重新配对）: %v", err)
+	}
+
+	// 手机端的采集渠道工具走中继命令，由电脑上的真实采集管理器执行。
+	// 手机不注册桌面工具，也不在本机保存渠道配置。
+	tools := agent.DefaultTools()
+	tools = append(tools, agent.RemoteCollectionTools(&remoteCollection{phone: phoneRelay})...)
+
 	runtime := &agent.Runtime{
 		LLM:      llmClient,
 		Model:    cfg.LLM.Model,
-		Registry: agent.NewRegistry(agent.DefaultTools()...),
+		Registry: agent.NewRegistry(tools...),
 		Prompt:   &agent.PromptBuilder{Memory: mem, UserFn: userFn},
 		Tools:    svcs,
 		Clock:    agent.SystemClock{},
@@ -277,14 +288,11 @@ func StartServer(dataDir string) (info string, err error) {
 		return "", err
 	}
 
-	// 生活管家 → 工作助手：手机侧中继客户端（配对后把指令交给电脑执行）。
-	phoneRelay := &relay.Phone{StatePath: filepath.Join(dataDir, "relay-phone.json")}
-	if err := phoneRelay.Load(); err != nil {
-		log.Printf("[gosvc] 读取手机配对失败（需要重新配对）: %v", err)
-	}
-
 	api := &httpapi.Server{
-		PhoneRelay:   phoneRelay,
+		PhoneRelay: phoneRelay,
+		// 手机是电脑控制面的远程视图：任务、Worker 会话、审批、交付物与
+		// 每日简报都从电脑取，本机不另起一套 Worker，避免双事实源。
+		Remote:       phoneRelay,
 		Inbox:        inboxSvc,
 		Repos:        repos,
 		Runtime:      runtime,
@@ -297,6 +305,9 @@ func StartServer(dataDir string) (info string, err error) {
 		FallbackLLM:  settings.LLM{BaseURL: cfg.LLM.BaseURL, APIKey: cfg.LLM.APIKey, Model: cfg.LLM.Model},
 		Device:       hub,
 		DeviceGuard:  deviceGuard,
+		// 本机设备标识：会话已读游标按设备分别记录，
+		// 手机读过的会话不会把电脑的角标一起清掉。
+		DeviceID: devID,
 		// 语音口令判定：唤醒词、10s 指令窗、4s 片段合并、30s 上下文全在 Go。
 		Voice: voice.NewService(voice.Config{}, time.Now),
 	}
@@ -322,7 +333,7 @@ func StartServer(dataDir string) (info string, err error) {
 					continue
 				}
 				for _, it := range items {
-					outbox.Push(it.OwnerUserID, it.Body, now)
+					outbox.PushRoute(it.OwnerUserID, it.Body, httpapi.OutboxRouteInbox, now)
 				}
 			}
 		}
@@ -330,6 +341,20 @@ func StartServer(dataDir string) (info string, err error) {
 	go func() {
 		if err := sched.Start(ctx); err != nil && ctx.Err() == nil {
 			log.Printf("[gosvc] scheduler stopped: %v", err)
+		}
+	}()
+	// 电脑恢复在线后重放排队中的离线指令。
+	// 每条指令复用原来的幂等键，电脑端保证最多执行一次。
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				flushRemotePending(ctx, api, repos)
+			}
 		}
 	}()
 
@@ -355,6 +380,26 @@ func StartServer(dataDir string) (info string, err error) {
 	raw, _ := json.Marshal(map[string]string{"addr": addr, "token": token, "device_id": devID})
 	log.Printf("[gosvc] started addr=%s token=%s… device_id=%s", addr, token[:8], devID)
 	return string(raw), nil
+}
+
+// flushRemotePending 在电脑重新在线后重放排队中的离线指令。
+// 没有排队指令或电脑仍离线时安静跳过，不刷日志。
+func flushRemotePending(ctx context.Context, api *httpapi.Server, repos *store.Repos) {
+	users, err := repos.Users.ListAll(ctx)
+	if err != nil || len(users) == 0 {
+		return
+	}
+	count, err := repos.RemotePending.CountPending(ctx, users[0].ID)
+	if err != nil || count == 0 {
+		return
+	}
+	replayed, failed, err := api.FlushRemote(ctx, users[0].ID)
+	if err != nil {
+		return
+	}
+	if replayed > 0 || failed > 0 {
+		log.Printf("[gosvc] 离线指令重放：成功 %d 条，失败 %d 条", replayed, failed)
+	}
 }
 
 // StopServer 停止服务并释放资源（幂等）。

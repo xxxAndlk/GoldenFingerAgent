@@ -52,14 +52,22 @@ class NotifyPoller(private val ctx: Context) {
             val arr = JSONArray(body)
             for (i in 0 until arr.length()) {
                 val item = arr.getJSONObject(i)
-                notify(item.optString("body", "你有新的提醒"), item.optString("at", ""))
+                // route 由 Go 端决定（brief / tasks / inbox）；
+                // 没有 route 的通知只打开应用，不猜页面。
+                notify(
+                    item.optString("body", "你有新的提醒"),
+                    item.optString("at", ""),
+                    item.optString("route", "")
+                )
             }
         }
     }
 
-    private fun notify(text: String, at: String) {
+    private fun notify(text: String, at: String, route: String) {
+        val intent = Intent(ctx, MainActivity::class.java)
+        if (route.isNotBlank()) intent.putExtra(MainActivity.EXTRA_ROUTE, route)
         val pi = PendingIntent.getActivity(
-            ctx, 0, Intent(ctx, MainActivity::class.java),
+            ctx, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val n = NotificationCompat.Builder(ctx, GoForegroundService.CH_REMINDER)

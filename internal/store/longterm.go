@@ -32,27 +32,30 @@ const (
 )
 
 // LongTermEdge 是从片段抽取出的（主体, 关系, 客体）事实。
+//
+// JSON 字段统一用 snake_case：手机与桌面的治理界面直接消费，
+// 不能让前端去猜 Go 的导出字段名。
 type LongTermEdge struct {
-	ID            string
-	OwnerUserID   string
-	Subject       string
-	Relation      string
-	Object        string
-	Fact          string
-	ValidFrom     *time.Time
-	ValidTo       *time.Time
-	SourceRefs    []string
-	Embedding     []float32
-	Status        string
-	ScopeType     string
-	ScopeID       string
-	ConditionText string
-	Confidence    float64
-	Version       int
-	ConfirmedBy   string
-	ConfirmedAt   *time.Time
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID            string     `json:"id"`
+	OwnerUserID   string     `json:"owner_user_id"`
+	Subject       string     `json:"subject"`
+	Relation      string     `json:"relation"`
+	Object        string     `json:"object"`
+	Fact          string     `json:"fact"`
+	ValidFrom     *time.Time `json:"valid_from,omitempty"`
+	ValidTo       *time.Time `json:"valid_to,omitempty"`
+	SourceRefs    []string   `json:"source_refs,omitempty"`
+	Embedding     []float32  `json:"-"`
+	Status        string     `json:"status"`
+	ScopeType     string     `json:"scope_type,omitempty"`
+	ScopeID       string     `json:"scope_id,omitempty"`
+	ConditionText string     `json:"condition_text,omitempty"`
+	Confidence    float64    `json:"confidence"`
+	Version       int        `json:"version"`
+	ConfirmedBy   string     `json:"confirmed_by,omitempty"`
+	ConfirmedAt   *time.Time `json:"confirmed_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // LongTermEdgeRepo 是 mem_episode / mem_edge 的持久化入口。

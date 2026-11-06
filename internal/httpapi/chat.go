@@ -36,6 +36,29 @@ type chatResponse struct {
 	Pending   any          `json:"pending,omitempty"`
 	Cards     []agent.Card `json:"cards,omitempty"`
 	Trace     []string     `json:"trace,omitempty"`
+	// TaskID/Action/Task/Conversation 是 Coordinator 命中任务指令时的结构化结果。
+	// 普通聊天不填这些字段，响应形状保持不变。
+	TaskID       string               `json:"task_id,omitempty"`
+	Action       string               `json:"action,omitempty"`
+	Task         *chatTaskRef         `json:"task,omitempty"`
+	Conversation *chatConversationRef `json:"conversation,omitempty"`
+}
+
+// chatTaskRef 是聊天里可点击的任务卡引用。
+type chatTaskRef struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
+}
+
+// chatConversationRef 指向可以继续对话的会话（Worker 会话优先）。
+//
+// id 与 session_id 都给出：id 是会话目录里的条目 ID，session_id 是
+// 读消息用的会话 ID。前端两端都按 session_id 跳转，缺失时任务卡就点不动。
+type chatConversationRef struct {
+	ID        string `json:"id"`
+	SessionID string `json:"session_id"`
+	Kind      string `json:"kind"`
 }
 
 // handleChat 通过 agent 循环运行一轮对话（非流式，兼容旧客户端）。
@@ -136,7 +159,14 @@ func (s *Server) runChatTurn(ctx context.Context, headerUserID string, req chatR
 				})
 				sessionID = session.ID
 			}
-			return &chatResponse{SessionID: sessionID, Reply: result.Reply}, nil
+			return &chatResponse{
+				SessionID:    sessionID,
+				Reply:        result.Reply,
+				TaskID:       result.TaskID,
+				Action:       result.Action,
+				Task:         s.taskRef(ctx, u.ID, result.TaskID),
+				Conversation: s.taskConversationRef(ctx, u.ID, result.TaskID),
+			}, nil
 		}
 	}
 	attachments := make([]agent.Attachment, 0, len(req.Attachments))
@@ -168,6 +198,41 @@ func (s *Server) runChatTurn(ctx context.Context, headerUserID string, req chatR
 		Cards:     out.Cards,
 		Trace:     out.Trace,
 	}, nil
+}
+
+// taskRef 取出任务卡需要的最小信息；拿不到就返回 nil，前端不显示卡片。
+func (s *Server) taskRef(ctx context.Context, ownerID, taskID string) *chatTaskRef {
+	if taskID == "" || s.Coordinator == nil || s.Coordinator.Tasks == nil {
+		return nil
+	}
+	detail, err := s.Coordinator.Tasks.Get(ctx, ownerID, taskID)
+	if err != nil || detail == nil || detail.Task == nil {
+		return nil
+	}
+	return &chatTaskRef{ID: detail.Task.ID, Title: detail.Task.Title, Status: detail.Task.Status}
+}
+
+// taskConversationRef 找出该任务的 Worker 会话，让聊天里的任务卡能跳进对话。
+// 没有 Worker 会话时返回 nil：不能伪造一个可对话的入口。
+func (s *Server) taskConversationRef(ctx context.Context, ownerID, taskID string) *chatConversationRef {
+	if taskID == "" || s.Coordinator == nil || s.Coordinator.Tasks == nil {
+		return nil
+	}
+	detail, err := s.Coordinator.Tasks.Get(ctx, ownerID, taskID)
+	if err != nil || detail == nil || detail.Task == nil {
+		return nil
+	}
+	if detail.Task.CurrentSessionID != "" {
+		return &chatConversationRef{
+			ID: detail.Task.CurrentSessionID, SessionID: detail.Task.CurrentSessionID,
+			Kind: store.ConversationWorker,
+		}
+	}
+	sessionID, err := s.Repos.Conversations.WorkerSessionID(ctx, ownerID, taskID)
+	if err != nil || sessionID == "" {
+		return nil
+	}
+	return &chatConversationRef{ID: sessionID, SessionID: sessionID, Kind: store.ConversationWorker}
 }
 
 // historyLimit 把 max_context（token）折算成回看的消息条数；
@@ -285,7 +350,18 @@ func sessionPreview(text string) string {
 }
 
 func (s *Server) handleSessionMessages(w http.ResponseWriter, r *http.Request) {
+	u := s.currentUser(w, r)
+	if u == nil {
+		return
+	}
 	id := r.PathValue("id")
+	// 会话归属必须先校验：光有会话 ID 不足以读到消息。
+	// 跨 owner 与不存在都返回 404，不泄露会话是否存在。
+	session, err := s.Repos.Sessions.Get(r.Context(), id)
+	if err != nil || session.OwnerUserID != u.ID {
+		writeError(w, 404, "会话不存在")
+		return
+	}
 	limit := 50
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {

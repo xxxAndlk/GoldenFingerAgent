@@ -14,6 +14,8 @@ type Repos struct {
 	Audit               *AuditRepo
 	Consents            *ConsentRepo
 	Sessions            *SessionRepo
+	Conversations       *ConversationRepo
+	ConversationCursors *ConversationCursorRepo
 	InboxEvents         *InboxEventRepo
 	InboxSnoozes        *InboxSnoozeRepo
 	InboxWatches        *InboxWatchRepo
@@ -49,6 +51,9 @@ type Repos struct {
 	CloudDeliveries     *CloudDeliveryRepo
 	MemoryOutbox        *MemoryOutboxRepo
 	DeliveryOutbox      *DeliveryOutboxRepo
+	RemoteCache         *RemoteCacheRepo
+	RemotePending       *RemotePendingRepo
+	RelayReceipts       *RelayReceiptRepo
 }
 
 // NewRepos 在一个 Querier 之上构建仓储（用 WithTx 可得到事务范围的仓储）。
@@ -69,6 +74,8 @@ func NewRepos(q Querier) *Repos {
 		Audit:               NewAuditRepo(q),
 		Consents:            NewConsentRepo(q),
 		Sessions:            NewSessionRepo(q),
+		Conversations:       NewConversationRepo(q),
+		ConversationCursors: NewConversationCursorRepo(q),
 		InboxEvents:         NewInboxEventRepo(q),
 		InboxSnoozes:        NewInboxSnoozeRepo(q),
 		InboxWatches:        NewInboxWatchRepo(q),
@@ -104,5 +111,8 @@ func NewRepos(q Querier) *Repos {
 		CloudDeliveries:     NewCloudDeliveryRepo(q),
 		MemoryOutbox:        NewMemoryOutboxRepo(q),
 		DeliveryOutbox:      NewDeliveryOutboxRepo(q),
+		RemoteCache:         NewRemoteCacheRepo(q),
+		RemotePending:       NewRemotePendingRepo(q),
+		RelayReceipts:       NewRelayReceiptRepo(q),
 	}
 }

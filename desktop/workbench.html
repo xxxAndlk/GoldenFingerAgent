@@ -224,6 +224,29 @@
     .card h3 { margin: 0 0 6px; font-size: 15px; font-weight: 650; }
     .meta { color: var(--muted); font-size: 12.5px; margin-bottom: 8px; }
     .body { white-space: pre-wrap; line-height: 1.6; overflow-wrap: anywhere; }
+    /* 每日简报正文走 Markdown 渲染：不再用 <pre> 输出源码。 */
+    .brief-markdown { white-space: normal; line-height: 1.65; color: var(--label); overflow-wrap: anywhere; }
+    .brief-markdown h1, .brief-markdown h2, .brief-markdown h3, .brief-markdown h4 {
+      margin: 14px 0 6px; font-size: 14.5px; font-weight: 650;
+    }
+    .brief-markdown h1:first-child, .brief-markdown h2:first-child { margin-top: 0; }
+    .brief-markdown p { margin: 0 0 8px; }
+    .brief-markdown ul, .brief-markdown ol { margin: 6px 0; padding-left: 1.4em; }
+    .brief-markdown li { margin: 3px 0; }
+    .brief-markdown code {
+      padding: 1px 5px; border-radius: 5px; background: var(--panel-soft);
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+    }
+    .brief-markdown pre {
+      margin: 8px 0; padding: 10px 12px; border-radius: 10px;
+      background: var(--panel-soft); overflow-x: auto;
+    }
+    .brief-markdown pre code { padding: 0; background: none; }
+    .brief-markdown blockquote {
+      margin: 8px 0; padding: 4px 12px; border-left: 3px solid var(--line); color: var(--muted);
+    }
+    .brief-markdown a { color: var(--blue); }
+    .versions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
     .actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
     .badge {
       display: inline-block;
@@ -505,6 +528,7 @@
       </details>
     </section>
   </main>
+  <script src="markdown.js"></script>
   <script src="workbench.js"></script>
 </body>
 </html>

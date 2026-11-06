@@ -33,6 +33,13 @@ import com.goldenfinger.butler.memory.MemoryCaptureService
 class MainActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var captureButton: Button
+    // 通知点击带过来的目标面板；冷启动时拼进 URL，热启动时直接调 JS。
+    private var pendingRoute = ""
+
+    companion object {
+        /** 通知 / 转述意图里携带的面板路由：brief / tasks / inbox。 */
+        const val EXTRA_ROUTE = "gfa_route"
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,6 +48,7 @@ class MainActivity : AppCompatActivity() {
         GoForegroundService.start(this)
         KeepAliveWorker.schedule(this)
         ensureMemoryCapture()
+        pendingRoute = intent?.getStringExtra(EXTRA_ROUTE).orEmpty()
 
         webView = WebView(this)
         setContentView(buildContentView())
@@ -108,10 +116,41 @@ class MainActivity : AppCompatActivity() {
         loadUrl(addr, token, uid)
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val route = intent?.getStringExtra(EXTRA_ROUTE).orEmpty()
+        if (route.isBlank()) return
+        pendingRoute = route
+        // 已经在跑就直接切面板；还没加载页面就等下次 loadHome 拼进 URL。
+        if (webView.url.isNullOrBlank()) loadHome() else deliverRoute(route)
+    }
+
     private fun loadUrl(addr: String, token: String, uid: String) {
-        val url = if (uid.isBlank()) "http://$addr/?token=$token"
+        val base = if (uid.isBlank()) "http://$addr/?token=$token"
         else "http://$addr/?token=$token&user_id=$uid"
+        // 冷启动来自通知：把目标面板带进页面，由前端自己决定打开哪个抽屉。
+        val route = pendingRoute
+        pendingRoute = ""
+        val url = if (route.isBlank()) base else "$base&route=${Uri.encode(route)}"
         webView.loadUrl(url)
+    }
+
+    /**
+     * 热启动时切换面板。
+     *
+     * 页面还没挂载（gfaOpenRoute 缺失）就等一会儿再试，
+     * 不能让用户点了通知却停在原来的页面。
+     */
+    private fun deliverRoute(route: String, attempt: Int = 0) {
+        if (route.isBlank() || attempt > 20) return
+        val safe = route.replace("'", "").replace("\\", "")
+        val script = "(function(){return typeof window.gfaOpenRoute==='function'?window.gfaOpenRoute('$safe'):'missing';})()"
+        webView.evaluateJavascript(script) { value ->
+            if (value == null || value.contains("missing")) {
+                webView.postDelayed({ deliverRoute(route, attempt + 1) }, 250)
+            }
+        }
     }
 
     /** 向 /api/me 取当前用户 id（X-Token 鉴权）。 */

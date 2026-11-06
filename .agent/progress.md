@@ -6,6 +6,108 @@
 
 > 阅读约定：已完成的条目不再保留「进行中」「未接线」等旧结论；被推翻的判断直接删除或改写，避免后来者按错误前提干活。
 
+## 〇、2026-11-05 手机端与 SuperAgent 架构对齐（阶段 0-4）
+
+按 `docs/手机端与SuperAgent架构对齐检查报告.md` 分四个阶段落地。核心决定：**电脑是唯一事实源，手机只做远程视图与控制器**。
+
+### 阶段 0：会话 owner 隔离与兼容基线
+
+- **P0 安全修复**：`GET /api/sessions/{id}/messages` 现在先解析当前用户、按会话 ID 读 `chat_session`、比对 `owner_user_id`；跨 owner 与不存在一律 404，不泄露会话是否存在。原来只按 URL 里的会话 ID 直接读消息。
+- **统一会话投影**：新增 `GET /api/conversations?kind=all|main|worker|delegated`，返回 `id/kind/title/preview/message_count/updated_at/session_id/task_id/job_id/agent_id/status/waiting_kind/unread_count/can_message/source_device`。`internal/store/conversations.go` 是实现。
+- **旧接口语义不变**：`GET /api/sessions` 仍然过滤掉 `worker`/`router` 会话；`/api/jobs` 响应形状不变。新界面走 `/api/conversations`。
+- **按设备的未读游标**：新增迁移 `0021_conversation_cursors.sql`（`conversation_read_cursor`），游标用 `chat_message.rowid` 而不是时间戳——时间戳受时区与精度影响，rowid 严格递增。手机读过之后电脑角标不会跟着清零。游标记在会话真正所在的电脑上（经中继带上 `X-Device-Id`），列表统计与已读记录必须用同一个设备标识，否则角标永远清不掉。
+- **兼容测试**：`internal/httpapi/compat_test.go` 固化旧 `/api/sessions`、`/api/jobs`、`/api/work-tasks` 的响应形状。
+
+### 阶段 1：每日简报主链路
+
+- **手机顶部「收件箱」改成「每日简报」**：新增独立简报抽屉（`#brief-panel`），Markdown 渲染、日期与版本、生成/更新时间、历史版本导航、重新生成、加载/空/错误/离线缓存状态、来源 ID 可展开。聊天流里的 `todayBrief` 重复卡片已删除。
+- **通知能力没有删除**：搜索、稍后处理、线索、关键词等待全部保留，入口移到「设置 → 通知与稍后处理 → 打开通知收件箱」。
+- **电脑简报页也走 Markdown**：`desktop/workbench.js` 改用已有的 `desktop/markdown.js`（`MarkdownLite.render`），不再 `<pre>` 输出源码；新增简报历史与版本导航。
+- **手机从电脑读简报**：Android 不再只读本机库——新增 `/api/remote/briefs/*` 走中继读电脑的 `latest/list/get/generate`。
+
+### 阶段 2：统一会话与 Worker 对话
+
+- **手机会话目录**分三类：主对话 / 工作任务（Worker 会话）/ 委派 Agent（执行记录）。Worker 会话即使没有消息也照样列出；委派记录没有绑定会话时 `can_message=false`，界面不提供输入框。
+- **Worker 对话页**（`#worker-panel`）：完整 Worker 消息、向上分页、底部追加指令（走 WorkTask Inbox），发送后明确提示「已进入任务 Inbox，将在下一个安全步骤边界处理」，不伪显示 Worker 已回答。
+- **电脑侧**：工作台任务卡新增「查看 Worker 对话」，经 `assistant:open-conversation` IPC 把主窗口切到该 Worker 会话；主窗口会话目录也改用统一投影并分三类标签。
+- **聊天结构化响应**：`chatResponse` 增加 `task_id/action/task/conversation`，Coordinator 命中任务指令时前端能渲染可点击任务卡；普通聊天响应形状不变。
+
+### 阶段 3：手机任务、审批与交付闭环
+
+- **手机任务中心**（`#tasks-panel`）分三组：待你处理 / 执行中 / 已完成。任务详情依次是最新进展 → 待审批 → 交付物 → 最近事件。
+- **中继白名单扩展**：`internal/relay/local_commands.go` 新增 20 条业务命令（`work_task_*`/`conversation_*`/`outbox_*`/`artifact_*`/`brief_*`/`collection_*`），每条带 `command_id/idempotency_key`，结果分类为 `executed/queued/conflict/rejected/unknown`。旧 `job/job_status/job_cancel` 保留一个兼容周期，返回同时带 `job_id` 与 `work_task_id`。
+- **手机 BFF**：`internal/httpapi/remote.go` 提供 `/api/remote/*`。查询离线时回落缓存并标记 `_offline`/`_synced_at`；变更离线时写进 `remote_pending_command`（迁移 `0022_remote_cache.sql`），恢复后最多执行一次（`POST /api/remote/flush`，Android 侧每 60 秒自动重放）。
+- **高风险动作不排队**：审批、交付物验收、生成简报必须电脑在线；离线时如实报错，不把「已排队」显示成「已批准」。追加指令、任务状态、渠道配置可以排队。
+
+### 阶段 4：渠道真实性与记忆治理
+
+- **渠道三态**：新增 `GET /api/collection/channels`，每个渠道标明「本机可用 / 需电脑在线 / 未接入」与生效设备、连接器状态、最后心跳。手机界面据此显示，未接入的渠道直接禁用。
+- **远程配置等真实回执**：手机改电脑端渠道配置走 `/api/remote/collection/channels`，必须等桌面回执；失败时保留原状态。工作轨迹这类要等桌面确认的渠道，桌面没起来时如实失败（`internal/httpapi/collection_test.go` 覆盖）。
+- **手机聊天配置电脑采集走远程命令**：Android 注册 `agent.RemoteCollectionTools`（`internal/agent/remote_collection_tools.go`），由中继转发给电脑端采集管理器执行；没有把桌面工具直接注册到手机。工具名沿用 `configure_collection_channel`，敏感风险与 Grant 约束不变。
+- **共享记忆与任务状态分离**：共享长期记忆继续复用云端/本机实现；任务、简报、审批与会话目录走独立控制面，不再混用同一份「已同步」状态。
+
+### 〇.1 校验报告问题修复（2026-11-05 第二轮）
+
+按 `docs/手机端与SuperAgent架构对齐校验报告.md` 逐条修复。该报告发现上面第一轮有若干「声称做了但实际没生效」的地方，这里记录改了什么、怎么证明。
+
+**P0（控制链路 / 副作用可靠性）**
+
+| 缺陷 | 修复 | 证据 |
+|---|---|---|
+| 手机 `taskAction` 被旧提醒同名方法覆盖，任务操作打到 `/api/tasks/{id}/{action}` | 旧提醒方法改名 `reminderAction`；长期任务保留 `taskAction(action)`，并带 `expected_version`、按状态给出暂停/继续/恢复/重新打开/完成/取消 | H5 验证真实点击：请求命中 `/api/work-tasks/{id}/pause` 与 `/resume`，断言不存在 `/api/tasks/*` |
+| 桌面打开 Worker 会话后输入仍走 `/api/chat`，并污染主会话指针 | 主对话与查看中的 Worker 会话分离：Worker 模式不调用 `useSession`，`assistant:open-conversation` 不再改 `chatSessionId`；输入统一走 `messageWorkTask`，发送前取任务版本做 CAS | `desktop/test/worker-inbox-contract.test.js` |
+| `unknown`（超时/5xx）也进离线队列并自动重放 | BFF 只对**明确离线**排队；`unknown` 返回 502 并提示先核对，不排队、不重放 | `internal/httpapi/remote_test.go` 的 `TestRemoteUnknownResultIsNeverQueued` |
+| 电脑端去重只在内存，重启即失效 | 新增迁移 `0023_relay_command_receipts.sql` + `store.RelayReceiptRepo`：按幂等键落库，`done` 回放原结果，只剩 `running` 的按 `unknown` 回执；本进程内并发重投等第一次结果 | `internal/relay/ledger_test.go`、`internal/store/relay_receipts_test.go` |
+
+**P1（功能不完整 / 状态一致性）**
+
+- **远程建任务**：补 `POST /api/remote/work-tasks`，在线/离线两条路径都有测试。
+- **重放保留版本**：离线排队时把 `expected_version` 一起存下来，重放原样带回（`TestRemoteFlushRestoresExpectedVersion`）。
+- **Worker 闭环**：手机支持向上分页、追加指令带持久化幂等键、任务操作带版本；终态（completed/cancelled）前后端双重禁止追加（`AddMessage` 返回冲突）。
+- **双端任务卡**：手机与桌面都消费 `task_id/task/action/conversation`，渲染成可点击的任务卡。
+- **投影语义**：`source_device` 改为会话事实源设备；`cmd/server` 装配桌面设备 ID；标记已读按 ID+owner 直接查（不再依赖前 500 条列表）；手机主历史与消息读取改走统一投影。
+- **简报**：手机生成超时 150s（电脑侧 90s），离线时禁用生成；新增按设备的「已读」状态（`localStorage`，不复用 delivered）。
+
+**P2**
+
+- 删除重复的全局渠道开关与死 CSS；委派记录有真实会话时可打开；记忆面板新增「事实与来源」确认 / 标记冲突入口；更新 `docs/三端拆分与中继协议.md` 的白名单、结果分类与重试语义。
+- **通知点击跳转**：`OutboxItem` 新增 `route`（`brief`/`tasks`/`inbox`），桌面与手机端在生成提醒时带上真实去处；`NotifyPoller` 把 route 放进 `PendingIntent`，`MainActivity` 冷启动拼进 `?route=`、热启动调用 `window.gfaOpenRoute`；H5 只打开已知面板，未知 route 不猜页面。转述通知固定进收件箱。
+
+### 验证证据（2026-11-05 第二轮）
+
+- `go build ./...`、`go vet ./...`、`go test ./... -count=1` 全部通过。新增用例：`internal/relay/ledger_test.go`、`internal/store/relay_receipts_test.go`、`internal/httpapi/remote_test.go`（unknown 不排队、版本重放、远程建任务）、`internal/httpapi/conversations_test.go`（终态禁发、500+ 会话的已读、source_device）。
+- 桌面 `npm test` **159/159** 通过（新增 `desktop/test/worker-inbox-contract.test.js`），`npm run check` 通过。
+- 手机 H5 `GFA_H5_VERIFY_PORT=17101 npm run test:mobile-h5` 通过：
+  `H5_VERIFY_OK viewport=390x844 settings=ok chat=mock persistence=ok history=ok brief=markdown taskCenter=ok taskActions=work-tasks inbox=ok headerBrief=ok channels=tri-state horizontalOverflow=false pageErrors=0 responses=2`。
+  三份页面源 md5 一致：`88c420c252bc2dc4c6aecb8af143355f`。
+- H5 验证覆盖：顶部入口替换、简报 Markdown（`.brief-body` 内无 `<pre>`）、会话目录三类切换、任务中心显示真实任务、**真实点击暂停/继续并断言请求路径**、通知收件箱仍可从设置进入、渠道三态齐全、渠道开关是能点的原生 checkbox、390×844 无横向溢出。
+- **代码已写、未编译验证**：通知点击跳转涉及 `MainActivity.kt`、`NotifyPoller.kt`、`NotifyListenerService.kt`。当前环境没有 Android 编译链，Kotlin 部分只做了静态检查；H5 侧的 `gfaOpenRoute` 已由 H5 验证覆盖（`route=ok`），但「点系统通知 → 真机打开对应面板」仍需真机验收。
+- **仍未验证（不能由以上自动测试替代）**：真实 TLS 中继与跨设备联调、Android 真机（Keystore、通知监听、语音唤醒、无障碍、ROM 保活、Artifact 原生下载与校验）、真实模型下的普通聊天不误建任务、真实微信/工作轨迹连接器心跳与撤权停止、最新打包版桌面/APK 的运行验收。H5 与单测通过不代表这些路径已验收。
+
+### 〇.2 校验报告问题修复（2026-11-05 第三轮）
+
+按 `docs/手机端与SuperAgent架构对齐校验报告.md` 最新一轮列出的 7 个 P1 边界问题逐条修复。这一轮主要是把「正常路径能跑」收紧到「故障边界也诚实」。
+
+| 缺陷 | 修复 | 证据（可复跑） |
+|---|---|---|
+| 离线重放在超时/5xx 后仍保持 pending，每 60 秒自动重试 | `FlushRemote` 只在明确离线时保留 pending；超时、5xx、连接中断一律 `MarkFailed`，`replayPending` 不再原样重投 | `TestRemoteFlushStopsAfterUnknown`、`TestRemoteFlushKeepsPendingWhenOfflineAgain` |
+| 任务卡读取 `conversation.session_id`，后端只给 `id/kind` | `chatConversationRef` 同时输出 `id` 与 `session_id`，`taskConversationRef` 两字段同值；非流式与 SSE `done` 都带完整任务结构 | `TestChatResponseKeepsTaskStructureForCoordinator`（含 `/api/chat/stream` 的 `done` 帧断言） |
+| 委派记录打开后仍显示可发送输入框，但发送直接 return | 委派打开固定 `can_message=false`、`task_id=''`；输入区条件改为 `workerCanMessage && workerTaskId`，桌面提交入口直接拦掉委派模式 | `desktop/test/worker-inbox-contract.test.js` 的「委派执行记录在手机和桌面都只读」；H5 用带会话的委派记录真实点击验证 `delegated=readonly` |
+| Ledger `Begin` 写失败仍继续执行（fail-open） | `markRunning` 返回错误时不再调用业务处理器，回 `unknown` 并释放执行权；回执读失败也走 `abortCommand`，不把结果缓存成永久已完成 | `TestDesktopLedgerBeginFailureRefusesToExecute`、`TestDesktopLedgerLookupFailureIsRetried` |
+| 非法审批动作被 `HasSuffix` 默认当成 reject | 只接受精确 `approve`/`reject`，其他值返回 400 | `TestRemoteOutboxRejectsUnknownAction` |
+| Artifact 交付没有复用离线队列幂等键 | `ArtifactDeliver` 全链路加 `idempotencyKey`，首次与重放都用队列 key | `TestRemoteArtifactDeliverReusesKeyOnReplay` |
+| 同幂等键已存在时仍回报「已排队」 | `Enqueue` 返回已存在记录；同键同内容：pending→202、done→200 回原结果、failed→502；同键不同内容→409 | `TestRemoteQueueReportsExistingState` |
+
+**验证证据（2026-11-05 第三轮）**
+
+- `go build ./...`、`go vet ./...`、`go test ./... -count=1` 全部通过（含 `internal/relay`、`internal/httpapi`、`internal/store`）。
+- 桌面 `npm test` **160/160** 通过，`npm run check` 通过。
+- H5 `GFA_H5_VERIFY_PORT=17101 npm run test:mobile-h5` 通过：
+  `H5_VERIFY_OK viewport=390x844 settings=ok chat=mock persistence=ok history=ok delegated=readonly brief=markdown taskCenter=ok taskActions=work-tasks inbox=ok headerBrief=ok channels=tri-state route=ok horizontalOverflow=false pageErrors=0 responses=2`。
+- 三份手机页面字节一致，md5 均为 `2c1402d38858b920c8b057b4aab1ee8f`。
+- 新增跨 owner 用例 `TestConversationMessagesRejectCrossOwner`：Worker 会话与委派执行记录都不能被其他用户读取，委派列表也不泄露标题。
+- **仍不能由本轮自动测试替代**：Android Kotlin 仍未编译（环境无 Java/SDK）；真实 TLS 中继、真机通知点击、真实模型/连接器、打包版运行验收仍需在真实环境完成。
+
 ## 〇、2026-11-05 工作台界面重做、图标替换与托盘隐藏区
 
 - **工作台重做**：`desktop/workbench.html` 换成新的设计系统（顶栏 + 分段标签栏 + 折叠区块 + 统计磁贴 + 卡片网格 + 明暗双配色），`desktop/workbench.js` 配套重写渲染逻辑。顶栏带应用图标、连接状态胶囊与图标刷新按钮；标签栏从普通按钮改成胶囊分段控件。

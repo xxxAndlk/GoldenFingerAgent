@@ -265,8 +265,9 @@ func (s *Service) addInboxMessage(ctx context.Context, ownerID, taskID, text str
 		if expectedVersion != nil && *expectedVersion != task.Version {
 			return fmt.Errorf("%w: task version %d != %d", ErrConflict, task.Version, *expectedVersion)
 		}
-		if task.Status == store.WorkTaskCancelled {
-			return fmt.Errorf("%w: 已取消的任务不能追加消息", ErrConflict)
+		// 终态任务不能直接追加指令：先重新打开，再继续。
+		if task.Status == store.WorkTaskCancelled || task.Status == store.WorkTaskCompleted {
+			return fmt.Errorf("%w: 已结束的任务不能追加消息，请先重新打开", ErrConflict)
 		}
 		if sourceKind == "" {
 			sourceKind = store.InboxSourceUser

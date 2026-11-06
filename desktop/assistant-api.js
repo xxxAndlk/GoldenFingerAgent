@@ -160,6 +160,19 @@ class AssistantApi {
     return this.request(`/api/sessions/${encodeURIComponent(id)}/messages?${query.toString()}`, { method: 'GET' });
   }
 
+  // 统一会话目录：主对话、Worker 会话与委派执行记录。
+  listConversations(kind = '', limit = 100) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (kind) query.set('kind', kind);
+    return this.request(`/api/conversations?${query.toString()}`, { method: 'GET' });
+  }
+
+  conversationMessages(id, before = '', limit = 50) {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (before) query.set('before', before);
+    return this.request(`/api/conversations/${encodeURIComponent(id)}/messages?${query.toString()}`, { method: 'GET' });
+  }
+
   listWorkTasks(status = '', limit = 100) {
     const query = new URLSearchParams({ limit: String(limit) });
     if (status) query.set('status', status);
@@ -297,6 +310,14 @@ class AssistantApi {
   latestBrief(date = '') {
     const query = date ? `?date=${encodeURIComponent(date)}` : '';
     return this.request(`/api/briefs/latest${query}`, { method: 'GET' });
+  }
+
+  listBriefs(limit = 30) {
+    return this.request(`/api/briefs?limit=${encodeURIComponent(limit)}`, { method: 'GET' });
+  }
+
+  getBrief(id) {
+    return this.request(`/api/briefs/${encodeURIComponent(id)}`, { method: 'GET' });
   }
 
   generateBrief(date = '') {

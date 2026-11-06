@@ -3,7 +3,7 @@
 const api = window.desktopAssistant;
 const state = {
   tab: 'tasks', workTasks: [], taskDetail: null, taskEvents: [], busyTask: '',
-  outbox: [], brief: null, briefError: '',
+  outbox: [], brief: null, briefError: '', briefHistory: [],
   channels: null, email: null, webSites: [], webStatus: {}, webError: '',
   health: null, wechatChats: [], wechatQuery: '', wechatPreview: null, wechatError: '',
 };
@@ -201,6 +201,21 @@ function taskCard(task, detail) {
       await loadTaskDetail(task.id, true);
     }
   }, actions.childElementCount ? 'secondary' : ''));
+
+  // 有 Worker 会话时给出「查看 Worker 对话」入口：
+  // 执行段摘要只是诊断信息，不能当成 Worker 对话的替代品。
+  const workerSessionID = (shownDetail && shownDetail.task && shownDetail.task.current_session_id) || task.current_session_id || '';
+  if (workerSessionID) {
+    actions.append(actionButton('查看 Worker 对话', async () => {
+      // 带上 kind/task_id：主窗口据此进入 Worker 查看模式，输入走任务 Inbox。
+      await api.openConversation(workerSessionID, task.title || '长期任务', {
+        kind: 'worker',
+        task_id: task.id,
+        status: task.status || '',
+        can_message: task.status !== 'completed' && task.status !== 'cancelled',
+      });
+    }, 'secondary'));
+  }
 
   root.append(actions);
   if (expanded) root.append(renderTaskDetail(shownDetail, state.taskEvents));
@@ -572,6 +587,19 @@ function renderBrief() {
   const panel = panels.brief;
   panel.replaceChildren();
   panel.append(el('div', 'hint', '简报会把今天的重要变化、需要你处理的事和背景整理在一起。可以手动生成，不会打扰聊天。'));
+  if (state.briefHistory && state.briefHistory.length) {
+    const versions = el('div', 'versions');
+    for (const item of state.briefHistory) {
+      const label = `${item.brief_date || ''} v${item.version || 1}`;
+      const active = state.brief && item.id === state.brief.id;
+      versions.append(actionButton(label, async () => {
+        const result = await api.getBrief(item.id);
+        state.brief = result.brief || null;
+        render();
+      }, active ? '' : 'secondary'));
+    }
+    panel.append(versions);
+  }
   if (!state.brief) {
     panel.append(el('div', 'empty', state.briefError || '今天还没有简报。'));
     panel.append(actionButton('生成今天的简报', async () => {
@@ -583,8 +611,10 @@ function renderBrief() {
   const brief = state.brief;
   const meta = `${brief.brief_date} · 第 ${brief.version} 版 · ${brief.model || '模型'} · ${brief.status}`;
   const root = card('今日简报', meta, '');
-  const pre = el('pre', '', brief.content_md || '');
-  root.append(pre);
+  // 正文走 Markdown 渲染，不再用 <pre> 输出源码。
+  const body = el('div', 'markdown brief-markdown');
+  body.innerHTML = window.MarkdownLite.render(brief.content_md || '');
+  root.append(body);
   const actions = el('div', 'actions');
   actions.append(actionButton('重新生成', async () => {
     await api.generateBrief(today());
@@ -1147,6 +1177,7 @@ async function refresh() {
       api.getEmailSettings(),
       api.listWebSites(),
       api.connectorHealth ? api.connectorHealth() : Promise.reject(new Error('连接器健康接口不可用')),
+      api.listBriefs ? api.listBriefs(30) : Promise.reject(new Error('简报历史接口不可用')),
     ]);
     if (results[0].status === 'fulfilled') state.workTasks = results[0].value.tasks || [];
     if (results[1].status === 'fulfilled') state.outbox = results[1].value.outbox || [];
@@ -1173,6 +1204,7 @@ async function refresh() {
       state.webError = results[5].reason?.message || '网页站点读取失败';
     }
     if (results[6] && results[6].status === 'fulfilled') state.health = results[6].value;
+    if (results[7] && results[7].status === 'fulfilled') state.briefHistory = results[7].value.briefs || [];
     if (state.taskDetail) {
       try {
         const detail = await api.getWorkTask(state.taskDetail.task.id);

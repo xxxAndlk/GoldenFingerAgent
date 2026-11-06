@@ -162,6 +162,10 @@ env -u ELECTRON_RUN_AS_NODE ./desktop/dist/GoldenFinger-win/GoldenFinger.exe --s
 - 模型保存接口本身是原子的；配置“重启消失”优先检查 `llm.settings_path` 是否在两次启动间变化，而不是怀疑保存失败。
 - 手机端模型配置与桌面端保持同一套交互：方案列表（点行切换、编辑/删除）+「新增模型」内嵌编辑器；不要再退回单个表单或 `prompt` 另存方案。联网搜索 Key 单独保存。
 - 会话持久化在 `chat_session` / `chat_message`；`GET /api/sessions` 按用户列出，`GET /api/sessions/{id}/messages?limit=50&before=<message_id>` 读取消息。消息按 SQLite `rowid` 保持真实写入顺序（同一时间戳也不乱序），接口返回一页时间正序消息；`before` 为空取最新一页，客户端滚到顶部再用最早消息 ID 加载更早一页。默认 50 条、最大 200 条。会话名只用创建时间，不自动生成标题。
+- 所有会话消息读取都必须先校验 owner：`GET /api/sessions/{id}/messages` 要比对 `chat_session.owner_user_id`，跨 owner 与不存在一律 404，不泄露会话是否存在。新增接口同样不能只依赖列表页已过滤。
+- 双端会话目录走新的 `GET /api/conversations?kind=all|main|worker|delegated` 投影，统一返回 `id/kind/title/preview/message_count/session_id/task_id/job_id/agent_id/status/waiting_kind/unread_count/can_message/source_device`。旧 `GET /api/sessions` 语义不变：**Worker 与 router 会话仍不得出现在 `/api/sessions`**，新界面改用 `/api/conversations`。`router` 等内部会话在投影里也排除。
+- Worker 会话即使一条消息都没有也要出现在投影里（任务是真实存在的），不能因为 `messages=0` 消失；委派执行记录没有绑定会话时 `session_id` 为空、`can_message=false`，前端不得伪造聊天界面。
+- 会话未读按设备统计：`POST /api/conversations/{id}/read` 用 `X-Device-Id` 记录 `chat_message.rowid` 游标，手机读过之后电脑角标不能跟着清零。没有游标的会话未读按 0 计。
 - 桌面和手机都必须采用“最新一页 + 向上加载”：初次打开滚到底部，加载旧页时保持当前阅读位置；初始化/程序化滚动期间不能误触发旧页加载。
 - 主对话默认**不注入**当天工作轨迹；只有明确询问“今天/工作/总结/做了什么”时，桌面端先调用 `POST /api/summarize` 的无工具总结子代理，把轨迹压缩成最多 4000 字的短结果，再作为 `context` 交给主对话。不要把 36 条阶段总结或原始轨迹直接塞进主 Agent 上下文；“你是谁”这类普通对话不触发子代理。
 - `/api/summarize` 只做一次独立 LLM 调用，不创建会话、不调用工具、不写聊天历史；主对话仍负责最终回复和持久化。
@@ -259,6 +263,8 @@ env -u ELECTRON_RUN_AS_NODE ./desktop/dist/GoldenFinger-win/GoldenFinger.exe --s
 - 电脑微信只读取本机已保存的数据库消息：每条记录必须带稳定 `source_id`、`sender_id/direction/actor_role`、`occurred_at/observed_at`、`message_id/event_id`、`completeness/sync_scope`。不知道发送者、方向或真实时间时保留 `unknown`，不得补猜；`complete` 只表示单条消息完整，不表示完整历史。默认 `latest_only`，不自动回灌全部历史；首次历史回填只能由用户明确发起并指定范围。重复正文按 `message_key` 保留为多条；`local_id` 跨分片重复，不得只用 `(chat, local_id)`。联系人消息没有机主指令权，不得直接创建/修改 WorkTask、调用 Bash 或写文件。手机微信通知在进入旧通知中心前应用 `wechat_mobile` 开关和来源策略。
 - Thread 摘要和每日简报必须带来源 ID；摘要游标只前进。已有 Thread 摘要时不要再用原始 trigger 重复喂简报模型。简报每次重新生成创建新版本，已交付版本不得原地覆盖。
 - 桌面工作台与主进程 SSE 只消费 `/api/events`；不要为工作台另建轮询协议。任务卡必须可回到唯一主会话，Worker 会话不得出现在 `/api/sessions`。
+- 每日简报正文一律走 Markdown 渲染（桌面 `desktop/markdown.js` 的 `MarkdownLite`，手机 `web/index.html` 的 `renderMD`），不要用 `<pre>` 输出 Markdown 源码。简报重新生成创建新版本，已交付版本不得原地覆盖。
+- 聊天命中任务指令时，HTTP 响应要带结构化字段 `task_id/action/task/conversation`，让前端能渲染可点击的任务卡；普通聊天的响应形状保持不变。
 
 ### 手机 → 电脑中继
 
@@ -274,6 +280,27 @@ env -u ELECTRON_RUN_AS_NODE ./desktop/dist/GoldenFinger-win/GoldenFinger.exe --s
 - 语音口令判定（唤醒词、10s 指令窗、4s 合并、30s 上下文）只在 `internal/voice`；Kotlin 只做系统识别、TTS 与执行 `speak|chat|capture` 动作。片段落库也归 Go，不要再让 Kotlin 单独调 `/api/memory/capture`。
 - 长任务必须走异步队列（`POST /api/jobs` / `agent_job` 表），不要用一次 HTTP 请求硬等；手机端用 `client_id` 作幂等键，重试只能产生一个任务。
 - 判断任务成败前必须先取 `ctx.Err()` 快照再 `cancel()`——在 `cancel()` 之后读会把失败/超时误判成「已取消」。
+
+### 双端共享 SuperAgent 控制面
+
+- **电脑是唯一事实源**：WorkTask、Worker 会话、ActionOutbox 审批、Artifact、每日简报都以电脑端 SQLite 为准。手机只做远程视图与控制器，不在 Android 再起一套 Worker／Router，避免双写和状态分裂。
+- **中继只发白名单业务命令**（`internal/relay/local_commands.go` 的 `commandRoutes`），不做任意 URL 代理。新增命令必须同时写清楚请求形状、结果分类与重试语义。
+- **指令结果必须分类**：`executed` / `queued` / `conflict` / `rejected` / `unknown`。手机按分类决定提示语；`unknown` 不自动重试，先让用户核对。
+- **手机读接口只读缓存**：电脑离线时返回上次同步的缓存并标记 `_offline` 与 `_synced_at`，没有缓存就如实报错，不能假装有数据。
+- **低风险变更可排队**（追加指令、任务状态、渠道配置）：离线时把指令连同持久化幂等键写进 `remote_pending_command`，恢复后最多执行一次。排队时必须把 `expected_version` 一起存下来，重放原样带回，不能绕过 CAS。Artifact 交付同样复用这个队列幂等键，首次与重放走同一条电脑端回执。
+- **只有「明确离线」才排队**：超时、5xx、连接中断属于结果未知——电脑可能已经执行成功、只是回执丢了。这类结果既不排队也不自动重放，返回 502 并提示先核对。
+- **重放失败不得留在 pending**：离线队列重放时，只有仍然明确离线才保留记录；超时、5xx、连接中断一律标记 `failed` 并停止自动重试，否则每 60 秒会无限重投。
+- **同一幂等键入队要如实回报**：同内容 `pending` → 202、`done` → 200 回放原结果、`failed` → 502 要求核对；同键不同内容 → 409。不能一律回「已排队」。
+- **高风险动作不排队**：审批、交付物验收、生成简报必须等电脑在线并返回真实版本结果，不能把「已排队」显示成「已批准」。
+- **「最多一次执行」在电脑端落库**：`relay.Client` 配置 `CommandLedger`（`relay_command_receipt`）后，已完成的重投回放原结果，只剩 `running` 的记录按 `unknown` 回执。内存去重只作快路径，不能作为重启后的保证。
+- **执行前必须写 `running` 回执**：`Ledger.Begin` 失败时不得调用业务处理器，直接回 `unknown` 让用户核对——没有回执的执行在重启后无法识别。回执读取失败也回 `unknown`，但不能缓存这个结果，避免一次数据库故障永久钉死该幂等键。
+- **重投换信封、不换幂等键**：中继按信封 ID 去重，手机每次投递生成新信封 ID，`payload.idempotency_key` 保持不变，否则重投会被中继丢掉、手机永远拿不到结果。
+- **Worker 会话的输入只能经任务 Inbox**：桌面打开 Worker 会话时不得修改主聊天会话指针（`chatSessionId`），输入走 `messageWorkTask`；手机同理。终态（`completed`/`cancelled`）任务前后端都禁止追加，需先 `reopen`。
+- **会话投影与旧接口并存**：`/api/conversations` 是新界面的统一投影，`/api/sessions` 语义不变（仍过滤 worker/router）。`source_device` 必须是会话事实源设备，不是发起请求的设备。
+- **渠道开关必须对应真实设备**：手机端显示三态——本机可用（如手机通知微信）／需电脑在线（电脑微信、工作轨迹、授权网页）／未接入（飞书、钉钉、邮箱）。保存远程配置要等桌面真实回执，失败时保留原状态。连接器健康看心跳，不用「历史上有消息」推断正在采集。
+- **手机聊天配置电脑采集走远程命令**：Android 注册 `agent.RemoteCollectionTools`，由中继转发到电脑端的采集管理器执行；不要把桌面工具直接注册到手机，也不要让手机自己保存渠道配置。
+- **委派执行记录不是聊天**：`agent_job` 只是执行段。没有绑定会话时 `can_message=false`，前端不得伪造对话界面。
+- **通知要带去处**：`OutboxItem.route` 只能是 `brief` / `tasks` / `inbox`，由产生提醒的地方决定；手机点通知时按 route 打开对应面板，未知 route 只打开首页，不猜页面。
 
 ## 6. 安全与隐私
 

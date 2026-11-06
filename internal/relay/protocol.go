@@ -98,7 +98,66 @@ type ResultPayload struct {
 	Events []string `json:"events,omitempty"`
 	// Artifacts 是可选交付物引用；仅协议 v2 端会收到。
 	Artifacts []ArtifactRef `json:"artifacts,omitempty"`
+	// Command 是这次指令的分类结果，见 CommandExecuted 等常量。
+	// 手机端据此区分「真的执行了」「排队中」「版本冲突」「被拒绝」「结果未知」。
+	Command string `json:"command,omitempty"`
+	// SchemaVersion 是响应结构的版本号，手机按此解析 Data。
+	SchemaVersion int `json:"schema_version,omitempty"`
+	// Data 承载结构化业务结果（任务、会话、简报、审批、交付物等）。
+	Data json.RawMessage `json:"data,omitempty"`
+	// WorkTaskID 在结果对应长期任务时给出；JobID 在结果对应执行段时给出。
+	// AgentJob 仍是执行单元，不要把所有 Job 强行改名为 WorkTask。
+	WorkTaskID string `json:"work_task_id,omitempty"`
+	JobID      string `json:"job_id,omitempty"`
 }
+
+// 指令结果分类。手机端按这个分类决定提示语与是否允许自动重试。
+const (
+	// CommandExecuted 表示电脑真的执行了并返回了真实结果。
+	CommandExecuted = "executed"
+	// CommandQueued 表示电脑当前离线，指令已进中继队列，等待电脑上线后执行。
+	CommandQueued = "queued"
+	// CommandConflict 表示版本冲突（例如 expected_version 过期），需要重新读取后再操作。
+	CommandConflict = "conflict"
+	// CommandRejected 表示电脑明确拒绝了这次操作（权限、状态不允许等）。
+	CommandRejected = "rejected"
+	// CommandUnknown 表示结果未知：不要自动重试，先向用户核对。
+	CommandUnknown = "unknown"
+)
+
+// CommandSchemaVersion 是本轮扩展指令的响应结构版本。
+const CommandSchemaVersion = 1
+
+// 电脑端支持的白名单指令。手机只能调用这些业务命令，
+// 中继不做任意 HTTP 代理。
+const (
+	CmdWorkTaskCreate = "work_task_create"
+	CmdWorkTaskList   = "work_task_list"
+	CmdWorkTaskGet    = "work_task_get"
+	CmdWorkTaskMsg    = "work_task_message"
+	CmdWorkTaskAction = "work_task_action"
+
+	CmdConversationList     = "conversation_list"
+	CmdConversationMessages = "conversation_messages"
+	CmdConversationRead     = "conversation_read"
+
+	CmdOutboxList    = "outbox_list"
+	CmdOutboxApprove = "outbox_approve"
+	CmdOutboxReject  = "outbox_reject"
+
+	CmdArtifactGet     = "artifact_get"
+	CmdArtifactAccept  = "artifact_accept"
+	CmdArtifactReject  = "artifact_reject"
+	CmdArtifactDeliver = "artifact_deliver"
+
+	CmdBriefLatest   = "brief_latest"
+	CmdBriefList     = "brief_list"
+	CmdBriefGet      = "brief_get"
+	CmdBriefGenerate = "brief_generate"
+
+	CmdCollectionList      = "collection_list"
+	CmdCollectionConfigure = "collection_configure"
+)
 
 // 中继错误。
 var (

@@ -42,7 +42,8 @@ test('重新打开窗口只保留最近一页并落在最底部', () => {
   assert.match(renderer, /function scrollToBottom\(\)/);
   // 打开面板时重新拉最近一页，并且用瞬时定位避免 smooth 动画停在中间。
   assert.match(renderer, /if \(next\) \{[\s\S]{0,240}?resetCleared\(\);[\s\S]{0,120}?reloadLatestMessages\(\);/);
-  assert.match(renderer, /api\.sessionMessages\(conversationSession, '', MESSAGE_PAGE_SIZE\)/);
+  // 消息统一从会话投影读取，由 conversationPage 归一形状。
+  assert.match(renderer, /conversationPage\(conversationSession, ''\)/);
   assert.match(renderer, /messages\.style\.scrollBehavior = 'auto';/);
   assert.match(renderer, /requestAnimationFrame\(\(\) => \{\s*allowOlderLoad = true;\s*scrollToBottom\(\);/);
 });

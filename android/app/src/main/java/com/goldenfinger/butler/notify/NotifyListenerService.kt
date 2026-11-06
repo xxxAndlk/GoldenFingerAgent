@@ -101,8 +101,12 @@ class NotifyListenerService : NotificationListenerService() {
     /** 转述通知：新增独立通知（不改原通知），标题“{app}来消息”，BigText 原文 + 三个稍后处理 action。 */
     private fun relay(appName: String, pkg: String, title: String, text: String, whenMs: Long) {
         val full = if (title.isBlank() || title == text) text else "$title：$text"
+        // 转述通知点开的是收件箱：用户看到的是“某 App 来消息”，
+        // 打开收件箱比打开首页更接近他想找的东西。
+        val openIntent = Intent(this, MainActivity::class.java)
+            .putExtra(MainActivity.EXTRA_ROUTE, "inbox")
         val pi = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
+            this, 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val builder = NotificationCompat.Builder(this, CHANNEL_RELAY)

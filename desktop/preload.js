@@ -69,6 +69,8 @@ contextBridge.exposeInMainWorld('desktopAssistant', {
   },
   listSessions: date => ipcRenderer.invoke('assistant:sessions', date || ''),
   sessionMessages: (id, before = '', limit = 50) => ipcRenderer.invoke('assistant:session-messages', id, before, limit),
+  listConversations: (kind = '', limit = 100) => ipcRenderer.invoke('assistant:conversations', kind || '', limit),
+  conversationMessages: (id, before = '', limit = 50) => ipcRenderer.invoke('assistant:conversation-messages', id, before, limit),
   useSession: id => ipcRenderer.invoke('assistant:use-session', id || ''),
   setCollaboration: enabled => ipcRenderer.invoke('collaboration:set', enabled),
   collaborationStatus: () => ipcRenderer.invoke('collaboration:status'),
@@ -142,6 +144,14 @@ contextBridge.exposeInMainWorld('desktopAssistant', {
     const listener = (_event, value) => callback(value);
     ipcRenderer.on('chat:session', listener);
     return () => ipcRenderer.removeListener('chat:session', listener);
+  },
+  // 打开某个会话（主对话或 Worker 会话），并把主窗口带到前台。
+  // meta 带 kind/task_id/status：Worker 会话的输入必须走任务 Inbox。
+  openConversation: (id, title = '', meta = {}) => ipcRenderer.invoke('assistant:open-conversation', id, title, meta),
+  onOpenConversation: callback => {
+    const listener = (_event, value) => callback(value);
+    ipcRenderer.on('chat:open-conversation', listener);
+    return () => ipcRenderer.removeListener('chat:open-conversation', listener);
   },
   setActivityOpacity: value => ipcRenderer.invoke('settings:set-activity-opacity', value),
   setActivityVisible: value => ipcRenderer.invoke('activity:set-visible', value),

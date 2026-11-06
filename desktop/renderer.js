@@ -31,6 +31,15 @@ const briefCardOpen = document.querySelector('#brief-card-open');
 const briefCardClose = document.querySelector('#brief-card-close');
 const briefCardText = document.querySelector('#brief-card-text');
 const historyClearDate = document.querySelector('#history-clear-date');
+const historyDateBar = document.querySelector('#history-date-bar');
+const historyTabs = {
+  main: document.querySelector('#history-tab-main'),
+  worker: document.querySelector('#history-tab-worker'),
+  delegated: document.querySelector('#history-tab-delegated'),
+};
+const workerBanner = document.querySelector('#worker-banner');
+const workerBannerText = document.querySelector('#worker-banner-text');
+const workerBannerExit = document.querySelector('#worker-banner-exit');
 const attachButton = document.querySelector('#attach');
 const attachInput = document.querySelector('#attach-input');
 const attachmentStrip = document.querySelector('#attachments');
@@ -45,6 +54,7 @@ const WELCOME = '我是金手指管家，可以对话、记录和调度其他 Ag
 let expanded = false;
 let pendingReply = null;
 let historySessions = [];
+let historyTab = 'main';
 let pendingAttachments = [];
 let summaryPhases = [];
 let summaryTexts = new Set();
@@ -60,6 +70,11 @@ let clearSettleUntil = 0;
 let clearToken = 0;
 let dismissedBriefId = '';
 let currentBriefId = '';
+// 主对话与「查看中的 Worker 会话」必须分开：
+// Worker 里的输入只能进任务 Inbox，不能污染主聊天会话。
+let conversationKind = 'main';
+// conversationTask 是当前查看的 Worker 会话对应的长期任务。
+let conversationTask = null;
 
 // ---- 对话状态：思考中 / 调用工具 / 等待 Agent ----
 const TOOL_LABELS = {
@@ -159,7 +174,7 @@ async function reloadLatestMessages() {
   if (!conversationSession || pendingReply) return;
   const token = clearToken;
   try {
-    const page = await api.sessionMessages(conversationSession, '', MESSAGE_PAGE_SIZE);
+    const page = await conversationPage(conversationSession, '');
     if (!Array.isArray(page)) return;
     // 请求期间用户清过屏就不要再重绘，否则刚隐藏的内容又回来了。
     if (token !== clearToken) return;
@@ -620,7 +635,7 @@ async function loadOlderMessages() {
   try {
     const previousHeight = messages.scrollHeight;
     const previousTop = messages.scrollTop;
-    const page = await api.sessionMessages(conversationSession, oldestMessageId, MESSAGE_PAGE_SIZE);
+    const page = await conversationPage(conversationSession, oldestMessageId);
     if (!Array.isArray(page) || !page.length) {
       messageHasMore = false;
       return;
@@ -684,7 +699,7 @@ function renderHistory() {
   const current = localStorage.getItem(SESSION_KEY);
   let lastKey = '';
   for (const item of historySessions) {
-    const date = sessionDate(item.created_at);
+    const date = sessionDate(item.created_at || item.updated_at);
     const key = dayKey(date);
     if (key !== lastKey) {
       const heading = document.createElement('div');
@@ -703,13 +718,19 @@ function renderHistory() {
     time.textContent = timeLabel(date);
     const preview = document.createElement('span');
     preview.className = 'history-preview';
-    preview.textContent = item.preview || '（无文字内容）';
+    preview.textContent = item.title || item.preview || '（无文字内容）';
     const count = document.createElement('span');
     count.className = 'history-count';
-    count.textContent = `${item.messages || 0} 条`;
+    count.textContent = `${item.messages || item.message_count || 0} 条`;
     button.append(time, preview, count);
     button.title = `${date.toLocaleString()} · ${item.preview || ''}`;
-    button.addEventListener('click', () => openSession(item.id));
+    // 委派执行记录没有可读会话，不能伪装成可打开的对话。
+    if (item.kind === 'delegated' && !item.session_id) {
+      button.disabled = true;
+      button.title = '只有执行记录，没有可继续的对话';
+    } else {
+      button.addEventListener('click', () => openSession(item.session_id || item.id, item));
+    }
     historyList.append(button);
   }
 }
@@ -717,12 +738,36 @@ function renderHistory() {
 async function loadHistory() {
   setHistoryMessage('正在读取…');
   try {
-    const result = await api.listSessions(historyDate.value || '');
-    historySessions = result.sessions || [];
+    // 三类目录都用统一投影；旧的 /api/sessions 仍保留，但新界面不再依赖它。
+    const result = await api.listConversations(historyTab, 100);
+    let items = result.conversations || [];
+    if (historyTab === 'main' && historyDate.value) {
+      items = items.filter(item => localDayKey(item.updated_at || item.created_at) === historyDate.value);
+    }
+    historySessions = items;
     renderHistory();
   } catch (error) {
     setHistoryMessage(`读取失败：${error.message}`);
   }
+}
+
+function localDayKey(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = n => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function switchHistoryTab(tab) {
+  historyTab = tab;
+  for (const [name, button] of Object.entries(historyTabs)) {
+    if (!button) continue;
+    const on = name === tab;
+    button.classList.toggle('on', on);
+    button.setAttribute('aria-selected', on ? 'true' : 'false');
+  }
+  if (historyDateBar) historyDateBar.hidden = tab !== 'main';
+  loadHistory();
 }
 
 function openHistory() {
@@ -737,15 +782,54 @@ function closeHistory() {
   historyToggle.classList.remove('active');
 }
 
-async function openSession(id) {
+// conversationPage 读取一页会话消息。
+//
+// 主对话与 Worker 会话都走统一投影（{messages:[]}）：旧 /api/sessions 仍保留，
+// 但新界面不再依赖它，免得两套语义各走各的。
+async function conversationPage(sessionId, before) {
+  const page = await api.conversationMessages(sessionId, before || '', MESSAGE_PAGE_SIZE);
+  return (page && page.messages) || [];
+}
+
+function isTerminalTaskStatus(status) {
+  return status === 'completed' || status === 'cancelled';
+}
+
+function taskStatusText(status) {
+  return { completed: '已完成', cancelled: '已取消', paused: '已暂停', failed: '执行失败' }[status] || status || '未知';
+}
+
+// 打开会话。meta.kind==='worker' 时进入 Worker 查看模式：
+// 不修改主聊天会话指针，输入统一走任务 Inbox。
+async function openSession(id, meta = {}) {
+  if (!id) return;
+  const kind = meta.kind === 'worker' || meta.kind === 'delegated' ? meta.kind : 'main';
   setHistoryMessage('正在打开…');
   try {
-    await api.useSession(id);
-    localStorage.setItem(SESSION_KEY, id);
-    conversationSession = id;
     resetCleared();
-    await loadSummaries();
-    const page = await api.sessionMessages(id, '', MESSAGE_PAGE_SIZE);
+    conversationKind = kind;
+    conversationTask = kind === 'worker'
+      ? { id: meta.task_id || '', title: meta.title || '长期任务', status: meta.status || '', can_message: meta.can_message !== false }
+      : kind === 'delegated'
+        // 委派执行记录只读：没有对应的写入接口，不提供输入框。
+        ? { id: '', title: meta.title || '委派执行', status: meta.status || '', can_message: false }
+        : null;
+    if (kind === 'main') {
+      await api.useSession(id);
+      localStorage.setItem(SESSION_KEY, id);
+    }
+    conversationSession = id;
+    oldestMessageId = '';
+    messageHasMore = false;
+    renderWorkerBanner();
+    if (kind === 'main') {
+      await loadSummaries();
+    } else {
+      summaryPhases = [];
+      summaryTexts = new Set();
+      renderSummaryMarker();
+    }
+    const page = await conversationPage(id, '');
     renderConversation(page, { hasMore: page.length >= MESSAGE_PAGE_SIZE });
     closeHistory();
     if (!expanded) setExpanded(true);
@@ -753,6 +837,32 @@ async function openSession(id) {
   } catch (error) {
     setHistoryMessage(`打开失败：${error.message}`);
   }
+}
+
+// renderWorkerBanner 提示当前处在 Worker 查看模式，并说明输入去向。
+function renderWorkerBanner() {
+  if (!workerBanner) return;
+  const worker = conversationKind === 'worker' && Boolean(conversationSession);
+  const delegated = conversationKind === 'delegated' && Boolean(conversationSession);
+  workerBanner.hidden = !worker && !delegated;
+  if (!worker && !delegated) {
+    input.placeholder = '问点什么，或让我记一下…';
+    input.disabled = false;
+    return;
+  }
+  const title = (conversationTask && conversationTask.title) || '长期任务';
+  if (delegated) {
+    workerBannerText.textContent = `正在查看「${title}」的委派执行记录：只读，不会写入对话`;
+    input.placeholder = '委派执行记录只读';
+    input.disabled = true;
+    return;
+  }
+  const blocked = conversationTask && conversationTask.can_message === false;
+  workerBannerText.textContent = blocked
+    ? `正在查看「${title}」的 Worker 会话：任务已结束，重新打开后才能继续追加指令`
+    : `正在查看「${title}」的 Worker 会话：这里的输入会进入任务 Inbox，在安全步骤边界执行`;
+  input.placeholder = blocked ? '任务已结束，先重新打开' : '给这个任务补充指令…';
+  input.disabled = Boolean(blocked);
 }
 
 async function startNewChat() {
@@ -764,6 +874,10 @@ async function startNewChat() {
 // 桌面与手机共用同一条主会话；旧聊天记录只作为历史查看。
 async function restoreMainSession() {
   resetCleared();
+  // 从 Worker 查看模式回到主对话：主会话指针一直是原来那条，不需要重建。
+  conversationKind = 'main';
+  conversationTask = null;
+  renderWorkerBanner();
   try {
     const result = await api.mainSession();
     const id = result && result.session && result.session.id;
@@ -772,7 +886,7 @@ async function restoreMainSession() {
     conversationSession = id;
     localStorage.setItem(SESSION_KEY, id);
     await loadSummaries();
-    const page = await api.sessionMessages(id, '', MESSAGE_PAGE_SIZE);
+    const page = await conversationPage(id, '');
     renderConversation(page, { hasMore: page.length >= MESSAGE_PAGE_SIZE });
   } catch (error) {
     localStorage.removeItem(SESSION_KEY);
@@ -797,6 +911,9 @@ historyClearDate.addEventListener('click', () => {
   loadHistory();
 });
 historyDate.addEventListener('change', loadHistory);
+for (const [name, button] of Object.entries(historyTabs)) {
+  button?.addEventListener('click', () => switchHistoryTab(name));
+}
 summaryLine.addEventListener('click', openSummaryModal);
 summaryClose.addEventListener('click', () => { summaryModal.hidden = true; });
 summaryModal.addEventListener('click', event => {
@@ -856,8 +973,106 @@ attachInput.addEventListener('change', async () => {
   await addAttachmentFiles(files);
 });
 
+// sendMainChat 是主对话的发送路径：走 /api/chat，回答直接进对话流。
+async function sendMainChat(text, files) {
+  const response = await api.chat(text, files);
+  if (response.session_id) {
+    if (!conversationSession) {
+      conversationSession = response.session_id;
+      oldestMessageId = '';
+      messageHasMore = false;
+    }
+    localStorage.setItem(SESSION_KEY, response.session_id);
+    loadSummaries();
+  }
+  pendingAttachments = [];
+  renderAttachments();
+  pendingReply.classList.remove('pending');
+  delete pendingReply.dataset.state;
+  pendingReply.innerHTML = window.MarkdownLite.render(response.reply || '我没有收到回答。');
+  pendingReply.dataset.taskRef = response.task_id || '';
+  pendingReply.dataset.conversationRef = response.conversation && response.conversation.session_id
+    ? response.conversation.session_id
+    : '';
+  appendTaskCard(pendingReply, response);
+  pendingReply = null;
+}
+
+// sendWorkerInstruction 把输入交给任务 Inbox，不直接写 Worker 对话。
+//
+// Worker 的输入只能在安全步骤边界被消费，所以这里回执的是「指令已进入 Inbox」，
+// 而不是一条 Worker 的回答。
+async function sendWorkerInstruction(text, files) {
+  const taskID = conversationTask && conversationTask.id;
+  if (!taskID) throw new Error('这个会话没有关联长期任务');
+  if (files.length) throw new Error('Worker 指令暂不支持附件');
+  if (conversationTask.can_message === false) {
+    throw new Error(`任务已${taskStatusText(conversationTask.status)}，请先重新打开`);
+  }
+  // 发送前再取一次任务：状态可能在查看期间变了，版本号也要用最新的。
+  const detail = await api.getWorkTask(taskID);
+  const task = (detail && detail.task) || {};
+  if (isTerminalTaskStatus(task.status)) {
+    conversationTask.can_message = false;
+    conversationTask.status = task.status;
+    renderWorkerBanner();
+    throw new Error(`任务已${taskStatusText(task.status)}，请先重新打开`);
+  }
+  conversationTask.status = task.status || conversationTask.status;
+  const result = await api.messageWorkTask(taskID, text, task.version);
+  const delivery = (result && result.delivery) || '';
+  const hint = delivery === 'queued_for_resume'
+    ? '指令已存入任务 Inbox，任务恢复后会继续执行。'
+    : delivery === 'new_segment'
+      ? '已开新的执行段，指令会在安全步骤边界被消费。'
+      : '指令已进入任务 Inbox。';
+  pendingAttachments = [];
+  renderAttachments();
+  pendingReply.classList.remove('pending');
+  delete pendingReply.dataset.state;
+  pendingReply.innerHTML = window.MarkdownLite.render(
+    `${hint}\n\nWorker 不会把它当成普通聊天立刻回答；需要看进展请在「工作台」查看任务。`);
+  pendingReply = null;
+  if (typeof loadHistory === 'function') loadHistory();
+}
+
+// appendTaskCard 在聊天结果下面挂一张可点击的任务卡。
+function appendTaskCard(node, response) {
+  if (!node || !response) return;
+  const taskID = response.task_id || (response.task && response.task.id) || '';
+  const conversation = response.conversation || {};
+  if (!taskID && !conversation.session_id) return;
+  const title = (response.task && response.task.title) || conversation.title || '查看任务';
+  const card = document.createElement('button');
+  card.type = 'button';
+  card.className = 'task-card';
+  const label = document.createElement('span');
+  label.className = 'task-card-title';
+  label.textContent = title;
+  const hint = document.createElement('span');
+  hint.className = 'task-card-hint';
+  hint.textContent = conversation.session_id ? '查看 Worker 对话' : '查看任务';
+  card.append(label, hint);
+  card.addEventListener('click', () => {
+    if (conversation.session_id) {
+      openSession(conversation.session_id, {
+        kind: 'worker',
+        task_id: taskID,
+        title,
+        status: (response.task && response.task.status) || conversation.status || '',
+        can_message: conversation.can_message !== false,
+      });
+      return;
+    }
+    api.openWorkbench?.();
+  });
+  node.append(card);
+}
+
 form.addEventListener('submit', async event => {
   event.preventDefault();
+  // 委派执行记录只读：没有对应的写入通道，不能假装能发消息。
+  if (conversationKind === 'delegated') return;
   const text = input.value.trim();
   const files = pendingAttachments.slice();
   if (!text && !files.length) return;
@@ -865,25 +1080,15 @@ form.addEventListener('submit', async event => {
   send.disabled = true;
   const sentAt = new Date();
   addMessage(text || '（附件）', 'user', files, clockLabel(sentAt), sentAt.toISOString());
+  const workerMode = conversationKind === 'worker';
   pendingReply = addThinkingMessage(clockLabel(sentAt), sentAt.toISOString());
-  setChatStatus('thinking', '正在思考…');
+  setChatStatus('thinking', workerMode ? '正在写入任务 Inbox…' : '正在思考…');
   try {
-    const response = await api.chat(text, files);
-    if (response.session_id) {
-      if (!conversationSession) {
-        conversationSession = response.session_id;
-        oldestMessageId = '';
-        messageHasMore = false;
-      }
-      localStorage.setItem(SESSION_KEY, response.session_id);
-      loadSummaries();
+    if (workerMode) {
+      await sendWorkerInstruction(text, files);
+    } else {
+      await sendMainChat(text, files);
     }
-    pendingAttachments = [];
-    renderAttachments();
-    pendingReply.classList.remove('pending');
-    delete pendingReply.dataset.state;
-    pendingReply.innerHTML = window.MarkdownLite.render(response.reply || '我没有收到回答。');
-    pendingReply = null;
   } catch (error) {
     pendingReply.classList.remove('pending');
     delete pendingReply.dataset.state;
@@ -892,8 +1097,11 @@ form.addEventListener('submit', async event => {
     pendingReply = null;
   } finally {
     setChatStatus(null);
-    send.disabled = false;
-    input.focus();
+    const locked = conversationKind === 'delegated'
+      || (conversationKind === 'worker' && conversationTask && conversationTask.can_message === false);
+    input.disabled = Boolean(locked);
+    send.disabled = Boolean(locked);
+    if (!locked) input.focus();
   }
 });
 
@@ -953,4 +1161,18 @@ api.onChatSession?.(id => {
     localStorage.setItem(SESSION_KEY, id);
     loadSummaries();
   }
+});
+
+// 工作台点「查看 Worker 对话」时，把主窗口切到那个 Worker 会话。
+// payload 里带 kind/task_id，renderer 据此进入 Worker 查看模式，
+// 不会把它当成主聊天会话。
+api.onOpenConversation?.(payload => {
+  const id = payload && payload.id;
+  if (!id) return;
+  openSession(id, payload || {});
+});
+
+workerBannerExit?.addEventListener('click', () => {
+  restoreMainSession();
+  input.focus();
 });

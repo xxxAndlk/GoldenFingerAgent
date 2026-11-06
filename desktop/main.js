@@ -1299,6 +1299,14 @@ ipcMain.handle('assistant:session-messages', async (_event, id, before, limit) =
   await ensureServer();
   return api.sessionMessages(String(id || ''), String(before || ''), Number(limit) || 50);
 });
+ipcMain.handle('assistant:conversations', async (_event, kind, limit) => {
+  await ensureServer();
+  return api.listConversations(String(kind || ''), Number(limit) || 100);
+});
+ipcMain.handle('assistant:conversation-messages', async (_event, id, before, limit) => {
+  await ensureServer();
+  return api.conversationMessages(String(id || ''), String(before || ''), Number(limit) || 50);
+});
 ipcMain.handle('assistant:work-tasks', async (_event, status, limit) => {
   await ensureServer();
   return api.listWorkTasks(String(status || ''), Number(limit) || 100);
@@ -1510,6 +1518,26 @@ ipcMain.handle('browser:status', async (_event, siteId) => {
 ipcMain.handle('assistant:use-session', (_event, id) => {
   chatSessionId = String(id || '');
   return chatSessionId;
+});
+// 打开某个会话（主对话或 Worker 会话）：把主窗口带到前台并切到该会话。
+//
+// 这里不改主进程的 chatSessionId：Worker 会话不是主聊天，
+// 输入必须经任务 Inbox 执行，不能把主会话指针挪到 Worker 上。
+// 主对话的 useSession 由渲染进程在确认是主会话后自己调用。
+ipcMain.handle('assistant:open-conversation', (_event, id, title, meta) => {
+  const sessionID = String(id || '').trim();
+  if (!sessionID) throw new Error('缺少会话 ID');
+  if (widget && !widget.isDestroyed()) {
+    if (!expanded) setExpanded(true);
+    widget.show();
+    widget.focus();
+    widget.webContents.send('chat:open-conversation', {
+      ...(meta && typeof meta === 'object' ? meta : {}),
+      id: sessionID,
+      title: String(title || ''),
+    });
+  }
+  return sessionID;
 });
 ipcMain.handle('assistant:chat', async (_event, text, attachments) => {
   const cleanText = String(text || '').trim().slice(0, 8000);

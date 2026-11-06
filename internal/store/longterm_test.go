@@ -67,7 +67,8 @@ func TestUpgradeFromLegacySchema(t *testing.T) {
 		"0011_work_tasks.sql", "0012_execution_control.sql", "0013_memory_policy_devices.sql",
 		"0014_connector_status.sql", "0015_longterm_role.sql", "0016_cloud_memory.sql",
 		"0017_memory_outbox.sql", "0018_artifact_files.sql", "0019_delivery.sql",
-		"0020_delivery_allow_executable.sql"}
+		"0020_delivery_allow_executable.sql", "0021_conversation_cursors.sql",
+		"0022_remote_cache.sql", "0023_relay_command_receipts.sql"}
 	if strings.Join(applied, ",") != strings.Join(want, ",") {
 		t.Fatalf("applied=%v want %v", applied, want)
 	}

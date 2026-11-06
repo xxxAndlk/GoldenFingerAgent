@@ -589,6 +589,55 @@ func (s *Server) handleRejectArtifact(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"artifact": artifact})
 }
 
+// POST /api/artifacts/{id}/deliver
+//
+// 标记交付物已交付，并返回手机需要的下载信息（文件名、大小、校验和、桌面下载地址）。
+// 「已交付」与「已验收」是两种不同动作，不能互相顶替。
+func (s *Server) handleDeliverArtifact(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWorkTasks(w) {
+		return
+	}
+	u := s.currentUser(w, r)
+	if u == nil {
+		return
+	}
+	var req struct {
+		ExpectedVersion *int `json:"expected_version"`
+		Version         int  `json:"version"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&req); err != nil {
+			writeError(w, 400, "bad request body")
+			return
+		}
+	}
+	version := -1
+	if req.ExpectedVersion != nil {
+		version = *req.ExpectedVersion
+	}
+	artifact, err := s.Artifacts.MarkDelivered(r.Context(), u.ID, r.PathValue("id"), version)
+	if err != nil {
+		writeWorkTaskError(w, err)
+		return
+	}
+	info := map[string]any{"artifact": artifact}
+	if req.Version > 0 {
+		item, err := s.Artifacts.GetVersion(r.Context(), u.ID, artifact.ID, req.Version)
+		if err != nil {
+			writeWorkTaskError(w, err)
+			return
+		}
+		info["version"] = item.Version
+		info["name"] = item.OriginalName
+		info["size_bytes"] = item.SizeBytes
+		info["sha256"] = item.ContentHash
+		info["mime_type"] = item.MimeType
+		info["download_path"] = "/api/artifacts/" + artifact.ID +
+			"/versions/" + strconv.Itoa(item.Version) + "/download"
+	}
+	writeJSON(w, 200, info)
+}
+
 func (s *Server) handleListTaskGrants(w http.ResponseWriter, r *http.Request) {
 	if !s.requireWorkTasks(w) {
 		return

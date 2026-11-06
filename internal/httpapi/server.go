@@ -63,6 +63,8 @@ type Server struct {
 	DeviceGuard *device.Guard
 	// PhoneRelay 是手机 → 电脑的中继通道；nil 时手机远程端点返回 503。
 	PhoneRelay PhoneRelay
+	// Remote 是手机远程控制电脑的控制面；nil 时 /api/remote/* 返回 503。
+	Remote RemoteControl
 	// Jobs 是持久化异步任务队列；nil 时 /api/jobs* 返回 503。
 	Jobs JobService
 	// Voice 是语音口令判定状态机；nil 时 /api/voice/text 返回 503。
@@ -83,6 +85,8 @@ type Server struct {
 	Artifacts *worktask.ArtifactService
 	// Collection 协调聊天配置工具与桌面真实采集开关。
 	Collection *collection.Manager
+	// DeviceID 是本机设备标识；会话已读游标按设备分别记录时用它兜底。
+	DeviceID string
 }
 
 // Outbox 是已投递提醒文本的小型内存队列（开发 MVP）。
@@ -96,12 +100,27 @@ type OutboxItem struct {
 	UserID string `json:"user_id"`
 	Body   string `json:"body"`
 	At     string `json:"at"`
+	// Route 告诉手机点通知时该打开哪个面板：brief / tasks / inbox。
+	// 没有明确去处时留空，手机只打开应用、不猜页面。
+	Route string `json:"route,omitempty"`
 }
 
+// 通知的去处。手机端按这些值决定点通知后打开的面板。
+const (
+	OutboxRouteBrief = "brief"
+	OutboxRouteTasks = "tasks"
+	OutboxRouteInbox = "inbox"
+)
+
 func (o *Outbox) Push(userID, body string, at time.Time) {
+	o.PushRoute(userID, body, "", at)
+}
+
+// PushRoute 在提醒正文之外带上「点了该去哪」，避免所有通知都只打开首页。
+func (o *Outbox) PushRoute(userID, body, route string, at time.Time) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.items = append(o.items, OutboxItem{UserID: userID, Body: body, At: at.Format("15:04")})
+	o.items = append(o.items, OutboxItem{UserID: userID, Body: body, At: at.Format("15:04"), Route: route})
 }
 
 func (o *Outbox) Drain(userID string) []OutboxItem {
@@ -132,6 +151,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	mux.HandleFunc("GET /api/sessions/main", s.handleMainSession)
 	mux.HandleFunc("GET /api/sessions/{id}/messages", s.handleSessionMessages)
+	mux.HandleFunc("GET /api/conversations", s.handleListConversations)
+	mux.HandleFunc("GET /api/conversations/{id}/messages", s.handleConversationMessages)
+	mux.HandleFunc("POST /api/conversations/{id}/read", s.handleMarkConversationRead)
 	mux.HandleFunc("GET /api/skills", s.handleListSkills)
 	mux.HandleFunc("GET /api/persons", s.handleListPersons)
 	mux.HandleFunc("GET /api/persons/{id}", s.handleGetPerson)
@@ -176,6 +198,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/channels/connector/status", s.handleGetConnectorStatus)
 	mux.HandleFunc("GET /api/channels/connector/requests", s.handleConnectorRequests)
 	mux.HandleFunc("POST /api/channels/connector/requests/{id}/complete", s.handleCompleteConnectorRequest)
+	mux.HandleFunc("GET /api/collection/channels", s.handleListCollectionChannels)
+	mux.HandleFunc("POST /api/collection/channels", s.handleConfigureCollectionChannel)
 	mux.HandleFunc("POST /api/channels/calendar/events", s.handleCalendarEvent)
 	mux.HandleFunc("POST /api/channels/web/items", s.handleWebItem)
 	mux.HandleFunc("GET /api/settings/web/sites", s.handleWebSites)
@@ -238,6 +262,30 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/relay/phone/job/{id}", s.handlePhoneJobStatus)
 	mux.HandleFunc("DELETE /api/relay/phone/job/{id}", s.handlePhoneJobCancel)
 
+	// 远程控制面：手机经中继读写电脑的 WorkTask、Worker 会话、审批、
+	// 交付物与每日简报。查询只读缓存，变更离线排队。
+	mux.HandleFunc("GET /api/remote/conversations", s.handleRemoteConversations)
+	mux.HandleFunc("GET /api/remote/conversations/{id}/messages", s.handleRemoteConversationMessages)
+	mux.HandleFunc("POST /api/remote/conversations/{id}/read", s.handleRemoteConversationRead)
+	mux.HandleFunc("GET /api/remote/work-tasks", s.handleRemoteWorkTasks)
+	mux.HandleFunc("POST /api/remote/work-tasks", s.handleRemoteCreateWorkTask)
+	mux.HandleFunc("GET /api/remote/work-tasks/{id}", s.handleRemoteWorkTask)
+	mux.HandleFunc("POST /api/remote/work-tasks/{id}/messages", s.handleRemoteWorkTaskMessage)
+	mux.HandleFunc("POST /api/remote/work-tasks/{id}/{action}", s.handleRemoteWorkTaskAction)
+	mux.HandleFunc("GET /api/remote/action-outbox", s.handleRemoteOutbox)
+	mux.HandleFunc("POST /api/remote/action-outbox/{id}/{action}", s.handleRemoteOutboxDecision)
+	mux.HandleFunc("GET /api/remote/artifacts/{id}", s.handleRemoteArtifact)
+	mux.HandleFunc("POST /api/remote/artifacts/{id}/{action}", s.handleRemoteArtifactDecision)
+	mux.HandleFunc("GET /api/remote/briefs/latest", s.handleRemoteLatestBrief)
+	mux.HandleFunc("GET /api/remote/briefs", s.handleRemoteBriefs)
+	mux.HandleFunc("GET /api/remote/briefs/{id}", s.handleRemoteBrief)
+	mux.HandleFunc("POST /api/remote/briefs/generate", s.handleRemoteGenerateBrief)
+	mux.HandleFunc("GET /api/remote/collection/channels", s.handleRemoteCollectionChannels)
+	mux.HandleFunc("POST /api/remote/collection/channels", s.handleRemoteConfigureCollection)
+	mux.HandleFunc("GET /api/remote/pending", s.handleRemotePending)
+	mux.HandleFunc("POST /api/remote/flush", s.handleRemoteFlush)
+	mux.HandleFunc("GET /api/remote/status", s.handleRemoteStatus)
+
 	// 通知中心（Inbox nil 时端点 503）。
 	mux.HandleFunc("POST /api/inbox/events", s.handleInboxIngest)
 	mux.HandleFunc("GET /api/inbox/events", s.handleInboxEvents)
@@ -298,6 +346,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/artifacts/{id}/submit", s.handleSubmitArtifact)
 	mux.HandleFunc("POST /api/artifacts/{id}/accept", s.handleAcceptArtifact)
 	mux.HandleFunc("POST /api/artifacts/{id}/reject", s.handleRejectArtifact)
+	mux.HandleFunc("POST /api/artifacts/{id}/deliver", s.handleDeliverArtifact)
 	mux.HandleFunc("DELETE /api/grants/{id}", s.handleRevokeGrant)
 
 	// 静态 Web UI。

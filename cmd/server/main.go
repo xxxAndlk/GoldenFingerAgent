@@ -99,7 +99,7 @@ func main() {
 			case "sms":
 				return stub.SMS{}.Send(ctx, "phone", body)
 			default:
-				outbox.Push(u.ID, body, time.Now())
+				outbox.PushRoute(u.ID, body, httpapi.OutboxRouteTasks, time.Now())
 			}
 			return nil
 		})
@@ -118,7 +118,7 @@ func main() {
 	// 通知中心：watch 命中经 Notify 复用 Outbox（Web/NotifyPoller 轮询）。
 	inboxSvc := inbox.NewService(repos, embedder, time.Now, cfg.Embedder.Dim)
 	inboxSvc.Notify = func(_ context.Context, ownerID, body string) {
-		outbox.Push(ownerID, body, time.Now())
+		outbox.PushRoute(ownerID, body, httpapi.OutboxRouteInbox, time.Now())
 	}
 
 	policy := scheduler.Policy{
@@ -314,7 +314,7 @@ func main() {
 		return ok && site.Enabled && site.AutoWorkerEnabled, nil
 	}
 	superAgent.OnNotify = func(_ context.Context, ownerID string, trigger *store.Trigger, decision superagent.Decision) {
-		outbox.Push(ownerID, notifyText(trigger, decision), time.Now())
+		outbox.PushRoute(ownerID, notifyText(trigger, decision), httpapi.OutboxRouteTasks, time.Now())
 	}
 
 	api := &httpapi.Server{
@@ -342,6 +342,9 @@ func main() {
 		RemoteMemory: remoteMemory,
 		Delivery:     deliveryClient,
 		Coordinator:  &superagent.Coordinator{Tasks: workTasks},
+		// 桌面本机界面也是一个「设备」：已读游标按设备分别记录，
+		// 不能让桌面和手机的角标互相清掉。
+		DeviceID: "desktop",
 	}
 
 	llmFor := func() (llm.Client, string) {
@@ -385,7 +388,7 @@ func main() {
 		if err != nil || !global.ProactiveNotifyEnabled {
 			return
 		}
-		outbox.Push(ownerID, "今日简报已生成（第 "+strconv.Itoa(brief.Version)+" 版）："+truncateText(brief.ContentMD, 500), time.Now())
+		outbox.PushRoute(ownerID, "今日简报已生成（第 "+strconv.Itoa(brief.Version)+" 版）："+truncateText(brief.ContentMD, 500), httpapi.OutboxRouteBrief, time.Now())
 	}
 	api.Briefs = briefs
 
@@ -517,7 +520,7 @@ func main() {
 
 	watchdogSvc := watchdog.New(db, workTasks)
 	watchdogSvc.OnNotify = func(ownerID, body string) {
-		outbox.Push(ownerID, body, time.Now())
+		outbox.PushRoute(ownerID, body, httpapi.OutboxRouteTasks, time.Now())
 	}
 	go watchdogSvc.Start(ctx)
 	log.Printf("watchdog: started (interval=%s stale=%s)", watchdogSvc.Interval, watchdogSvc.StaleAfter)
@@ -581,6 +584,8 @@ func main() {
 			Name:      envOrDefault("GFA_RELAY_NAME", hostname()),
 			StatePath: filepath.Join(filepath.Dir(settingsPath), "relay.json"),
 			Handle:    relay.ExecuteLocal(localAPIBase(cfg.Server.Addr), nil),
+			// 持久化指令回执：电脑重启后重投的指令不会执行第二遍。
+			Ledger: repos.RelayReceipts,
 			// v2 端会同时收到任务当前 Artifact 引用；文件正文仍由云端收件箱下载。
 			Enrich: func(ctx context.Context, payload *relay.ResultPayload) {
 				if payload == nil || payload.TaskID == "" {
@@ -624,6 +629,21 @@ func main() {
 			}
 		}()
 		log.Printf("relay: 已启用中继 %s（配对码见设置页或 POST /api/relay/pair-code）", relayURL)
+		// 回执只用来保证「重投不重复执行」，过期后清理，避免表无限增长。
+		go func() {
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := repos.RelayReceipts.Prune(ctx, time.Now().Add(-30*24*time.Hour)); err != nil {
+						log.Printf("relay: 清理过期回执失败: %v", err)
+					}
+				}
+			}
+		}()
 	} else {
 		log.Printf("relay: 未配置 GFA_RELAY_URL，手机远程控制处于关闭状态")
 	}
@@ -651,7 +671,7 @@ func main() {
 					continue
 				}
 				for _, it := range items {
-					outbox.Push(it.OwnerUserID, it.Body, now)
+					outbox.PushRoute(it.OwnerUserID, it.Body, httpapi.OutboxRouteInbox, now)
 				}
 			}
 		}

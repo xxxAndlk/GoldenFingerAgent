@@ -192,6 +192,19 @@ func (p *Phone) Status() map[string]any {
 	}
 }
 
+// RemoteStatus 报告手机到电脑的远程通道状态。
+//
+// 手机界面用它判断该读本机数据还是走电脑控制面。
+func (p *Phone) RemoteStatus() map[string]any {
+	st := p.Status()
+	paired, _ := st["paired"].(bool)
+	connected, _ := st["connected"].(bool)
+	name, _ := st["desktop_name"].(string)
+	return map[string]any{
+		"paired": paired, "connected": connected, "desktop_name": name,
+	}
+}
+
 // Unpair 清除本地配对凭据（中继侧由电脑端解除绑定）。
 func (p *Phone) Unpair() error {
 	p.disconnect()
@@ -350,6 +363,10 @@ func (p *Phone) SendWithID(ctx context.Context, id string, payload any) (ResultP
 }
 
 // send 是 SendWithID 的实际实现，timeout 显式传入以便不同指令用不同等待上限。
+//
+// id 是这条指令的幂等键，会写进载荷；信封 ID 每次尝试都换新的。
+// 换新的原因是中继按信封 ID 去重：重投若沿用旧信封 ID 会被中继当重复丢掉，
+// 手机永远拿不到结果。电脑按载荷里的幂等键判断是否已经执行过。
 func (p *Phone) send(ctx context.Context, id string, payload any, timeout time.Duration) (ResultPayload, error) {
 	if timeout <= 0 {
 		timeout = 2 * time.Minute
@@ -371,20 +388,25 @@ func (p *Phone) send(ctx context.Context, id string, payload any, timeout time.D
 	if id == "" {
 		id = newMessageID()
 	}
+	raw, err = withIdempotencyKey(raw, id)
+	if err != nil {
+		return ResultPayload{}, err
+	}
+	envelopeID := newMessageID()
 	ch := make(chan *Envelope, 1)
 	p.mu.Lock()
 	ws := p.conn
-	p.pending[id] = ch
+	p.pending[envelopeID] = ch
 	p.mu.Unlock()
 	if ws == nil {
 		return ResultPayload{}, errors.New("relay: 连接已断开")
 	}
-	frame, _ := json.Marshal(&Envelope{V: ProtocolVersion, ID: id, Kind: KindCommand, TS: time.Now().UnixMilli(), Payload: raw})
+	frame, _ := json.Marshal(&Envelope{V: ProtocolVersion, ID: envelopeID, Kind: KindCommand, TS: time.Now().UnixMilli(), Payload: raw})
 	p.mu.Lock()
 	err = ws.WriteMessage(websocket.TextMessage, frame)
 	p.mu.Unlock()
 	if err != nil {
-		p.failPending(id, err)
+		p.failPending(envelopeID, err)
 		return ResultPayload{}, err
 	}
 
@@ -393,7 +415,7 @@ func (p *Phone) send(ctx context.Context, id string, payload any, timeout time.D
 	select {
 	case <-waitCtx.Done():
 		p.mu.Lock()
-		delete(p.pending, id)
+		delete(p.pending, envelopeID)
 		p.mu.Unlock()
 		return ResultPayload{}, errors.New("relay: 电脑没有在预期时间内返回结果")
 	case env, ok := <-ch:
@@ -419,6 +441,22 @@ func (p *Phone) send(ctx context.Context, id string, payload any, timeout time.D
 		}
 		return result, nil
 	}
+}
+
+// withIdempotencyKey 保证载荷里带上限等键。
+// 已经有值时不覆盖：调用方显式给出的幂等键优先。
+func withIdempotencyKey(raw []byte, key string) ([]byte, error) {
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	if existing, _ := fields["idempotency_key"].(string); strings.TrimSpace(existing) == "" {
+		fields["idempotency_key"] = key
+	}
+	return json.Marshal(fields)
 }
 
 // JobRequest 描述一条交给电脑后台执行的长任务。

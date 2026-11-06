@@ -72,13 +72,18 @@
 
     <section id="history-panel" class="history-panel" aria-label="对话历史" hidden>
       <header class="history-head">
-        <strong>对话历史</strong>
+        <strong>会话目录</strong>
         <div class="history-head-actions">
           <button id="history-new" class="history-new" type="button">回到主会话</button>
           <button id="history-close" class="icon-button history-close" type="button" aria-label="关闭">×</button>
         </div>
       </header>
-      <div class="history-toolbar">
+      <div class="history-tabs" role="tablist" aria-label="会话类别">
+        <button id="history-tab-main" class="history-tab on" type="button" role="tab" aria-selected="true">主对话</button>
+        <button id="history-tab-worker" class="history-tab" type="button" role="tab" aria-selected="false">工作任务</button>
+        <button id="history-tab-delegated" class="history-tab" type="button" role="tab" aria-selected="false">委派 Agent</button>
+      </div>
+      <div class="history-toolbar" id="history-date-bar">
         <input id="history-date" type="date" aria-label="按日期查找对话">
         <button id="history-clear-date" class="history-clear" type="button">全部</button>
       </div>
@@ -101,6 +106,11 @@
           <span id="chat-status-text">正在思考…</span>
         </div>
         <div id="attachments" class="attachments" hidden></div>
+        <div id="worker-banner" class="worker-banner" hidden>
+          <span class="worker-banner-dot" aria-hidden="true"></span>
+          <span id="worker-banner-text">正在查看 Worker 会话：这里的输入会进入任务 Inbox</span>
+          <button id="worker-banner-exit" class="worker-banner-exit" type="button">回到主对话</button>
+        </div>
         <form id="chat-form" class="composer">
           <button id="attach" class="attach-button" type="button" aria-label="添加图片或视频" title="添加图片或视频">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.8 12.6l6.1-6.1a2.9 2.9 0 0 1 4.1 4.1l-7.4 7.4a4.3 4.3 0 0 1-6.1-6.1l6.8-6.8"/><path d="M8.2 15.8l6.2-6.2"/></svg>

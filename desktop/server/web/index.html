@@ -392,6 +392,19 @@ header .avatar { width: 40px; height: 40px; }
   color: var(--blue);
   background: var(--blue-soft);
 }
+/* 有新一版简报时的未读点：按设备记录，不是 delivered 状态。 */
+.round-btn.unread { position: relative; }
+.round-btn.unread::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--red, #ff3b30);
+  box-shadow: 0 0 0 2px var(--bg, #fff);
+}
 .round-btn:focus-visible,
 .btn:focus-visible,
 .qchip:focus-visible,
@@ -411,30 +424,177 @@ header .avatar { width: 40px; height: 40px; }
   scroll-behavior: smooth;
 }
 
-.brief-mobile-card {
-  margin: 0 0 14px;
-  border: 1px solid rgba(10, 132, 255, .22);
-  border-radius: 16px;
-  background: rgba(10, 132, 255, .08);
+/* ---------- 每日简报抽屉 ---------- */
+.brief-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.brief-toolbar .btn { flex: 0 0 auto; }
+.brief-toolbar input[type="date"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: var(--r-md);
+  border: .5px solid var(--separator);
+  background: var(--surface);
   color: var(--label);
-  overflow: hidden;
-}
-.brief-mobile-card summary {
-  padding: 11px 14px;
-  color: var(--blue);
   font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
 }
-.brief-mobile-card pre {
-  margin: 0;
-  padding: 0 14px 14px;
+.brief-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 12.5px;
+  color: var(--label-2);
+}
+.brief-meta .chip { margin-left: 0; }
+.brief-status {
+  margin: 10px 4px;
+  padding: 11px 13px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  border: .5px solid var(--separator);
+  color: var(--label-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.brief-status.warn { color: var(--orange, #d9760e); }
+.brief-body {
+  padding: 14px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  border: .5px solid var(--separator);
+  box-shadow: var(--shadow-1);
+}
+.brief-body .md { font-size: 14.5px; line-height: 1.65; color: var(--label); }
+.brief-source { margin-top: 10px; }
+.brief-source summary {
+  cursor: pointer;
+  color: var(--label-3);
+  font-size: 12px;
+}
+.brief-source pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--fill-2, rgba(120, 120, 128, .08));
+  font-size: 11.5px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: inherit;
-  font-size: 14px;
-  line-height: 1.55;
 }
+.brief-versions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.brief-versions .btn { min-height: 30px; padding: 4px 11px; font-size: 12.5px; }
+.brief-versions .btn.on { background: var(--blue-soft); color: var(--blue); border-color: transparent; }
+
+/* ---------- 会话目录 / 任务中心 ---------- */
+.conv-tabs { margin-bottom: 12px; }
+.conv-item {
+  display: block;
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 12px 14px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  border: .5px solid var(--separator);
+  color: var(--label);
+  text-align: left;
+  box-shadow: var(--shadow-1);
+}
+.conv-item.active { border-color: var(--blue); }
+.conv-item-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.conv-item-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conv-item-preview {
+  color: var(--label-2);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.conv-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--label-3);
+}
+.conv-badge {
+  display: inline-flex;
+  align-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: var(--red, #ff3b30);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+}
+.task-group-title {
+  margin: 14px 2px 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--label-2);
+}
+.worker-reply {
+  margin-top: 10px;
+  padding: 11px 13px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  border: .5px solid var(--separator);
+  font-size: 14px;
+  line-height: 1.6;
+}
+.worker-compose {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.worker-compose input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: var(--r-pill);
+  border: .5px solid var(--separator);
+  background: var(--surface);
+  color: var(--label);
+  font-size: 14px;
+}
+.worker-compose .btn { flex: 0 0 auto; min-height: 40px; }
+.worker-hint { margin: 8px 2px 0; font-size: 12px; color: var(--label-3); line-height: 1.6; }
+.channel-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+}
+.channel-state .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--label-3);
+}
+.channel-state.local .dot { background: var(--green); }
+.channel-state.desktop .dot { background: var(--orange, #d9760e); }
+.channel-state.unsupported .dot { background: var(--label-3); }
 
 .msg-more {
   padding: 2px 0 12px;
@@ -1460,7 +1620,8 @@ details.trace .tlines {
   line-height: 1.45;
 }
 /* 这一行的 checkbox 继承自 .field input，必须显式撤销输入框的尺寸与内边距 */
-.pc-check input {
+.pc-check input,
+.chan-check input {
   width: 20px;
   min-width: 20px;
   height: 20px;
@@ -1472,6 +1633,21 @@ details.trace .tlines {
   accent-color: var(--blue);
   flex: 0 0 auto;
   box-shadow: none;
+}
+/* 渠道行：开关与文字排成一行，文字不换行。 */
+.chan-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: auto;
+  font-size: 12px;
+  margin-top: 6px;
+  white-space: nowrap;
+}
+/* .field input 关掉了原生外观，checkbox 必须显式恢复，否则只剩一个空方块。 */
+.chan-check input {
+  -webkit-appearance: auto;
+  appearance: auto;
 }
 .pc-events { margin-top: 5px; color: var(--label-3); font-size: 12px; line-height: 1.5; }
 
@@ -1611,17 +1787,14 @@ body.child .panel-btn, body.child .adv { display: none; }
       <div class="sub" :class="online ? 'online' : 'offline'">{{ online ? '已连接本机管家' : '管家服务未连接' }}</div>
     </div>
     <button class="round-btn panel-btn" :class="{active: showPanel}" @click="togglePanel" title="记忆面板" aria-label="记忆面板"><svg class="icon" aria-hidden="true"><use href="#i-memory"/></svg></button>
-    <button class="round-btn" :class="{active: showInbox}" @click="toggleInbox" title="收件箱" aria-label="收件箱"><svg class="icon" aria-hidden="true"><use href="#i-inbox"/></svg></button>
+    <button class="round-btn" :class="{active: showBrief, unread: briefUnread}" @click="toggleBrief" title="每日简报" aria-label="每日简报"><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg></button>
+    <button class="round-btn" :class="{active: showTasks}" @click="toggleTasks" title="任务中心" aria-label="任务中心"><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg></button>
     <button v-if="pcAvailable" class="round-btn" :class="{active: showPC}" @click="togglePC" title="电脑助手" aria-label="电脑助手"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg></button>
     <button class="round-btn" :class="{active: showHistory}" @click="toggleHistory" title="对话历史" aria-label="对话历史"><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg></button>
     <button class="round-btn" :class="{active: showSettings}" @click="toggleSettings" title="设置" aria-label="设置"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg></button>
   </header>
 
   <div id="messages" ref="msgBox">
-    <details v-if="todayBrief" class="brief-mobile-card">
-      <summary>今日简报 · 第 {{ todayBrief.version }} 版</summary>
-      <pre>{{ todayBrief.content_md }}</pre>
-    </details>
     <div v-if="messageLoadingMore" class="msg-more">正在加载更早记录…</div>
     <template v-for="m in messages" :key="m.id">
       <div v-if="m.at" class="msg-time">{{ m.at }}</div>
@@ -1638,12 +1811,21 @@ body.child .panel-btn, body.child .adv { display: none; }
             <div class="card-actions" v-if="c.actions && c.actions.length">
               <button v-for="a in c.actions" :key="a.verb" class="btn"
                       :class="{ ghost: a.verb === 'snooze', danger: a.verb === 'cancel' }"
-                      @click="taskAction(c.ref_id, a.verb)">{{ a.label }}</button>
+                      @click="reminderAction(c.ref_id, a.verb)">{{ a.label }}</button>
             </div>
           </div>
           <div class="chips" v-if="m.options && m.options.length">
             <button v-for="o in m.options" :key="o.label" class="btn" @click="sendText(o.label)">{{ o.label }}</button>
           </div>
+          <!-- 结构化结果必须真的可点：点了才能进任务或 Worker 对话。 -->
+          <button v-if="m.taskRef || m.conversationRef" class="conv-item task-jump" type="button"
+                  @click="openChatTaskCard(m)">
+            <div class="conv-item-top">
+              <span class="conv-item-title">{{ m.taskTitle || '查看任务' }}</span>
+              <span class="chip" v-if="m.taskStatus">{{ taskStatusLabel(m.taskStatus) }}</span>
+            </div>
+            <div class="conv-item-preview">{{ m.conversationRef ? '查看 Worker 对话' : '打开任务详情' }}</div>
+          </button>
           <details class="trace" v-if="debug && m.trace && m.trace.length">
             <summary>处理过程（{{ m.trace.length }} 步）</summary>
             <div class="tlines">{{ m.trace.join('\n') }}</div>
@@ -1711,15 +1893,27 @@ body.child .panel-btn, body.child .adv { display: none; }
           <button class="btn ghost" @click="askAbout(p.canonical_name)">问问</button>
         </div>
       </div>
+      <h3>事实与来源</h3>
+      <div v-if="!longTermFacts.length" class="empty">还没有抽取出的长期事实</div>
+      <div class="pitem" v-for="f in longTermFacts" :key="f.id">
+        <strong>{{ f.fact || ((f.subject || '') + ' · ' + (f.relation || '') + ' · ' + (f.object || '')) }}</strong>
+        <span class="chip">{{ factStatusLabel(f.status) }}</span>
+        <div class="fact">置信度 {{ Number(f.confidence || 0).toFixed(2) }} · 第 {{ f.version || 1 }} 版</div>
+        <div class="fact" v-if="f.source_refs && f.source_refs.length">来源：{{ f.source_refs.join('、') }}</div>
+        <div class="ops" v-if="f.status !== 'confirmed'">
+          <button class="btn" @click="decideFact(f, 'confirm')">确认</button>
+          <button class="btn danger" @click="decideFact(f, 'conflict')">标记冲突</button>
+        </div>
+      </div>
       <h3>任务与提醒</h3>
       <div v-if="!tasks.length" class="empty">还没有任务</div>
       <div class="pitem" v-for="t in tasks" :key="t.id">
         <strong>{{ t.title }}</strong><span class="chip" :class="{green: t.status==='done'}">{{ statusLabel(t.status) }}</span>
         <div class="fact">{{ t.abs_time }}</div>
         <div class="ops">
-          <button v-if="t.status==='pending_confirm'" class="btn" @click="taskAction(t.id,'confirm')">确认</button>
-          <button v-else class="btn" @click="taskAction(t.id,'done')">完成</button>
-          <button class="btn danger" @click="taskAction(t.id,'cancel')">取消</button>
+          <button v-if="t.status==='pending_confirm'" class="btn" @click="reminderAction(t.id,'confirm')">确认</button>
+          <button v-else class="btn" @click="reminderAction(t.id,'done')">完成</button>
+          <button class="btn danger" @click="reminderAction(t.id,'cancel')">取消</button>
         </div>
       </div>
       <h3>事件提醒（当……时提醒我）</h3>
@@ -1793,6 +1987,52 @@ body.child .panel-btn, body.child .adv { display: none; }
     </div>
   </aside>
 
+  <div class="mask" v-if="showBrief" @click="showBrief=false"></div>
+
+  <aside class="drawer" id="brief-panel" v-show="showBrief">
+    <div class="dhead"><span><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg>每日简报</span><button class="dhead-close" @click="showBrief=false" aria-label="关闭">×</button></div>
+    <div class="dbody">
+      <div class="brief-toolbar">
+        <button class="btn ghost" type="button" @click="briefToday">今天</button>
+        <input type="date" v-model="briefDate" @change="loadBrief" aria-label="选择简报日期">
+        <button class="btn" type="button" @click="loadBriefHistory" v-if="!briefHistory.length">历史</button>
+      </div>
+      <div class="brief-versions" v-if="briefHistory.length">
+        <button class="btn" :class="{on: brief.id === briefCurrentId}" type="button"
+                v-for="b in briefHistory" :key="b.id" @click="openBrief(b)">
+          {{ briefVersionLabel(b) }}
+        </button>
+      </div>
+      <div v-if="briefLoading" class="brief-status">正在读取每日简报…</div>
+      <template v-else>
+        <div v-if="briefError" class="brief-status warn">{{ briefError }}</div>
+        <div v-if="briefOffline" class="brief-status">
+          电脑当前离线，显示的是上次同步的缓存内容{{ briefSyncedAt ? '（' + briefSyncedAt + '）' : '' }}。
+        </div>
+        <div v-if="briefMeta" class="brief-meta">
+          <span class="chip">{{ briefMeta.brief_date || briefMeta.date }}</span>
+          <span class="chip" v-if="briefMeta.version">第 {{ briefMeta.version }} 版</span>
+          <span v-if="briefMeta.updated_at">更新于 {{ fmtTime(briefMeta.updated_at) }}</span>
+        </div>
+        <div v-if="briefContent" class="brief-body" v-html="md(briefContent)"></div>
+        <div v-else-if="!briefLoading && !briefError" class="empty">
+          这一天还没有生成简报。电脑在线时点下面的按钮生成。
+        </div>
+        <div class="brief-source" v-if="briefMeta && briefMeta.id">
+          <details>
+            <summary>来源 ID</summary>
+            <pre>{{ briefMeta.id }}</pre>
+          </details>
+        </div>
+        <button class="btn" type="button" @click="regenerateBrief" :disabled="briefBusy || briefOffline">
+          {{ briefBusy ? '正在生成…' : (briefOffline ? '电脑离线，暂不能生成' : '重新生成') }}
+        </button>
+        <div class="brief-status" v-if="briefOffline">电脑离线时不会伪造新版本；等电脑上线后再生成。</div>
+        <div v-if="briefNotice" class="empty">{{ briefNotice }}</div>
+      </template>
+    </div>
+  </aside>
+
   <div class="mask" v-if="showInbox" @click="showInbox=false"></div>
 
   <aside class="drawer" id="inbox-panel" v-show="showInbox">
@@ -1856,30 +2096,234 @@ body.child .panel-btn, body.child .adv { display: none; }
   <div class="mask" v-if="showHistory" @click="showHistory=false"></div>
 
   <aside class="drawer" id="history-panel" v-show="showHistory">
-    <div class="dhead"><span><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg>对话历史</span><button class="dhead-close" @click="showHistory=false" aria-label="关闭">×</button></div>
+    <div class="dhead"><span><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg>会话目录</span><button class="dhead-close" @click="showHistory=false" aria-label="关闭">×</button></div>
     <div class="dbody">
-      <div class="history-toolbar">
+      <div class="ib-tabs conv-tabs">
+        <button class="ib-tab" :class="{on: convTab==='main'}" @click="switchConvTab('main')">主对话</button>
+        <button class="ib-tab" :class="{on: convTab==='worker'}" @click="switchConvTab('worker')">工作任务</button>
+        <button class="ib-tab" :class="{on: convTab==='delegated'}" @click="switchConvTab('delegated')">委派 Agent</button>
+      </div>
+      <div class="history-toolbar" v-if="convTab==='main'">
         <button class="btn" type="button" @click="newChat"><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg>回到主会话</button>
         <input type="date" v-model="historyDate" @change="loadSessions" aria-label="按日期查找对话">
         <button v-if="historyDate" class="btn ghost" type="button" @click="clearHistoryDate">全部</button>
       </div>
       <div v-if="historyLoading" class="empty">正在读取…</div>
       <template v-else>
-        <div v-if="!historyGroups.length" class="empty">没有找到对话记录</div>
-        <div class="history-group" v-for="group in historyGroups" :key="group.key">
-          <div class="history-day">{{ group.label }}</div>
-          <button class="history-item" :class="{ active: item.id === sessionId }" type="button" v-for="item in group.items" :key="item.id" @click="openSession(item.id)">
-            <span class="history-time">{{ formatSessionTime(item.created_at) }}</span>
-            <span class="history-preview">{{ item.preview || '（无文字内容）' }}</span>
-            <span class="history-count">{{ item.messages || 0 }} 条</span>
+        <template v-if="convTab==='main'">
+          <div v-if="!historyGroups.length" class="empty">没有找到对话记录</div>
+          <div class="history-group" v-for="group in historyGroups" :key="group.key">
+            <div class="history-day">{{ group.label }}</div>
+            <button class="history-item" :class="{ active: item.id === sessionId }" type="button" v-for="item in group.items" :key="item.id" @click="openSession(item.id)">
+              <span class="history-time">{{ formatSessionTime(item.created_at) }}</span>
+              <span class="history-preview">{{ item.preview || '（无文字内容）' }}</span>
+              <span class="history-count">{{ item.messages || 0 }} 条</span>
+            </button>
+          </div>
+        </template>
+        <template v-else-if="convTab==='worker'">
+          <div v-if="!convWorkerList.length" class="empty">还没有 Worker 会话</div>
+          <button class="conv-item" type="button" v-for="item in convWorkerList" :key="item.id" @click="openWorkerConversation(item)">
+            <div class="conv-item-top">
+              <span class="conv-item-title">{{ item.title || '未命名任务' }}</span>
+              <span class="chip" v-if="item.status">{{ taskStatusLabel(item.status) }}</span>
+              <span class="conv-badge" v-if="item.unread_count">{{ item.unread_count }}</span>
+            </div>
+            <div class="conv-item-preview">{{ item.preview || '（还没有消息）' }}</div>
+            <div class="conv-item-meta">
+              <span v-if="item.waiting_kind && item.waiting_kind !== 'none'">等待：{{ waitingLabel(item.waiting_kind) }}</span>
+              <span>{{ item.message_count || 0 }} 条消息</span>
+            </div>
           </button>
+        </template>
+        <template v-else>
+          <div v-if="!convDelegatedList.length" class="empty">还没有委派执行记录</div>
+          <template v-for="item in convDelegatedList" :key="item.id">
+            <!-- 有真实会话的委派记录必须能打开；没有会话的只展示执行结果。 -->
+            <button v-if="item.can_message && item.session_id" class="conv-item" type="button"
+                    @click="openDelegatedConversation(item)">
+              <div class="conv-item-top">
+                <span class="conv-item-title">{{ item.title || item.agent_id || '委派执行' }}</span>
+                <span class="chip" v-if="item.status">{{ taskStatusLabel(item.status) }}</span>
+              </div>
+              <div class="conv-item-preview">{{ item.preview || '（还没有输出）' }}</div>
+              <div class="conv-item-meta">
+                <span v-if="item.agent_id">Agent：{{ item.agent_id }}</span>
+                <span>查看执行对话</span>
+              </div>
+            </button>
+            <div v-else class="conv-item">
+              <div class="conv-item-top">
+                <span class="conv-item-title">{{ item.title || item.agent_id || '委派执行' }}</span>
+                <span class="chip" v-if="item.status">{{ taskStatusLabel(item.status) }}</span>
+              </div>
+              <div class="conv-item-preview">{{ item.preview || '（还没有输出）' }}</div>
+              <div class="conv-item-meta">
+                <span v-if="item.agent_id">Agent：{{ item.agent_id }}</span>
+                <span>只有执行记录，没有可继续的对话</span>
+              </div>
+            </div>
+          </template>
+        </template>
+      </template>
+      <div v-if="convOffline" class="brief-status">电脑当前离线，显示的是缓存内容。</div>
+    </div>
+  </aside>
+
+  <div class="mask" v-if="showWorker" @click="showWorker=false"></div>
+
+  <aside class="drawer" id="worker-panel" v-show="showWorker">
+    <div class="dhead">
+      <span><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>{{ workerTitle || 'Worker 对话' }}</span>
+      <button class="dhead-close" @click="showWorker=false" aria-label="关闭">×</button>
+    </div>
+    <div class="dbody">
+      <div class="brief-meta" v-if="workerMeta">
+        <span class="chip" v-if="workerMeta.status">{{ taskStatusLabel(workerMeta.status) }}</span>
+        <span v-if="workerMeta.stage">阶段：{{ workerMeta.stage }}</span>
+        <span v-if="workerMeta.waiting_kind && workerMeta.waiting_kind !== 'none'">等待：{{ waitingLabel(workerMeta.waiting_kind) }}</span>
+      </div>
+      <div v-if="workerLoading" class="empty">正在读取对话…</div>
+      <div v-else-if="!workerMessages.length" class="empty">这个 Worker 还没有产生消息</div>
+      <template v-else>
+        <button v-if="workerHasMore" class="btn ghost" type="button" style="margin-bottom:10px"
+                :disabled="workerLoadingMore" @click="loadOlderWorkerMessages">
+          {{ workerLoadingMore ? '正在读取更早的消息…' : '加载更早的消息' }}
+        </button>
+        <div class="worker-reply" v-for="m in workerMessages" :key="m.id">
+          <div class="conv-item-meta">{{ m.role === 'user' ? '我' : 'Worker' }} · {{ m.at }}</div>
+          <div class="md" v-html="md(m.content)"></div>
+        </div>
+      </template>
+      <!-- 追加指令必须有 task_id：委派执行记录没有写入通道，只读查看。 -->
+      <div class="worker-compose" v-if="workerCanMessage && workerTaskId">
+        <input v-model.trim="workerDraft" placeholder="给 Worker 追加指令…" @keydown.enter="sendWorkerMessage">
+        <button class="btn" type="button" @click="sendWorkerMessage" :disabled="workerSending || !workerDraft">
+          {{ workerSending ? '发送中' : '发送' }}
+        </button>
+      </div>
+      <div class="worker-hint" v-if="workerCanMessage && workerTaskId">
+        指令会进入任务 Inbox，在 Worker 的下一个安全步骤边界处理；这里不会立刻出现 Worker 的回复。
+      </div>
+      <div class="worker-hint" v-else>这里只读：委派执行记录没有写入通道；长期任务结束（completed/cancelled）时也要先重新打开才能继续追加。</div>
+      <div class="ops" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px" v-if="workerTaskId">
+        <button class="btn" type="button" v-if="workerMeta && (workerMeta.status === 'active' || workerMeta.status === 'queued')" @click="workerTaskAction('pause')">暂停</button>
+        <button class="btn" type="button" v-if="workerMeta && workerMeta.status === 'paused'" @click="workerTaskAction('resume')">继续</button>
+        <button class="btn" type="button" v-if="workerMeta && workerMeta.status === 'failed'" @click="workerTaskAction('recover')">恢复执行</button>
+        <button class="btn" type="button" v-if="workerMeta && (workerMeta.status === 'completed' || workerMeta.status === 'cancelled')" @click="workerTaskAction('reopen')">重新打开</button>
+        <button class="btn danger" type="button" v-if="workerMeta && (workerMeta.status === 'active' || workerMeta.status === 'paused')" @click="workerTaskAction('cancel')">取消</button>
+        <button class="btn ghost" type="button" @click="openTaskDetail(workerTaskId)">任务详情</button>
+      </div>
+      <div class="worker-hint" v-if="workerNotice">{{ workerNotice }}</div>
+    </div>
+  </aside>
+
+  <div class="mask" v-if="showTasks" @click="showTasks=false"></div>
+
+  <aside class="drawer" id="tasks-panel" v-show="showTasks">
+    <div class="dhead"><span><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>任务中心</span><button class="dhead-close" @click="showTasks=false" aria-label="关闭">×</button></div>
+    <div class="dbody">
+      <div v-if="tasksLoading" class="empty">正在读取任务…</div>
+      <template v-else>
+        <div v-if="taskGroups.waiting.length" class="task-group-title">待你处理</div>
+        <button class="conv-item" type="button" v-for="t in taskGroups.waiting" :key="t.id" @click="openTaskDetail(t.id)">
+          <div class="conv-item-top">
+            <span class="conv-item-title">{{ t.title || '未命名任务' }}</span>
+            <span class="chip">{{ taskStatusLabel(t.status) }}</span>
+          </div>
+          <div class="conv-item-preview">{{ taskSummaryText(t) }}</div>
+          <div class="conv-item-meta" v-if="t.waiting_kind && t.waiting_kind !== 'none'">等待：{{ waitingLabel(t.waiting_kind) }}</div>
+        </button>
+
+        <div v-if="taskGroups.running.length" class="task-group-title">执行中</div>
+        <button class="conv-item" type="button" v-for="t in taskGroups.running" :key="t.id" @click="openTaskDetail(t.id)">
+          <div class="conv-item-top">
+            <span class="conv-item-title">{{ t.title || '未命名任务' }}</span>
+            <span class="chip">{{ taskStatusLabel(t.status) }}</span>
+          </div>
+          <div class="conv-item-preview">{{ taskSummaryText(t) }}</div>
+        </button>
+
+        <div v-if="taskGroups.done.length" class="task-group-title">已完成</div>
+        <button class="conv-item" type="button" v-for="t in taskGroups.done" :key="t.id" @click="openTaskDetail(t.id)">
+          <div class="conv-item-top">
+            <span class="conv-item-title">{{ t.title || '未命名任务' }}</span>
+            <span class="chip">{{ taskStatusLabel(t.status) }}</span>
+          </div>
+          <div class="conv-item-preview">{{ taskSummaryText(t) }}</div>
+        </button>
+
+        <div v-if="!taskGroups.waiting.length && !taskGroups.running.length && !taskGroups.done.length" class="empty">
+          当前没有长期任务
+        </div>
+        <div v-if="tasksOffline" class="brief-status">电脑当前离线，显示的是缓存内容。</div>
+        <div v-if="tasksPendingCount" class="brief-status warn">
+          有 {{ tasksPendingCount }} 条指令排队中，等电脑上线后执行。
         </div>
       </template>
     </div>
   </aside>
 
-  <div class="mask" v-if="showSettings" @click="showSettings=false"></div>
+  <div class="mask" v-if="showTaskDetail" @click="showTaskDetail=false"></div>
 
+  <aside class="drawer" id="task-detail-panel" v-show="showTaskDetail">
+    <div class="dhead"><span><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>{{ taskDetailTitle || '任务详情' }}</span><button class="dhead-close" @click="showTaskDetail=false" aria-label="关闭">×</button></div>
+    <div class="dbody">
+      <div v-if="taskDetailLoading" class="empty">正在读取任务…</div>
+      <template v-else-if="taskDetail">
+        <div class="brief-meta">
+          <span class="chip">{{ taskStatusLabel(taskDetail.status) }}</span>
+          <span v-if="taskDetail.stage">阶段：{{ taskDetail.stage }}</span>
+          <span v-if="taskDetail.waiting_kind && taskDetail.waiting_kind !== 'none'">等待：{{ waitingLabel(taskDetail.waiting_kind) }}</span>
+        </div>
+        <div class="worker-reply" v-if="taskDetail.summary">{{ taskDetail.summary }}</div>
+        <div class="worker-reply" v-if="taskDetail.next_action">下一步：{{ taskDetail.next_action }}</div>
+
+        <div class="task-group-title" v-if="taskApprovals.length">待审批</div>
+        <div class="pitem" v-for="a in taskApprovals" :key="a.id">
+          <strong>{{ a.title || a.action_type || '待确认动作' }}</strong>
+          <span class="chip">{{ a.status || 'pending' }}</span>
+          <div class="ib-sub">{{ a.description || a.summary || '' }}</div>
+          <div class="ops">
+            <button class="btn" @click="decideApproval(a, true)">批准</button>
+            <button class="btn danger" @click="decideApproval(a, false)">驳回</button>
+          </div>
+        </div>
+
+        <div class="task-group-title" v-if="taskArtifacts.length">交付物</div>
+        <div class="pitem" v-for="art in taskArtifacts" :key="art.id">
+          <strong>{{ art.title || art.id }}</strong>
+          <span class="chip">{{ artifactStatusLabel(art.status) }}</span>
+          <div class="ib-sub" v-if="art.current_version">第 {{ art.current_version }} 版</div>
+          <div class="ops">
+            <button class="btn" @click="decideArtifact(art, true)">验收</button>
+            <button class="btn danger" @click="decideArtifact(art, false)">要求修改</button>
+            <button class="btn ghost" @click="deliverArtifact(art)">交付到手机</button>
+          </div>
+        </div>
+
+        <div class="task-group-title" v-if="taskEvents.length">最近事件</div>
+        <div class="pitem" v-for="e in taskEvents" :key="e.id">
+          <div class="ib-sub">{{ e.summary || e.kind || e.type }}</div>
+          <div class="ib-time">{{ fmtTime(e.created_at) }}</div>
+        </div>
+
+        <div class="ops" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px">
+          <button class="btn" v-if="taskDetail.status==='active'||taskDetail.status==='queued'" @click="taskAction('pause')">暂停</button>
+          <button class="btn" v-if="taskDetail.status==='paused'" @click="taskAction('resume')">继续</button>
+          <button class="btn" v-if="taskDetail.status==='failed'" @click="taskAction('recover')">恢复执行</button>
+          <button class="btn" v-if="taskDetail.status==='completed'||taskDetail.status==='cancelled'" @click="taskAction('reopen')">重新打开</button>
+          <button class="btn" v-if="taskDetail.status==='active'||taskDetail.status==='paused'" @click="taskAction('complete')">标记完成</button>
+          <button class="btn danger" v-if="taskDetail.status!=='completed'&&taskDetail.status!=='cancelled'" @click="taskAction('cancel')">取消</button>
+          <button class="btn ghost" v-if="taskDetail.session_id" @click="openWorkerFromTask">查看 Worker 对话</button>
+        </div>
+        <div class="worker-hint" v-if="taskNotice">{{ taskNotice }}</div>
+      </template>
+      <div v-else class="empty">没有读到任务详情</div>
+    </div>
+  </aside>
+
+  <div class="mask" v-if="showSettings" @click="showSettings=false"></div>
   <aside class="drawer" id="settings-panel" v-show="showSettings">
     <div class="dhead"><span><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>设置</span><button class="dhead-close" @click="showSettings=false" aria-label="关闭">×</button></div>
     <div class="dbody">
@@ -1898,6 +2342,15 @@ body.child .panel-btn, body.child .adv { display: none; }
           <option value="light">浅色</option>
           <option value="dark">深色</option>
         </select>
+      </div>
+      <div class="field">
+        <label>通知与稍后处理</label>
+        <button class="btn" type="button" @click="openInboxFromSettings">
+          <svg class="icon" aria-hidden="true"><use href="#i-inbox"/></svg>打开通知收件箱
+        </button>
+        <div class="ib-sub" style="margin-top:6px">
+          手机通知的搜索、稍后处理、线索提取与关键词等待都在这里。
+        </div>
       </div>
       <section class="model-config adv">
         <div class="model-config-head">
@@ -1963,24 +2416,33 @@ body.child .panel-btn, body.child .adv { display: none; }
 
       <details class="field adv">
         <summary style="cursor:pointer;font-weight:600">渠道采集与每日简报</summary>
-        <div class="empty" style="margin:8px 0">六类渠道默认全部关闭；关闭采集时不会入库。手机微信只读取通知中实际出现的标题和正文，可能不完整。</div>
-        <div v-for="config in channelConfigs" :key="config.channel" style="padding:8px 0;border-top:1px solid var(--sep)">
-          <strong style="font-size:13px">{{ channelLabel(config.channel) }}</strong>
-          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px">
-            <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="config.enabled"> 采集</label>
-            <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="config.summary_enabled"> 摘要</label>
-            <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="config.index_enabled"> 索引</label>
-            <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="config.brief_enabled"> 简报</label>
-            <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="config.auto_worker_enabled"> 自动 Worker</label>
+        <div class="empty" style="margin:8px 0">
+          每个渠道都标明在哪台设备生效、当前是否真的在运行。开关保存成功不代表采集器已经在跑。
+        </div>
+        <div v-for="ch in collectionChannels" :key="ch.channel" style="padding:10px 0;border-top:1px solid var(--sep)">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <strong style="font-size:13px">{{ ch.label || channelLabel(ch.channel) }}</strong>
+            <span class="channel-state" :class="ch.availability">
+              <span class="dot"></span>{{ availabilityLabel(ch.availability) }}
+            </span>
+            <span class="chip" v-if="ch.connector_state">{{ ch.connector_state }}</span>
           </div>
+          <div class="ib-sub" style="margin-top:4px">{{ ch.note }}</div>
+          <div class="ib-sub" v-if="ch.last_heartbeat" style="margin-top:2px">最近心跳：{{ fmtTime(ch.last_heartbeat) }}</div>
+          <label class="chan-check">
+            <input type="checkbox" :checked="ch.enabled" :disabled="ch.availability === 'unsupported' || channelSaving"
+                   @change="toggleChannel(ch, $event.target.checked)">
+            {{ ch.availability === 'unsupported' ? '未接入，暂不可开启' : '采集' }}
+          </label>
         </div>
+        <div v-if="channelNotice" class="empty">{{ channelNotice }}</div>
         <div style="display:flex;flex-wrap:wrap;gap:10px;margin:8px 0">
-          <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="channelGlobal.router_enabled"> Router</label>
-          <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="channelGlobal.worker_enabled"> 自动 Worker</label>
-          <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="channelGlobal.daily_brief_enabled"> 每日简报</label>
-          <label style="display:inline-flex;align-items:center;gap:4px;width:auto;font-size:12px"><input type="checkbox" v-model="channelGlobal.proactive_notify_enabled"> 主动通知</label>
+          <label class="chan-check"><input type="checkbox" v-model="channelGlobal.router_enabled"> Router</label>
+          <label class="chan-check"><input type="checkbox" v-model="channelGlobal.worker_enabled"> 自动 Worker</label>
+          <label class="chan-check"><input type="checkbox" v-model="channelGlobal.daily_brief_enabled"> 每日简报</label>
+          <label class="chan-check"><input type="checkbox" v-model="channelGlobal.proactive_notify_enabled"> 主动通知</label>
         </div>
-        <button class="btn ghost" type="button" style="width:100%" :disabled="channelSaving" @click="saveChannelConfigs">{{ channelSaving ? '保存中…' : '保存渠道与全局开关' }}</button>
+        <button class="btn ghost" type="button" style="width:100%" :disabled="channelSaving" @click="saveChannelConfigs">{{ channelSaving ? '保存中…' : '保存全局开关' }}</button>
         <label style="margin-top:12px">允许 / 拒绝来源</label>
         <select v-model="channelPolicyChannel">
           <option value="wechat_mobile">微信（手机）</option>
@@ -2160,7 +2622,6 @@ createApp({
       uploading: false,
       thinking: false,
       sessionId: null,
-      todayBrief: null,
       showPanel: false,
       showSettings: false,
       showHistory: false,
@@ -2187,6 +2648,8 @@ createApp({
       cloudSaving: false,
       cloudStatus: '',
       channelConfigs: [],
+      collectionChannels: [],
+      channelNotice: '',
       channelGlobal: {},
       channelPolicies: [],
       channelPolicyChannel: 'wechat_mobile',
@@ -2204,10 +2667,66 @@ createApp({
         { icon: 'list', label: '我的任务', text: '我有哪些任务？' }
       ],
       persons: [],
+      longTermFacts: [],
       tasks: [],
       intents: [],
       showInbox: false,
+      showBrief: false,
+      showTasks: false,
+      showTaskDetail: false,
+      showWorker: false,
       showPC: false,
+      // 每日简报
+      briefDate: '',
+      briefContent: '',
+      briefMeta: null,
+      briefHistory: [],
+      briefCurrentId: '',
+      briefLoading: false,
+      briefBusy: false,
+      briefError: '',
+      briefNotice: '',
+      briefOffline: false,
+      briefSyncedAt: '',
+      // 已读按设备记在本机：这是「看过」而不是「已投递」，
+      // 不能调用 delivered 接口冒充已读。
+      briefLatestId: '',
+      briefReadId: localStorage.getItem('gfa_brief_read_id') || '',
+      // 会话目录
+      convTab: 'main',
+      convWorkerList: [],
+      convDelegatedList: [],
+      convOffline: false,
+      // Worker 对话
+      workerTitle: '',
+      workerTaskId: '',
+      workerSessionId: '',
+      workerMessages: [],
+      workerMeta: null,
+      workerDraft: '',
+      workerSending: false,
+      workerCanMessage: true,
+      workerNotice: '',
+      workerLoading: false,
+      // 向上分页：按最旧消息 ID 往前翻，不重复拉最新一页。
+      workerHasMore: false,
+      workerOldestId: '',
+      workerLoadingMore: false,
+      // 追加指令的幂等键：失败重试复用同一个，电脑不会落两条。
+      workerSendKey: '',
+      workerTaskVersion: null,
+      // 任务中心
+      taskList: [],
+      tasksLoading: false,
+      tasksOffline: false,
+      tasksPendingCount: 0,
+      taskDetail: null,
+      taskDetailTitle: '',
+      taskDetailLoading: false,
+      taskApprovals: [],
+      taskArtifacts: [],
+      taskEvents: [],
+      taskNotice: '',
       pcAvailable: false,
       pcStatus: { paired: false, connected: false, desktop_name: '' },
       pcUrl: '',
@@ -2249,6 +2768,18 @@ createApp({
     };
   },
   computed: {
+    // 任务中心只保留用户需要的三类分组。
+    taskGroups() {
+      const waiting = [], running = [], done = [];
+      const waitStatuses = ['waiting_user', 'waiting_approval', 'waiting_other', 'waiting_device', 'waiting_external', 'pending_acceptance', 'failed'];
+      const runStatuses = ['queued', 'active', 'paused', 'draft'];
+      for (const t of this.taskList || []) {
+        if (waitStatuses.indexOf(t.status) >= 0) waiting.push(t);
+        else if (runStatuses.indexOf(t.status) >= 0) running.push(t);
+        else done.push(t);
+      }
+      return { waiting, running, done };
+    },
     activeModelLabel() {
       const active = this.models.find(m => m.active);
       if (!active) return '';
@@ -2259,6 +2790,11 @@ createApp({
     modelEditorTitle() {
       if (this.editingModelId) return '编辑：' + (this.modelEditor.name || this.modelEditor.model);
       return (this.modelEditor.base_url || this.modelEditor.model) ? '把当前配置存成方案' : '新增模型';
+    },
+    // 简报未读只看「这台设备有没有读过这一版」。
+    briefUnread() {
+      const latest = this.briefLatestId || this.briefCurrentId;
+      return Boolean(latest && latest !== this.briefReadId);
     },
     historyGroups() {
       const groups = [];
@@ -2335,6 +2871,541 @@ createApp({
     },
     md(text) {
       return renderMD(text);
+    },
+
+    // ---- 电脑控制面：手机经中继读写电脑，电脑本机运行时直接用本机接口 ----
+    async remoteBase() {
+      if (this._remoteBase !== undefined) return this._remoteBase;
+      try {
+        const st = await apiFetch('/api/remote/status').then(r => r.json());
+        this._remoteBase = st && st.available ? '/api/remote' : '/api';
+      } catch (e) {
+        this._remoteBase = '/api';
+      }
+      return this._remoteBase;
+    },
+    async remoteGet(path) {
+      const base = await this.remoteBase();
+      const res = await apiFetch(base + path);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || ('HTTP ' + res.status));
+      }
+      return res.json();
+    },
+    async remotePost(path, body) {
+      const base = await this.remoteBase();
+      const res = await apiFetch(base + path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {})
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = new Error(data.error || ('HTTP ' + res.status));
+        err.data = data;
+        throw err;
+      }
+      return data;
+    },
+
+    // ---- 每日简报 ----
+    toggleBrief() {
+      this.showBrief = !this.showBrief;
+      if (this.showBrief) {
+        this.showHistory = false;
+        this.showTasks = false;
+        this.loadBrief();
+      }
+    },
+    briefToday() {
+      this.briefDate = '';
+      this.briefCurrentId = '';
+      this.loadBrief();
+    },
+    markBriefRead(id) {
+      if (!id || id === this.briefReadId) return;
+      this.briefReadId = id;
+      localStorage.setItem('gfa_brief_read_id', id);
+    },
+    // 只取最新一版的 ID 用来点未读角标，不加载正文。
+    async refreshBriefBadge() {
+      try {
+        const data = await this.remoteGet('/briefs/latest');
+        const brief = data.brief || null;
+        this.briefLatestId = brief ? (brief.id || '') : '';
+      } catch (e) {
+        this.briefLatestId = '';
+      }
+    },
+    async loadBrief() {
+      this.briefLoading = true;
+      this.briefError = '';
+      this.briefNotice = '';
+      try {
+        const query = this.briefDate ? '?date=' + encodeURIComponent(this.briefDate) : '';
+        const data = await this.remoteGet('/briefs/latest' + query);
+        this.briefOffline = !!data._offline;
+        this.briefSyncedAt = data._synced_at || '';
+        const brief = data.brief || null;
+        if (!brief) {
+          this.briefContent = '';
+          this.briefMeta = null;
+          this.briefCurrentId = '';
+          if (!this.briefOffline) this.briefError = '';
+        } else {
+          this.briefContent = brief.content_md || '';
+          this.briefMeta = brief;
+          this.briefCurrentId = brief.id || '';
+          if (!this.briefDate) this.briefLatestId = this.briefCurrentId;
+          // 抽屉打开并真的看到内容，才算这台设备读过。
+          if (this.showBrief) this.markBriefRead(this.briefCurrentId);
+        }
+      } catch (e) {
+        this.briefContent = '';
+        this.briefMeta = null;
+        this.briefError = '读取每日简报失败：' + (e.message || e);
+      } finally {
+        this.briefLoading = false;
+      }
+    },
+    async loadBriefHistory() {
+      this.briefLoading = true;
+      this.briefError = '';
+      try {
+        const data = await this.remoteGet('/briefs?limit=30');
+        this.briefOffline = !!data._offline;
+        this.briefSyncedAt = data._synced_at || '';
+        this.briefHistory = data.briefs || [];
+      } catch (e) {
+        this.briefHistory = [];
+        this.briefError = '读取简报历史失败：' + (e.message || e);
+      } finally {
+        this.briefLoading = false;
+      }
+    },
+    async openBrief(b) {
+      this.briefLoading = true;
+      this.briefError = '';
+      try {
+        const data = await this.remoteGet('/briefs/' + encodeURIComponent(b.id));
+        this.briefOffline = !!data._offline;
+        this.briefSyncedAt = data._synced_at || '';
+        const brief = data.brief || null;
+        if (brief) {
+          this.briefContent = brief.content_md || '';
+          this.briefMeta = brief;
+          this.briefCurrentId = brief.id || '';
+        }
+      } catch (e) {
+        this.briefError = '读取简报失败：' + (e.message || e);
+      } finally {
+        this.briefLoading = false;
+      }
+    },
+    briefVersionLabel(b) {
+      const date = b.brief_date || b.date || (b.created_at ? String(b.created_at).slice(0, 10) : '');
+      const version = b.version ? ' v' + b.version : '';
+      return (date || '简报') + version;
+    },
+    async regenerateBrief() {
+      this.briefBusy = true;
+      this.briefNotice = '';
+      this.briefError = '';
+      try {
+        const data = await this.remotePost('/briefs/generate', { date: this.briefDate || '' });
+        if (data.queued) {
+          this.briefNotice = '电脑当前离线，生成指令已排队，等电脑上线后执行。';
+        } else {
+          const brief = data.brief || null;
+          if (brief) {
+            this.briefContent = brief.content_md || '';
+            this.briefMeta = brief;
+            this.briefCurrentId = brief.id || '';
+          }
+          this.briefNotice = '已生成新版本。';
+        }
+      } catch (e) {
+        this.briefError = '生成失败：' + (e.message || e);
+      } finally {
+        this.briefBusy = false;
+      }
+    },
+
+    // ---- 会话目录 ----
+    switchConvTab(tab) {
+      this.convTab = tab;
+      if (tab !== 'main') this.loadConversations();
+    },
+    async loadConversations() {
+      this.historyLoading = true;
+      try {
+        const data = await this.remoteGet('/conversations?kind=' + encodeURIComponent(this.convTab) + '&limit=60');
+        this.convOffline = !!data._offline;
+        const items = data.conversations || [];
+        this.convWorkerList = this.convTab === 'worker' ? items : [];
+        this.convDelegatedList = this.convTab === 'delegated' ? items : [];
+      } catch (e) {
+        this.convWorkerList = [];
+        this.convDelegatedList = [];
+        this.convOffline = true;
+      } finally {
+        this.historyLoading = false;
+      }
+    },
+    workerTerminal(status) {
+      return status === 'completed' || status === 'cancelled';
+    },
+    workerMessagePage(raw) {
+      return (raw || []).map(m => ({ id: m.id, role: m.role, content: m.content, at: m.at || '' }));
+    },
+    async openWorkerConversation(item) {
+      this.showWorker = true;
+      this.showHistory = false;
+      this.workerTitle = item.title || 'Worker 对话';
+      this.workerTaskId = item.task_id || '';
+      this.workerSessionId = item.session_id || item.id;
+      this.workerCanMessage = item.can_message !== false;
+      this.workerMessages = [];
+      this.workerHasMore = false;
+      this.workerOldestId = '';
+      this.workerSendKey = '';
+      this.workerTaskVersion = null;
+      this.workerMeta = { status: item.status || '', stage: '', waiting_kind: item.waiting_kind };
+      this.workerNotice = '';
+      this.workerLoading = true;
+      try {
+        const data = await this.remoteGet('/conversations/' + encodeURIComponent(this.workerSessionId) + '/messages?limit=50');
+        const list = this.workerMessagePage(data.messages);
+        this.workerMessages = list;
+        this.workerHasMore = list.length >= 50;
+        this.workerOldestId = list.length ? String(list[0].id || '') : '';
+      } catch (e) {
+        this.workerNotice = '读取 Worker 对话失败：' + (e.message || e);
+      } finally {
+        this.workerLoading = false;
+      }
+      // 取任务详情：终态不允许继续发送，同时拿最新版本做 CAS。
+      if (this.workerTaskId) {
+        try {
+          const detail = await this.remoteGet('/work-tasks/' + encodeURIComponent(this.workerTaskId));
+          const task = detail.task || {};
+          this.workerTaskVersion = Number.isInteger(task.version) ? task.version : null;
+          this.workerMeta = Object.assign({}, this.workerMeta, {
+            status: task.status || this.workerMeta.status,
+            stage: (detail.live && detail.live.stage) || this.workerMeta.stage,
+            waiting_kind: (detail.live && detail.live.waiting_kind) || this.workerMeta.waiting_kind
+          });
+          if (this.workerTerminal(this.workerMeta.status)) this.workerCanMessage = false;
+        } catch (e) { /* 任务详情取不到时沿用会话目录给的状态 */ }
+      }
+      try {
+        // 已读游标必须记在会话真正所在的那台设备上：
+        // 手机读过的会话不能把电脑的角标一起清掉。
+        await this.remotePost('/conversations/' + encodeURIComponent(this.workerSessionId) + '/read', {});
+      } catch (e) { /* 已读游标写不进去不影响阅读 */ }
+    },
+    // 委派记录有真实会话时复用 Worker 面板查看，没有会话的保持只读卡片。
+    // 委派执行段没有写入通道：一律只读，不能显示一个发了没反应的输入框。
+    openDelegatedConversation(item) {
+      if (!item || !item.session_id) return;
+      this.openWorkerConversation({
+        id: item.session_id,
+        session_id: item.session_id,
+        task_id: '',
+        title: item.title || item.agent_id || '委派执行',
+        status: item.status || '',
+        can_message: false
+      });
+    },
+    async loadOlderWorkerMessages() {
+      if (!this.workerSessionId || !this.workerOldestId || !this.workerHasMore || this.workerLoadingMore) return;
+      this.workerLoadingMore = true;
+      try {
+        const query = '?limit=50&before=' + encodeURIComponent(this.workerOldestId);
+        const data = await this.remoteGet('/conversations/' + encodeURIComponent(this.workerSessionId) + '/messages' + query);
+        const older = this.workerMessagePage(data.messages);
+        if (!older.length) {
+          this.workerHasMore = false;
+          return;
+        }
+        this.workerOldestId = String(older[0].id || this.workerOldestId);
+        this.workerHasMore = older.length >= 50;
+        this.workerMessages = older.concat(this.workerMessages);
+      } catch (e) {
+        this.workerNotice = '读取更早消息失败：' + (e.message || e);
+      } finally {
+        this.workerLoadingMore = false;
+      }
+    },
+    async sendWorkerMessage() {
+      const text = this.workerDraft.trim();
+      if (!text || !this.workerTaskId) return;
+      if (!this.workerCanMessage) {
+        this.workerNotice = '任务已结束，先重新打开再追加指令。';
+        return;
+      }
+      this.workerSending = true;
+      this.workerNotice = '';
+      // 幂等键失败重试要复用同一个，否则会落两条指令。
+      if (!this.workerSendKey) {
+        this.workerSendKey = 'msg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+      }
+      try {
+        const body = { text, idempotency_key: this.workerSendKey };
+        if (Number.isInteger(this.workerTaskVersion)) body.expected_version = this.workerTaskVersion;
+        const data = await this.remotePost('/work-tasks/' + encodeURIComponent(this.workerTaskId) + '/messages', body);
+        this.workerDraft = '';
+        this.workerSendKey = '';
+        const task = data.task || null;
+        if (task) {
+          this.workerTaskVersion = Number.isInteger(task.version) ? task.version : this.workerTaskVersion;
+          this.workerMeta = Object.assign({}, this.workerMeta, { status: task.status || this.workerMeta.status });
+        }
+        if (data.queued) {
+          this.workerNotice = '电脑当前离线，指令已排队，等电脑上线后执行。';
+        } else {
+          const delivery = data.delivery || '';
+          this.workerNotice = delivery === 'consumed'
+            ? '已在当前执行段的安全边界处理。'
+            : '已进入任务 Inbox，将在下一个安全步骤边界处理。';
+        }
+      } catch (e) {
+        this.workerNotice = '发送失败：' + (e.message || e);
+      } finally {
+        this.workerSending = false;
+      }
+    },
+    async workerTaskAction(action) {
+      if (!this.workerTaskId) return;
+      try {
+        const body = {};
+        if (Number.isInteger(this.workerTaskVersion)) body.expected_version = this.workerTaskVersion;
+        const data = await this.remotePost('/work-tasks/' + encodeURIComponent(this.workerTaskId) + '/' + action, body);
+        if (data.queued) {
+          this.workerNotice = '电脑当前离线，操作已排队。';
+        } else {
+          this.workerNotice = '任务状态已更新。';
+          const task = data.task || null;
+          if (task) {
+            this.workerMeta = Object.assign({}, this.workerMeta, { status: task.status });
+            this.workerTaskVersion = Number.isInteger(task.version) ? task.version : this.workerTaskVersion;
+            // 重新打开 / 恢复后允许继续追加指令。
+            if (!this.workerTerminal(task.status)) this.workerCanMessage = true;
+          }
+        }
+      } catch (e) {
+        this.workerNotice = '操作失败：' + (e.message || e);
+      }
+    },
+
+    // ---- 任务中心 ----
+    toggleTasks() {
+      this.showTasks = !this.showTasks;
+      if (this.showTasks) {
+        this.showHistory = false;
+        this.showBrief = false;
+        this.loadTasks();
+      }
+    },
+    async loadTasks() {
+      this.tasksLoading = true;
+      try {
+        const data = await this.remoteGet('/work-tasks?limit=60');
+        this.tasksOffline = !!data._offline;
+        this.taskList = data.tasks || [];
+      } catch (e) {
+        this.taskList = [];
+        this.tasksOffline = true;
+      } finally {
+        this.tasksLoading = false;
+      }
+      try {
+        const pending = await apiFetch('/api/remote/pending').then(r => r.json());
+        this.tasksPendingCount = pending.count || 0;
+      } catch (e) {
+        this.tasksPendingCount = 0;
+      }
+    },
+    taskSummaryText(t) {
+      if (!t) return '';
+      return t.goal || t.summary || t.next_action || '';
+    },
+    async openTaskDetail(id) {
+      this.showTaskDetail = true;
+      this.taskDetailLoading = true;
+      this.taskNotice = '';
+      this.taskDetail = null;
+      this.taskApprovals = [];
+      this.taskArtifacts = [];
+      this.taskEvents = [];
+      try {
+        const data = await this.remoteGet('/work-tasks/' + encodeURIComponent(id));
+        const task = data.task || data;
+        this.taskDetail = {
+          id: task.id, title: task.title, status: task.status, goal: task.goal,
+          version: task.version, session_id: task.current_session_id || '',
+          stage: (data.live && data.live.stage) || '',
+          summary: (data.live && data.live.summary) || '',
+          next_action: (data.live && data.live.next_action) || '',
+          waiting_kind: (data.live && data.live.waiting_kind) || 'none'
+        };
+        this.taskDetailTitle = task.title || '任务详情';
+        this.taskArtifacts = (data.artifacts || []).map(a => ({
+          id: a.id, title: a.title, status: a.status, current_version: a.current_version
+        }));
+      } catch (e) {
+        this.taskNotice = '读取任务详情失败：' + (e.message || e);
+      } finally {
+        this.taskDetailLoading = false;
+      }
+      try {
+        const outbox = await this.remoteGet('/action-outbox?limit=50');
+        const items = outbox.outbox || [];
+        this.taskApprovals = items.filter(a => !a.work_task_id || a.work_task_id === id);
+      } catch (e) {
+        this.taskApprovals = [];
+      }
+      try {
+        const events = await this.remoteGet('/work-tasks/' + encodeURIComponent(id) + '/events');
+        this.taskEvents = (events.events || []).slice(-10).reverse();
+      } catch (e) {
+        this.taskEvents = [];
+      }
+    },
+    async taskAction(action) {
+      const id = this.taskDetail && this.taskDetail.id;
+      if (!id) return;
+      try {
+        // 带当前版本号：电脑按 CAS 校验，避免用过期视图改状态。
+        const body = {};
+        if (Number.isInteger(this.taskDetail.version)) body.expected_version = this.taskDetail.version;
+        const data = await this.remotePost('/work-tasks/' + encodeURIComponent(id) + '/' + action, body);
+        if (data.queued) {
+          this.taskNotice = '电脑当前离线，操作已排队。';
+        } else {
+          this.taskNotice = '任务状态已更新。';
+          this.openTaskDetail(id);
+          this.loadTasks();
+        }
+      } catch (e) {
+        this.taskNotice = '操作失败：' + (e.message || e);
+      }
+    },
+    async decideApproval(action, approve) {
+      try {
+        const body = { expected_version: action.version };
+        if (!approve) body.reason = '手机端驳回';
+        const data = await this.remotePost('/action-outbox/' + encodeURIComponent(action.id) + '/' + (approve ? 'approve' : 'reject'), body);
+        if (data.queued) {
+          this.taskNotice = '电脑当前离线，审批已排队。';
+        } else {
+          this.taskNotice = approve ? '已批准。' : '已驳回。';
+          this.openTaskDetail(this.taskDetail.id);
+        }
+      } catch (e) {
+        this.taskNotice = '审批失败：' + (e.message || e);
+      }
+    },
+    async decideArtifact(artifact, accept) {
+      const body = { expected_version: artifact.current_version };
+      if (!accept) body.reason = '手机端要求修改';
+      try {
+        const data = await this.remotePost('/artifacts/' + encodeURIComponent(artifact.id) + '/' + (accept ? 'accept' : 'reject'), body);
+        if (data.queued) {
+          this.taskNotice = '电脑当前离线，操作已排队。';
+        } else {
+          this.taskNotice = accept ? '已验收。' : '已要求修改。';
+          this.openTaskDetail(this.taskDetail.id);
+        }
+      } catch (e) {
+        this.taskNotice = '操作失败：' + (e.message || e);
+      }
+    },
+    async deliverArtifact(artifact) {
+      try {
+        const data = await this.remotePost('/artifacts/' + encodeURIComponent(artifact.id) + '/deliver', {
+          version: artifact.current_version || 0
+        });
+        if (data.queued) {
+          this.taskNotice = '电脑当前离线，交付已排队。';
+        } else {
+          this.taskNotice = '已请求交付：' + (data.name || artifact.title || artifact.id);
+        }
+      } catch (e) {
+        this.taskNotice = '交付失败：' + (e.message || e);
+      }
+    },
+    async openWorkerFromTask() {
+      const sessionId = this.taskDetail && this.taskDetail.session_id;
+      if (!sessionId) {
+        this.taskNotice = '这个任务还没有绑定 Worker 会话。';
+        return;
+      }
+      await this.openWorkerConversation({
+        id: sessionId, session_id: sessionId, title: this.taskDetail.title,
+        task_id: this.taskDetail.id, status: this.taskDetail.status, can_message: true
+      });
+      this.showTaskDetail = false;
+    },
+    taskStatusLabel(status) {
+      return {
+        draft: '草稿', queued: '排队中', active: '执行中',
+        waiting_user: '等你补充', waiting_approval: '等你审批', waiting_other: '等待中',
+        waiting_device: '等待设备', waiting_external: '等待外部',
+        paused: '已暂停', pending_acceptance: '待验收',
+        completed: '已完成', failed: '失败', cancelled: '已取消',
+        running: '执行中'
+      }[status] || status || '';
+    },
+    waitingLabel(kind) {
+      return {
+        user: '等你补充', approval: '等你审批', other: '等待中',
+        device: '等待设备', external: '等待外部', timer: '定时等待',
+        clarify: '等你确认', none: ''
+      }[kind] || kind;
+    },
+    artifactStatusLabel(status) {
+      return {
+        draft: '草稿', submitted: '待验收', accepted: '已验收',
+        rejected: '已驳回', delivered: '已交付'
+      }[status] || status || '';
+    },
+    openInboxFromSettings() {
+      this.showSettings = false;
+      this.showInbox = true;
+      this.switchInboxTab(this.inboxTab);
+    },
+    // 系统通知点击后打开对应面板（由 Android 容器调用）。
+    // 只认已知去处：未知 route 不猜页面，直接把应用打开到首页。
+    openRoute(route) {
+      const name = String(route || '').trim();
+      if (!name) return 'missing';
+      this.showPanel = false;
+      this.showHistory = false;
+      this.showSettings = false;
+      this.showPC = false;
+      this.showInbox = false;
+      this.showBrief = false;
+      this.showTasks = false;
+      this.showTaskDetail = false;
+      this.showWorker = false;
+      if (name === 'brief') {
+        this.showBrief = true;
+        this.loadBrief();
+        return 'brief';
+      }
+      if (name === 'tasks') {
+        this.showTasks = true;
+        this.loadTasks();
+        return 'tasks';
+      }
+      if (name === 'inbox') {
+        this.showInbox = true;
+        this.switchInboxTab(this.inboxTab);
+        return 'inbox';
+      }
+      return 'unknown';
     },
     cardIcon(type) {
       return { task: 'check', reminder: 'bell', person: 'user', note: 'note' }[type] || 'list';
@@ -2421,7 +3492,18 @@ createApp({
         }
         if (this.sessionId) localStorage.setItem('gfa_session_id', this.sessionId);
         const opts = (data.pending && data.pending.options) || [];
-        this.pushMsg('bot', data.reply, { trace: data.trace || [], cards: data.cards || [], options: opts });
+        // 结构化结果（task / conversation）要落成可点击的任务卡，
+        // 不能只停在 API 里：用户在聊天里就能进任务或 Worker 对话。
+        const task = data.task || null;
+        const conversation = data.conversation || null;
+        const taskRef = data.task_id || (task && task.id) || (conversation && conversation.task_id) || '';
+        const conversationRef = (conversation && conversation.session_id) || '';
+        this.pushMsg('bot', data.reply, {
+          trace: data.trace || [], cards: data.cards || [], options: opts,
+          taskRef: taskRef, conversationRef: conversationRef,
+          taskTitle: (task && task.title) || (conversation && conversation.title) || '',
+          taskStatus: (task && task.status) || (conversation && conversation.status) || ''
+        });
       } catch (e) {
         this.pushMsg('bot', '连接不上服务器，稍后再试好吗？');
       } finally {
@@ -2430,7 +3512,24 @@ createApp({
         this.pollOutbox();
       }
     },
-    async taskAction(taskId, verb) {
+    // 聊天里的任务卡：有 Worker 会话就进对话，否则进任务详情。
+    openChatTaskCard(m) {
+      if (!m) return;
+      if (m.conversationRef) {
+        this.openWorkerConversation({
+          id: m.conversationRef,
+          session_id: m.conversationRef,
+          task_id: m.taskRef || '',
+          title: m.taskTitle || 'Worker 对话',
+          status: m.taskStatus || '',
+          can_message: !this.workerTerminal(m.taskStatus)
+        });
+        return;
+      }
+      if (m.taskRef) this.openTaskDetail(m.taskRef);
+    },
+    // 旧的「任务与提醒」不是长期任务，走的是 /api/tasks 接口，方法名不能和长期任务撞车。
+    async reminderAction(taskId, verb) {
       await apiFetch(`/api/tasks/${taskId}/${verb}`, { method: 'POST' });
       const msg = { done: '好的，完成了 ✅', confirm: '好，已确认。', snooze: '好，晚点再提醒你。', cancel: '好，取消了。' }[verb] || '好的。';
       this.pushMsg('bot', msg);
@@ -2686,6 +3785,8 @@ createApp({
       this.showInbox = !this.showInbox;
       if (this.showInbox) {
         this.showHistory = false;
+        this.showBrief = false;
+        this.showTasks = false;
         this.switchInboxTab(this.inboxTab);
       }
     },
@@ -2758,13 +3859,49 @@ createApp({
       this.showPanel = !this.showPanel;
       if (this.showPanel) {
         this.showHistory = false;
+        this.showBrief = false;
+        this.showTasks = false;
         this.loadPanel();
+        this.loadLongTermFacts();
       }
+    },
+    // 事实治理：确认 / 标记冲突必须带版本号，避免用过期的视图改事实。
+    async loadLongTermFacts() {
+      try {
+        const data = await apiFetch('/api/memory/longterm?limit=50').then(r => r.json());
+        this.longTermFacts = (data && data.facts) || [];
+      } catch (e) {
+        this.longTermFacts = [];
+      }
+    },
+    async decideFact(fact, decision) {
+      if (!fact || !fact.id) return;
+      try {
+        const res = await apiFetch('/api/memory/longterm/' + encodeURIComponent(fact.id) + '/' + decision, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ expected_version: Number(fact.version) || 0 })
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || ('HTTP ' + res.status));
+        }
+        await this.loadLongTermFacts();
+      } catch (e) {
+        alert('操作失败：' + e.message);
+      }
+    },
+    factStatusLabel(status) {
+      return {
+        confirmed: '已确认', conflicted: '有冲突', proposed: '待确认', rejected: '已拒绝'
+      }[status] || status || '待确认';
     },
     toggleSettings() {
       this.showSettings = !this.showSettings;
       if (this.showSettings) {
         this.showHistory = false;
+        this.showBrief = false;
+        this.showTasks = false;
         this.loadSettings();
         this.loadCloudMemory();
       }
@@ -2776,14 +3913,37 @@ createApp({
       this.showInbox = false;
       this.showPC = false;
       this.showSettings = false;
+      this.showBrief = false;
+      this.showTasks = false;
       this.loadSessions();
+      if (this.convTab !== 'main') this.loadConversations();
+    },
+    sameLocalDay(value, day) {
+      const date = new Date(value);
+      if (isNaN(date.getTime())) return false;
+      const key = date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0')
+        + '-' + String(date.getDate()).padStart(2, '0');
+      return key === day;
     },
     async loadSessions() {
       this.historyLoading = true;
       try {
-        const query = this.historyDate ? '?date=' + encodeURIComponent(this.historyDate) : '';
-        const data = await apiFetch('/api/sessions' + query).then(r => r.json());
-        this.sessions = (data && data.sessions) || [];
+        // 主对话走统一投影而不是旧的 /api/sessions：
+        // 投影带未读数与稳定的会话 ID，三类目录用的是同一套语义。
+        const data = await apiFetch('/api/conversations?kind=main&limit=80').then(r => r.json());
+        const items = (data && data.conversations) || [];
+        const mapped = items.map(item => ({
+          id: item.session_id || item.id,
+          created_at: item.created_at,
+          updated_at: item.updated_at,
+          preview: item.preview,
+          messages: item.message_count || 0,
+          unread_count: item.unread_count || 0
+        }));
+        // 投影接口不按日期过滤，这里按本地日期筛。
+        this.sessions = this.historyDate
+          ? mapped.filter(s => this.sameLocalDay(s.updated_at || s.created_at, this.historyDate))
+          : mapped;
       } catch (e) {
         this.sessions = [];
       } finally {
@@ -2859,13 +4019,14 @@ createApp({
       if (!this.sessionId || !this.messageHasMore || this.messageLoadingMore || !this.messageCursor) return;
       this.messageLoadingMore = true;
       try {
-        const url = '/api/sessions/' + encodeURIComponent(this.sessionId) + '/messages?limit=50&before=' + encodeURIComponent(this.messageCursor);
+        const url = '/api/conversations/' + encodeURIComponent(this.sessionId) + '/messages?limit=50&before=' + encodeURIComponent(this.messageCursor);
         const data = await apiFetch(url).then(r => r.json());
-        if (!Array.isArray(data) || !data.length) {
+        const page = Array.isArray(data) ? data : ((data && data.messages) || []);
+        if (!page.length) {
           this.messageHasMore = false;
           return;
         }
-        this.prependSessionMessages(data);
+        this.prependSessionMessages(page);
       } catch (e) {
         // 保持当前列表，下次滚动再试。
       } finally {
@@ -2874,19 +4035,12 @@ createApp({
     },
     async openSession(id) {
       try {
-        const data = await apiFetch('/api/sessions/' + encodeURIComponent(id) + '/messages?limit=50').then(r => r.json());
-        this.applySessionMessages(id, Array.isArray(data) ? data : []);
+        const data = await apiFetch('/api/conversations/' + encodeURIComponent(id) + '/messages?limit=50').then(r => r.json());
+        const page = Array.isArray(data) ? data : ((data && data.messages) || []);
+        this.applySessionMessages(id, page);
         this.showHistory = false;
       } catch (e) {
         this.historyLoading = false;
-      }
-    },
-    async loadBrief() {
-      try {
-        const data = await apiFetch('/api/briefs/latest').then(r => r.json());
-        this.todayBrief = (data && data.brief) || null;
-      } catch (e) {
-        this.todayBrief = null;
       }
     },
     async loadMainSession() {
@@ -2904,9 +4058,9 @@ createApp({
     },
     async restoreSession(id) {
       try {
-        const data = await apiFetch('/api/sessions/' + encodeURIComponent(id) + '/messages?limit=50').then(r => r.json());
-        if (!Array.isArray(data)) throw new Error('bad response');
-        this.applySessionMessages(id, data);
+        const data = await apiFetch('/api/conversations/' + encodeURIComponent(id) + '/messages?limit=50').then(r => r.json());
+        const page = Array.isArray(data) ? data : ((data && data.messages) || []);
+        this.applySessionMessages(id, page);
       } catch (e) {
         this.sessionId = null;
         this.messageCursor = '';
@@ -3179,25 +4333,67 @@ createApp({
         this.channelGlobal = data.global || {};
         this.channelPolicies = data.policies || [];
       } catch (e) {}
+      await this.loadCollectionChannels();
     },
-    async saveChannelConfigs() {
-      this.channelSaving = true;
+    // 渠道真实状态：本机可用 / 需电脑在线 / 未接入。
+    async loadCollectionChannels() {
       try {
-        for (const config of this.channelConfigs) {
-          const res = await apiFetch('/api/settings/channels/config/' + encodeURIComponent(config.channel), {
+        const data = await this.remoteGet('/collection/channels');
+        this.collectionChannels = data.channels || [];
+      } catch (e) {
+        this.collectionChannels = [];
+      }
+    },
+    availabilityLabel(availability) {
+      return {
+        local: '本机可用',
+        desktop: '需电脑在线',
+        unsupported: '未接入'
+      }[availability] || '状态未知';
+    },
+    // 切换渠道开关。
+    // 本机渠道直接改本机配置；电脑渠道必须等电脑的真实回执，
+    // 失败时保留原状态，不能让手机显示成已生效。
+    async toggleChannel(ch, enabled) {
+      this.channelSaving = true;
+      this.channelNotice = '';
+      const previous = ch.enabled;
+      ch.enabled = enabled;
+      try {
+        if (ch.availability === 'local') {
+          const res = await apiFetch('/api/settings/channels/config/' + encodeURIComponent(ch.channel), {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              enabled: !!config.enabled,
-              summary_enabled: !!config.summary_enabled,
-              index_enabled: !!config.index_enabled,
-              brief_enabled: !!config.brief_enabled,
-              auto_worker_enabled: !!config.auto_worker_enabled
-            })
+            body: JSON.stringify({ enabled: !!enabled })
           });
           const body = await res.json();
           if (!res.ok) throw new Error(body.error || '保存渠道开关失败');
+          this.channelNotice = '已保存到本机。';
+        } else {
+          const data = await this.remotePost('/collection/channels', {
+            channel: ch.channel, enabled: !!enabled
+          });
+          if (data.queued) {
+            ch.enabled = previous;
+            this.channelNotice = '电脑当前离线，配置已排队；电脑上线后才会真正生效。';
+          } else {
+            this.channelNotice = '电脑已回执，配置已生效。';
+          }
         }
+        await this.loadCollectionChannels();
+      } catch (e) {
+        ch.enabled = previous;
+        this.channelNotice = '保存失败：' + (e.message || e);
+      } finally {
+        this.channelSaving = false;
+      }
+    },
+    async saveChannelConfigs() {
+      this.channelSaving = true;
+      this.channelNotice = '';
+      try {
+        // 单渠道开关走 toggleChannel（要等对应设备的真实回执）；
+        // 这里只保存与渠道采集无关的全局开关。
         const g = this.channelGlobal;
         const gres = await apiFetch('/api/settings/channels/global', {
           method: 'PUT',
@@ -3212,9 +4408,10 @@ createApp({
         const gbody = await gres.json();
         if (!gres.ok) throw new Error(gbody.error || '保存全局开关失败');
         this.settingsSaved = true;
+        this.channelNotice = '全局开关已保存。';
         await this.loadChannelSettings();
       } catch (e) {
-        alert(e.message || '保存渠道开关失败');
+        alert(e.message || '保存全局开关失败');
       } finally {
         this.channelSaving = false;
       }
@@ -3263,12 +4460,18 @@ createApp({
     }
     this.loadPanel();
     this.loadMainSession();
-    this.loadBrief();
     this.loadChannelSettings();
-    setInterval(() => this.loadBrief(), 60000);
+    // 简报只在抽屉打开时刷新正文，避免无意义地轮询电脑；
+    // 未读角标单独取一次最新版 ID。
+    this.refreshBriefBadge();
+    setInterval(() => { if (this.showBrief) this.loadBrief(); }, 60000);
     apiFetch('/api/me').then(r => r.json()).then(u => { this.me = u; this.online = true; this.adoptUserType(u); }).catch(() => { this.online = false; });
     setInterval(this.pollOutbox, 6000);
     this.loadPCStatus();
+    // 通知点击入口：热启动调 JS，冷启动带 ?route=。
+    window.gfaOpenRoute = route => this.openRoute(route);
+    const initialRoute = new URLSearchParams(location.search).get('route');
+    if (initialRoute) this.openRoute(initialRoute);
   }
 }).mount('#app');
 

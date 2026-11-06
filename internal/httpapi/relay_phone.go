@@ -171,7 +171,8 @@ func (s *Server) handlePhoneJobSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"task_id": result.TaskID, "status": result.Status, "reply": result.Reply, "client_id": req.ClientID,
+		"task_id": result.TaskID, "job_id": result.JobID, "work_task_id": result.WorkTaskID,
+		"status": result.Status, "reply": result.Reply, "client_id": req.ClientID,
 	})
 }
 
@@ -186,7 +187,8 @@ func (s *Server) handlePhoneJobStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{
-		"task_id": result.TaskID, "status": result.Status, "reply": result.Reply,
+		"task_id": result.TaskID, "job_id": result.JobID, "work_task_id": result.WorkTaskID,
+		"status": result.Status, "reply": result.Reply,
 		"desktop_error": result.Error, "events": result.Events,
 	})
 }
