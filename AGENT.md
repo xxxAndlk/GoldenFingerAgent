@@ -270,6 +270,7 @@ env -u ELECTRON_RUN_AS_NODE ./desktop/dist/GoldenFinger-win/GoldenFinger.exe --s
 - Thread 摘要和每日简报必须带来源 ID；摘要游标只前进。已有 Thread 摘要时不要再用原始 trigger 重复喂简报模型。简报每次重新生成创建新版本，已交付版本不得原地覆盖。
 - 桌面工作台与主进程 SSE 只消费 `/api/events`；不要为工作台另建轮询协议。任务卡必须可回到唯一主会话，Worker 会话不得出现在 `/api/sessions`。
 - 每日简报正文一律走 Markdown 渲染（桌面 `desktop/markdown.js` 的 `MarkdownLite`，手机 `web/index.html` 的 `renderMD`），不要用 `<pre>` 输出 Markdown 源码。简报重新生成创建新版本，已交付版本不得原地覆盖。
+- **简报只经 outbox 的 `route=brief` 通知**：通知正文只能是一句提示（如「今日简报已生成（第 N 版）」），不得拼简报正文；手机端轮询 `/api/outbox` 遇到 `route=brief` 只刷新未读角标并跳过，**简报内容不进聊天流**（聊天流里也不得有简报卡片）。同理，系统通知正文不许放长篇 Markdown。
 - 聊天命中任务指令时，HTTP 响应要带结构化字段 `task_id/action/task/conversation`，让前端能渲染可点击的任务卡；普通聊天的响应形状保持不变。
 
 ### 手机 → 电脑中继

@@ -15,6 +15,48 @@
 - **未做**：Windows 任务栏/资源管理器显示的 exe 内嵌图标仍是 Electron 自带的（同一张图、分辨率较低）。要换成多分辨率版需要 `rcedit` 一类 PE 资源工具，本次未引入该依赖。
 - **环境坑（重要）**：`desktop/dist` 下任何新建的 `default_app.asar` 都会被 Kimi Work（Kimi.exe 主进程）独占锁定，`npm --prefix desktop run dist` 开头的 `rmSync` 必然报 EBUSY；仓库根目录另有继承的 `Everyone:(CI)(DENY)(DC)` ACL，连目录本身都删不掉。本次改为定点更新 `desktop/dist/GoldenFinger-win/resources/app/` 下的产物完成发布。
 
+## 〇.4、2026-11-07 快捷词改成预填，并清理它写进真实库的假数据
+
+- **问题**：手机底部快捷词（记一下 / 定提醒 / 记个人）点一下就把**写死的假例子**直接发给模型 —— 例如「帮我记一下张阿姨的电话是13800000000」、「帮我记一下车位在B2」。这不是提示词，是真实发送，模型会当成用户真实内容处理。
+- **已造成污染（真实库 `data/gfa.db` 实测）**：`person` 表写入「张阿姨」（创建时间 2026-11-07 00:30:22），`mem_episode` 写入两行（原始聊天 `chat:8e73018f…` 与抽取出的事实 `fact:ce0bad1c…`）。用户的长期记忆里凭空多了一个假联系人。
+- **修复**：快捷词改为**只预填到输入框**（`useQuick()`：写入 draft、聚焦、光标置尾），由用户补全真实内容后再自己发送。种子文本改为开放模板：`帮我记一下：` / `提醒我：` / `帮我记一个联系人：`；「查天气」「我的任务」本就是完整问句，保留。**任何快捷词都不允许携带编造的具体人名、号码、车位号**。
+- **清理**：走官方遗忘接口 `DELETE /api/persons/{id}`（不是直接改库），返回 `{"status":"forgotten"}`；复查 `person WHERE deleted_at IS NULL` 已无「张阿姨」，`mem_edge` 无相关边。`mem_episode` 两行抽取状态为 `failed`（attempts=3），不会再次抽出事实。
+- **验证**：无头 Edge 实测五个 chip —— 点击后输入框分别变为对应模板、消息数不变、**`/api/chat` 请求数 = 0**、零页面错误（截图 `artifacts/quick-chip-pre-filled.png`）。`desktop npm test` 162/162（新增断言：chip 必须走 `useQuick`、禁止 `sendText(q.text)`、页面不得再出现这些假例子）；`GFA_H5_VERIFY_PORT=17107 npm run test:mobile-h5` → `H5_VERIFY_OK ... pageErrors=0`。
+
+## 〇.3、2026-11-06 手机端补上清屏（顶栏一键，与电脑端一致）
+
+- **需求**：手机端没有清屏入口（电脑端头部有）。语义与电脑端一致：**只藏起当前这一屏，服务端内容不动，之后可恢复**。
+- **入口位置经过一次调整**：最初放在「会话目录」抽屉里，用户反馈「不够简洁、操作不方便」→ **改到顶栏**，和电脑端清屏按钮一样一眼可见、一键可达。为了不让顶栏超宽，把低频的**记忆面板**移进设置页（做法同「打开通知收件箱」）。
+- **顶栏最终 5 个钮**：每日简报 / 任务中心 / （电脑助手，仅在已接入时出现）/ 清屏 / 对话历史 / 设置。实测 320/360/390/430px 四档均无横向溢出、标题不被压没；320px 一类窄屏由 `@media (max-width: 374px)` 收紧间距与按钮到 30px。
+- **一键切换**：清屏后同一个按钮变成「撤销」图标并高亮，再点一次恢复，不用另找入口；聊天区顶部另有「已清屏 · 点此恢复之前的消息」提示条兜底。
+- **实现**（`web/index.html`）：
+  - 消息对象新增 `createdAt`（服务端消息取 `created_at`，本地消息取 `Date.now()`），按时间点记录 `clearedCutoff`；`isCleared(m)` 按时间点判断是否隐藏 —— 新消息照常显示，向上翻出来的旧消息仍然藏着。
+  - `clearScreen()` / `restoreCleared()` / `toggleClear()`；换会话（`applySessionMessages`）时清掉清屏状态。
+  - 新增 `i-eraser` / `i-undo` 图标；新增 `openPanelFromSettings()`。
+- **验证**：无头 Edge 实测 —— 发消息后 3 条 → 点顶栏清屏 → 0 条、按钮变「恢复消息」、提示条出现 → 再点一次恢复 3 条、提示条消失；设置页「打开记忆面板」能正常打开面板；四档宽度无溢出、无标题裁切、零页面错误。`desktop npm test` 162/162（断言已改为校验顶栏入口、记忆面板必须离开顶栏）；`GFA_H5_VERIFY_PORT=17106 npm run test:mobile-h5` → `H5_VERIFY_OK ... pageErrors=0`。
+
+## 〇.2、2026-11-06 手机端简报历史：修崩溃 + 改成滑动版本条
+
+- **现象**：手机端点「每日简报 → 历史」后抽屉整个消失，看起来"没有东西"。用无头 Edge 复现抓到真实报错：`TypeError: Cannot read properties of undefined (reading 'id')`（Vue 渲染期抛错，组件输出被丢弃）。接口本身正常：`GET /api/briefs?limit=30` 返回 200 且数据齐全。
+- **根因**：`web/index.html` 版本列表的 class 绑定写成 `:class="{on: brief.id === briefCurrentId}"`，但循环变量是 `b`（`v-for="b in briefHistory"`），该作用域里根本没有 `brief` → `briefHistory` 一有内容就渲染抛错，把整个抽屉搞崩。
+- **修复**：绑定改为 `b.id === briefCurrentId`。
+- **同时按需求改交互**：去掉「历史」按钮，简报历史改为**横向滑动的版本条**（`overflow-x: auto` + scroll-snap，当前版本实心蓝高亮、其余浅蓝），抽屉打开即自动 `loadBriefHistory()`，重新生成简报后同步刷新版本条，60 秒定时刷新时一并更新。
+- **验证**：
+  - 无头 Edge 复现脚本：修复前 `PAGE_ERROR TypeError` + 抽屉不可见；修复后 版本条 1 个 / 版本按钮 2 个 / 高亮 1 个 / `overflow-x=auto` / 无页面错误。
+  - `desktop npm test` 162/162（新增断言：版本条必须绑定循环变量、不得出现 `brief.id`、不得再有「历史」按钮、打开抽屉必须加载历史、版本条必须 `overflow-x: auto`）。
+  - H5 验证脚本新增版本条断言，`GFA_H5_VERIFY_PORT=17104 npm run test:mobile-h5` → `H5_VERIFY_OK ... pageErrors=0`。
+  - 桌面端工作台的简报历史用的是 `state.brief && item.id === state.brief.id`（有判空），无同类缺陷。
+
+## 〇.1、2026-11-06 每日简报不再进手机聊天流
+
+- **现象**：手机端聊天流里出现「今日简报已生成（第 5 版）：# 2026-11-06 今日简报 ## 重要变化 …」，几百字 Markdown 原文直接铺在气泡里，排版全是 `**` 和 `##`。
+- **根因**：简报生成后经 `cmd/server/main.go` 的 `outbox.PushRoute(..., OutboxRouteBrief, ...)` 推送，**正文里拼了 500 字 Markdown**；手机端 `web/index.html` 每 6 秒轮询 `/api/outbox`，把**所有**条目 `pushMsg('sys', body)` 塞进聊天流。阶段 1 删掉的是聊天流里的 `todayBrief` 卡片，outbox 这条路漏了，所以又冒出来。
+- **修复**：
+  - 服务端通知正文只留「今日简报已生成（第 N 版）」，不再拼 `brief.ContentMD`；
+  - H5 轮询遇到 `route==='brief'` 只 `refreshBriefBadge()`（点亮「每日简报」未读角标）并 `continue`，不再进聊天流；简报正文仍在「每日简报」抽屉里按 Markdown 渲染。
+- **附带**：Android `NotifyPoller` 轮询的是同一个 outbox，之前会把 500 字正文变成一坨系统通知，现在只是一句话 + `route=brief` 跳转。
+- **验证**：`go test ./...` 全绿；`desktop npm test` 162/162（新增断言：outbox 轮询必须先 `continue` 再 `pushMsg`）；H5 `GFA_H5_VERIFY_PORT=17103 npm run test:mobile-h5` → `H5_VERIFY_OK ... brief=markdown ... pageErrors=0`；`web/`、`desktop/server/web/`、`android/gosvc/webassets/` 三份页面 md5 一致。
+
 ## 〇、2026-11-05 手机端与 SuperAgent 架构对齐（阶段 0-4）
 
 按 `docs/手机端与SuperAgent架构对齐检查报告.md` 分四个阶段落地。核心决定：**电脑是唯一事实源，手机只做远程视图与控制器**。

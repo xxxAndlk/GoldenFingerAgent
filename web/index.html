@@ -386,6 +386,15 @@ header .avatar { width: 40px; height: 40px; }
   color: var(--blue);
   background: var(--blue-soft);
 }
+/* 窄屏（320px 一类）收紧顶栏，保证标题不被压没。 */
+@media (max-width: 374px) {
+  header { gap: 6px; padding-left: 10px; padding-right: 10px; }
+  .round-btn { width: 30px; height: 30px; }
+  .round-btn .icon { width: 16px; height: 16px; }
+  header .avatar { width: 32px; height: 32px; }
+  header .htxt .title { font-size: 15px; }
+  header .htxt .sub { font-size: 10.5px; }
+}
 /* 有新一版简报时的未读点：按设备记录，不是 delivered 状态。 */
 .round-btn.unread { position: relative; }
 .round-btn.unread::after {
@@ -481,9 +490,28 @@ header .avatar { width: 40px; height: 40px; }
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.brief-versions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.brief-versions .btn { min-height: 30px; padding: 4px 11px; font-size: 12.5px; }
-.brief-versions .btn.on { background: var(--blue-soft); color: var(--blue); border-color: transparent; }
+/* 简报版本条：横向滑动，不用「历史」按钮把列表藏起来 */
+.brief-versions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  margin-bottom: 10px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 2px;
+}
+.brief-versions::-webkit-scrollbar { height: 0; }
+.brief-versions .btn {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 4px 11px;
+  font-size: 12.5px;
+  scroll-snap-align: start;
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+.brief-versions .btn.on { background: var(--blue); color: #fff; }
 
 /* ---------- 会话目录 / 任务中心 ---------- */
 .conv-tabs { margin-bottom: 12px; }
@@ -596,6 +624,21 @@ header .avatar { width: 40px; height: 40px; }
   font-size: 12px;
   text-align: center;
 }
+
+/* 清屏提示：手机上空屏时没有东西可滚，只能点它恢复。 */
+.clear-hint {
+  display: block;
+  width: 100%;
+  margin: 2px 0 12px;
+  padding: 9px 12px;
+  border: .5px solid var(--separator);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--label-2);
+  font-size: 12.5px;
+  text-align: center;
+}
+.clear-hint:active { background: var(--fill); }
 
 .msg-time {
   margin: 2px 0 6px;
@@ -1773,6 +1816,8 @@ body.child .panel-btn, body.child .adv { display: none; }
     <symbol id="i-arrowup" viewBox="0 0 24 24"><path d="M12 19.4V5"/><path d="M5.6 11.2 12 4.8l6.4 6.4"/></symbol>
     <symbol id="i-history" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.3"/><path d="M12 7.4V12l3.2 2"/></symbol>
     <symbol id="i-attach" viewBox="0 0 24 24"><path d="M8.8 12.6l6.1-6.1a2.9 2.9 0 0 1 4.1 4.1l-7.4 7.4a4.3 4.3 0 0 1-6.1-6.1l6.8-6.8"/><path d="M8.2 15.8l6.2-6.2"/></symbol>
+    <symbol id="i-eraser" viewBox="0 0 24 24"><path d="M4.6 16.1 12.9 7.8l3.6 3.6-8.3 8.3H4.6v-3.6Z"/><path d="m14.1 6.6 3.5-3.5 3.6 3.6-3.5 3.5"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M4.4 11.2h9.2a5.2 5.2 0 0 1 0 10.4H8"/><path d="M8.4 6.4 3.6 11.2l4.8 4.8"/></symbol>
   </svg>
   <header>
     <div class="avatar bot-av" aria-hidden="true"></div>
@@ -1780,17 +1825,19 @@ body.child .panel-btn, body.child .adv { display: none; }
       <div class="title">金手指管家</div>
       <div class="sub" :class="online ? 'online' : 'offline'">{{ online ? '已连接本机管家' : '管家服务未连接' }}</div>
     </div>
-    <button class="round-btn panel-btn" :class="{active: showPanel}" @click="togglePanel" title="记忆面板" aria-label="记忆面板"><svg class="icon" aria-hidden="true"><use href="#i-memory"/></svg></button>
     <button class="round-btn" :class="{active: showBrief, unread: briefUnread}" @click="toggleBrief" title="每日简报" aria-label="每日简报"><svg class="icon" aria-hidden="true"><use href="#i-note"/></svg></button>
     <button class="round-btn" :class="{active: showTasks}" @click="toggleTasks" title="任务中心" aria-label="任务中心"><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg></button>
     <button v-if="pcAvailable" class="round-btn" :class="{active: showPC}" @click="togglePC" title="电脑助手" aria-label="电脑助手"><svg class="icon" aria-hidden="true"><use href="#i-monitor"/></svg></button>
+    <button class="round-btn clear-btn" :class="{active: cleared}" @click="toggleClear" :title="cleared ? '恢复清屏前的消息' : '清屏：只隐藏当前消息，不删除'" :aria-label="cleared ? '恢复消息' : '清屏'"><svg class="icon" aria-hidden="true"><use :href="cleared ? '#i-undo' : '#i-eraser'"/></svg></button>
     <button class="round-btn" :class="{active: showHistory}" @click="toggleHistory" title="对话历史" aria-label="对话历史"><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg></button>
     <button class="round-btn" :class="{active: showSettings}" @click="toggleSettings" title="设置" aria-label="设置"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg></button>
   </header>
 
   <div id="messages" ref="msgBox">
     <div v-if="messageLoadingMore" class="msg-more">正在加载更早记录…</div>
+    <button v-if="cleared" class="clear-hint" type="button" @click="restoreCleared">已清屏 · 点此恢复之前的消息</button>
     <template v-for="m in messages" :key="m.id">
+      <template v-if="!isCleared(m)">
       <div v-if="m.at" class="msg-time">{{ m.at }}</div>
       <div class="msg" :class="m.role">
       <template v-if="m.role === 'bot'">
@@ -1841,6 +1888,7 @@ body.child .panel-btn, body.child .adv { display: none; }
         <div class="sysline"><svg class="icon" aria-hidden="true"><use href="#i-bell"/></svg><span>{{ m.text }}</span></div>
       </template>
       </div>
+      </template>
     </template>
     <div v-if="thinking" class="msg bot">
       <div class="avatar bot-av" aria-hidden="true"></div>
@@ -1849,7 +1897,7 @@ body.child .panel-btn, body.child .adv { display: none; }
   </div>
 
   <div id="quick" v-show="messages.length">
-    <button class="qchip" v-for="q in quickList" :key="q.label" @click="sendText(q.text)"><svg class="icon" aria-hidden="true"><use :href="'#i-' + q.icon"/></svg>{{ q.label }}</button>
+    <button class="qchip" v-for="q in quickList" :key="q.label" @click="useQuick(q.text)"><svg class="icon" aria-hidden="true"><use :href="'#i-' + q.icon"/></svg>{{ q.label }}</button>
   </div>
 
   <div id="attachments" v-show="attachments.length || uploading">
@@ -1989,10 +2037,9 @@ body.child .panel-btn, body.child .adv { display: none; }
       <div class="brief-toolbar">
         <button class="btn ghost" type="button" @click="briefToday">今天</button>
         <input type="date" v-model="briefDate" @change="loadBrief" aria-label="选择简报日期">
-        <button class="btn" type="button" @click="loadBriefHistory" v-if="!briefHistory.length">历史</button>
       </div>
       <div class="brief-versions" v-if="briefHistory.length">
-        <button class="btn" :class="{on: brief.id === briefCurrentId}" type="button"
+        <button class="btn" :class="{on: b.id === briefCurrentId}" type="button"
                 v-for="b in briefHistory" :key="b.id" @click="openBrief(b)">
           {{ briefVersionLabel(b) }}
         </button>
@@ -2346,6 +2393,15 @@ body.child .panel-btn, body.child .adv { display: none; }
           手机通知的搜索、稍后处理、线索提取与关键词等待都在这里。
         </div>
       </div>
+      <div class="field">
+        <label>记忆</label>
+        <button class="btn ghost" type="button" @click="openPanelFromSettings">
+          <svg class="icon" aria-hidden="true"><use href="#i-memory"/></svg>打开记忆面板
+        </button>
+        <div class="ib-sub" style="margin-top:6px">
+          认识的人、任务提醒、事件提醒与记忆档案导出都在这里。
+        </div>
+      </div>
       <section class="model-config adv">
         <div class="model-config-head">
           <span>模型配置</span>
@@ -2658,10 +2714,11 @@ createApp({
       models: [],
       activeModelId: '',
       themeMode: parseThemeMode(),
+      // 快捷词只把提示填进输入框，不直接发送：编好的假例子会被模型当真事写进长期记忆。
       quickList: [
-        { icon: 'pencil', label: '记一下', text: '帮我记一下车位在B2' },
-        { icon: 'bell', label: '定提醒', text: '20分钟后叫我' },
-        { icon: 'user', label: '记个人', text: '帮我记一下张阿姨的电话是13800000000' },
+        { icon: 'pencil', label: '记一下', text: '帮我记一下：' },
+        { icon: 'bell', label: '定提醒', text: '提醒我：' },
+        { icon: 'user', label: '记个人', text: '帮我记一个联系人：' },
         { icon: 'weather', label: '查天气', text: '今天天气怎么样？' },
         { icon: 'list', label: '我的任务', text: '我有哪些任务？' }
       ],
@@ -2763,6 +2820,9 @@ createApp({
       messageHasMore: false,
       messageLoadingMore: false,
       suppressOlderScroll: false,
+      // 清屏状态：只影响当前视图，服务端内容不动。
+      cleared: false,
+      clearedCutoff: 0,
       debug: new URLSearchParams(location.search).has('debug')
     };
   },
@@ -2915,6 +2975,8 @@ createApp({
         this.showHistory = false;
         this.showTasks = false;
         this.loadBrief();
+        // 版本条随抽屉一起加载，不必再点一次「历史」。
+        this.loadBriefHistory();
       }
     },
     briefToday() {
@@ -3023,6 +3085,7 @@ createApp({
             this.briefCurrentId = brief.id || '';
           }
           this.briefNotice = data.shared_sync_error || '已生成新版本。';
+          this.loadBriefHistory();
         }
       } catch (e) {
         this.briefError = '生成失败：' + (e.message || e);
@@ -3375,6 +3438,13 @@ createApp({
       this.showInbox = true;
       this.switchInboxTab(this.inboxTab);
     },
+    // 记忆面板低频，入口收在设置页，顶部只留高频操作。
+    openPanelFromSettings() {
+      this.showSettings = false;
+      this.showPanel = true;
+      this.loadPanel();
+      this.loadLongTermFacts();
+    },
     // 系统通知点击后打开对应面板（由 Android 容器调用）。
     // 只认已知去处：未知 route 不猜页面，直接把应用打开到首页。
     openRoute(route) {
@@ -3416,7 +3486,7 @@ createApp({
       });
     },
     pushMsg(role, text, extra) {
-      this.messages.push(Object.assign({ id: this.seq++, role, text, at: nowHHMM(), trace: [], cards: [], options: [] }, extra || {}));
+      this.messages.push(Object.assign({ id: this.seq++, role, text, at: nowHHMM(), createdAt: Date.now(), trace: [], cards: [], options: [] }, extra || {}));
       this.scrollBottom();
     },
     chooseAttachments() {
@@ -3467,6 +3537,16 @@ createApp({
       if (!t && !this.attachments.length) return;
       this.draft = '';
       await this.sendText(t);
+    },
+    // 快捷词只预填，不代发：模板里的内容必须由用户自己补全。
+    useQuick(text) {
+      this.draft = text;
+      const input = this.$refs.chatInput;
+      if (input) {
+        input.focus();
+        const end = this.draft.length;
+        try { input.setSelectionRange(end, end); } catch (e) { /* 老 WebView 不支持时忽略 */ }
+      }
     },
     async sendText(text) {
       const files = this.attachments.slice();
@@ -3537,7 +3617,11 @@ createApp({
     async pollOutbox() {
       try {
         const items = await apiFetch('/api/outbox').then(r => r.json());
-        for (const it of (items || [])) this.pushMsg('sys', it.body);
+        for (const it of (items || [])) {
+          // 简报不进聊天流：它有自己的抽屉，这里只刷新未读角标。
+          if (it.route === 'brief') { this.refreshBriefBadge(); continue; }
+          this.pushMsg('sys', it.body);
+        }
       } catch (e) {}
     },
     async loadPanel() {
@@ -3956,8 +4040,32 @@ createApp({
     welcomeMessage() {
       return {
         id: 0, role: 'bot', text: '我是金手指管家，可以对话、记录和调度其他 Agent。',
-        at: nowHHMM(), trace: [], cards: [], options: []
+        at: nowHHMM(), createdAt: Date.now(), trace: [], cards: [], options: []
       };
+    },
+    // ---- 清屏：只把当前这一屏藏起来，服务端内容不动 ----
+    // 与电脑端同一语义：按时间点记录，之后新来的消息照常显示，向上翻的旧消息仍然藏着。
+    isCleared(m) {
+      if (!this.cleared) return false;
+      const at = Number(m && m.createdAt) || 0;
+      return at <= this.clearedCutoff;
+    },
+    clearScreen() {
+      if (!this.messages.length) return;
+      this.cleared = true;
+      this.clearedCutoff = Date.now();
+      this.$nextTick(() => this.scrollBottom());
+    },
+    // 顶部按钮一键切换：清屏后同一个位置就是恢复，不用再去别处找。
+    toggleClear() {
+      if (this.cleared) this.restoreCleared();
+      else this.clearScreen();
+    },
+    restoreCleared() {
+      if (!this.cleared) return;
+      this.cleared = false;
+      this.clearedCutoff = 0;
+      this.$nextTick(() => this.scrollBottom());
     },
     applySessionMessages(id, data) {
       const page = Array.isArray(data) ? data : [];
@@ -3969,12 +4077,16 @@ createApp({
           role: m.role === 'assistant' ? 'bot' : 'user',
           text: m.content || '',
           at: m.at || '',
+          createdAt: Date.parse(m.created_at || '') || 0,
           trace: [], cards: [], options: []
         }));
       this.messages = mapped.length ? mapped : [this.welcomeMessage()];
       this.messageCursor = page.length ? String(page[0].id || '') : '';
       this.messageHasMore = page.length >= 50;
       this.suppressOlderScroll = true;
+      // 换会话要清掉清屏状态：新会话不该沿用上一段的隐藏。
+      this.cleared = false;
+      this.clearedCutoff = 0;
       this.sessionId = id;
       localStorage.setItem('gfa_session_id', id);
       this.$nextTick(() => {
@@ -3992,6 +4104,7 @@ createApp({
           role: m.role === 'assistant' ? 'bot' : 'user',
           text: m.content || '',
           at: m.at || '',
+          createdAt: Date.parse(m.created_at || '') || 0,
           trace: [], cards: [], options: []
         }));
       if (!mapped.length) return;
@@ -4489,7 +4602,7 @@ createApp({
     // 简报只在抽屉打开时刷新正文，避免无意义地轮询电脑；
     // 未读角标单独取一次最新版 ID。
     this.refreshBriefBadge();
-    setInterval(() => { if (this.showBrief) this.loadBrief(); }, 60000);
+    setInterval(() => { if (this.showBrief) { this.loadBrief(); this.loadBriefHistory(); } }, 60000);
     apiFetch('/api/me').then(r => r.json()).then(u => { this.me = u; this.online = true; this.adoptUserType(u); }).catch(() => { this.online = false; });
     setInterval(this.pollOutbox, 6000);
     this.loadPCStatus();

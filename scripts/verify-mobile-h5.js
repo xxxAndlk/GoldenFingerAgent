@@ -196,6 +196,25 @@ async function main() {
     await page.getByText('H5_BROWSER_OK', { exact: true }).waitFor({ timeout: 20000 });
     await page.screenshot({ path: path.join(outputDir, 'chat.png'), fullPage: true });
 
+    // ---- 清屏：顶栏一键切换，只藏起当前这一屏，服务端内容不动 ----
+    const msgsBeforeClear = await page.locator('#messages .msg').count();
+    await page.getByRole('button', { name: '清屏', exact: true }).click();
+    await page.locator('#messages .clear-hint').waitFor({ timeout: 10000 });
+    const msgsAfterClear = await page.locator('#messages .msg').count();
+    if (msgsAfterClear >= msgsBeforeClear) {
+      throw new Error(`清屏没有隐藏消息：${msgsBeforeClear} -> ${msgsAfterClear}`);
+    }
+    await page.screenshot({ path: path.join(outputDir, 'clear-screen.png'), fullPage: true });
+    await page.getByRole('button', { name: '恢复消息', exact: true }).click();
+    await page.waitForTimeout(600);
+    const msgsAfterRestore = await page.locator('#messages .msg').count();
+    if (msgsAfterRestore !== msgsBeforeClear) {
+      throw new Error(`恢复后消息数不对：${msgsBeforeClear} -> ${msgsAfterRestore}`);
+    }
+    if (await page.locator('#messages .clear-hint').count()) {
+      throw new Error('恢复后清屏提示条仍然存在');
+    }
+
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByText('H5_BROWSER_OK', { exact: true }).waitFor();
     await page.getByRole('button', { name: '对话历史', exact: true }).click();
@@ -222,6 +241,14 @@ async function main() {
     if (briefPre > 0) throw new Error('每日简报仍用 <pre> 输出 Markdown 源码');
     const briefMd = await page.locator('#brief-panel .brief-body .md').count();
     if (briefMd < 1) throw new Error('每日简报正文没有走 Markdown 渲染');
+    // 简报历史：版本条要能渲染出来（曾经因为绑定 undefined 的 brief.id 而整抽屉崩掉）。
+    await page.locator('#brief-panel .brief-versions .btn').first().waitFor({ timeout: 10000 });
+    const briefVersions = await page.locator('#brief-panel .brief-versions .btn').count();
+    if (briefVersions < 1) throw new Error('简报历史版本条没有内容');
+    const briefStripScroll = await page.locator('#brief-panel .brief-versions').evaluate(
+      el => getComputedStyle(el).overflowX
+    );
+    if (briefStripScroll !== 'auto') throw new Error(`简报历史版本条不能横向滑动：overflow-x=${briefStripScroll}`);
     await page.screenshot({ path: path.join(outputDir, 'brief.png'), fullPage: true });
     await assertNoOverflow(page, '每日简报抽屉');
     await page.locator('aside.drawer:visible button[aria-label="关闭"]').click();

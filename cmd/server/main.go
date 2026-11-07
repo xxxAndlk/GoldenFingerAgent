@@ -395,7 +395,9 @@ func main() {
 		if err != nil || !global.ProactiveNotifyEnabled {
 			return
 		}
-		outbox.PushRoute(ownerID, "今日简报已生成（第 "+strconv.Itoa(brief.Version)+" 版）："+truncateText(brief.ContentMD, 500), httpapi.OutboxRouteBrief, time.Now())
+		// 通知正文只留一句提示：简报正文由「每日简报」抽屉按 Markdown 渲染，
+		// 拼进通知会让聊天流和系统通知都变成一坨原文。
+		outbox.PushRoute(ownerID, "今日简报已生成（第 "+strconv.Itoa(brief.Version)+" 版）", httpapi.OutboxRouteBrief, time.Now())
 	}
 	api.Briefs = briefs
 

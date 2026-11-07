@@ -78,10 +78,58 @@ test('Mobile H5 exposes brief, task center and unified conversations', () => {
     assert.match(page, new RegExp(state), `mobile brief must handle ${state}`);
   }
 
+  // 简报通知也不能进聊天流：outbox 轮询遇到 route=brief 只刷新未读角标。
+  const pollStart = page.indexOf('async pollOutbox()');
+  assert.ok(pollStart > 0, 'mobile must poll the outbox');
+  const pollBody = page.slice(pollStart, pollStart + 600);
+  assert.match(pollBody, /route === 'brief'/, 'outbox polling must special-case brief items');
+  assert.match(pollBody, /refreshBriefBadge\(\)/, 'brief items must only refresh the unread badge');
+  assert.match(
+    pollBody,
+    /route === 'brief'[\s\S]*?continue;[\s\S]*?pushMsg\('sys', it\.body\)/,
+    'brief items must be skipped before the outbox item reaches the chat',
+  );
+
+  // 简报历史：版本条横向滑动，不用「历史」按钮把列表藏起来。
+  const versionsStart = page.indexOf('class="brief-versions"');
+  assert.ok(versionsStart > 0, 'mobile must have a brief version strip');
+  const versionsBody = page.slice(versionsStart, versionsStart + 400);
+  assert.match(versionsBody, /v-for="b in briefHistory"/, 'version strip must list the brief history');
+  assert.match(versionsBody, /b\.id === briefCurrentId/, 'version strip must bind the loop variable, not an undefined brief');
+  assert.doesNotMatch(versionsBody, /\{on: brief\.id/, 'version strip must not read an undefined brief.id');
+  assert.doesNotMatch(page, /@click="loadBriefHistory"[^>]*>历史</, 'brief history must not hide behind a single button');
+  assert.match(page, /toggleBrief\(\)[\s\S]{0,400}loadBriefHistory\(\)/, 'opening the brief drawer must load the history');
+  assert.match(page, /\.brief-versions \{[^}]*overflow-x: auto/, 'brief version strip must be horizontally scrollable');
+
   // 会话目录三类。
   assert.match(page, /switchConvTab\('main'\)/, 'conversation directory must have a main tab');
   assert.match(page, /switchConvTab\('worker'\)/, 'conversation directory must have a worker tab');
   assert.match(page, /switchConvTab\('delegated'\)/, 'conversation directory must have a delegated tab');
+
+  // 清屏：入口就在顶栏（和电脑端一样随手可达），只藏视图、不删内容。
+  const headerStart = page.indexOf('<header>');
+  const headerBody = page.slice(headerStart, page.indexOf('</header>'));
+  assert.match(page, /id="i-eraser"/, 'mobile must ship an eraser icon');
+  assert.match(headerBody, /@click="toggleClear"/, 'clear-screen must be a top-bar action');
+  assert.match(page, /toggleClear\(\) \{/, 'mobile clear-screen toggle must exist');
+  assert.match(page, /@click="restoreCleared"/, 'mobile must offer a way to restore cleared messages');
+  assert.match(page, /class="clear-hint"/, 'mobile must show a hint when the screen is cleared');
+  assert.match(page, /createdAt: Date\.now\(\)/, 'mobile messages must carry a timestamp for clearing');
+  // 顶栏只留高频入口：记忆面板收进设置页。
+  assert.doesNotMatch(headerBody, /title="记忆面板"/, 'memory panel must not occupy the top bar');
+  assert.match(page, /openPanelFromSettings\(\)/, 'memory panel must stay reachable from settings');
+
+  // 快捷词只能预填，绝不能代发：写死的假例子会被模型当真事写进长期记忆。
+  assert.match(page, /@click="useQuick\(q\.text\)"/, 'quick chips must prefill, not send');
+  assert.match(page, /useQuick\(text\) \{/, 'mobile must implement useQuick');
+  assert.doesNotMatch(
+    page,
+    /v-for="q in quickList"[^>]*@click="sendText\(q\.text\)"/,
+    'quick chips must never send their text directly',
+  );
+  for (const fake of ['车位在B2', '张阿姨', '13800000000', '20分钟后叫我']) {
+    assert.doesNotMatch(page, new RegExp(fake), `quick chips must not ship the fake example "${fake}"`);
+  }
 
   // Worker 对话页与任务中心。
   assert.match(page, /id="worker-panel"/, 'mobile must have a worker conversation panel');
