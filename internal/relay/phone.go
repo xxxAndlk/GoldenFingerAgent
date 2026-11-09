@@ -44,6 +44,8 @@ type Phone struct {
 	StatePath string
 	// SendTimeout 是等待电脑结果的默认上限。
 	SendTimeout time.Duration
+	// CAFile 额外信任的 CA 证书路径（自签中继用）；留空走系统信任库。
+	CAFile string
 	// Logger 默认 log.Printf。
 	Logger func(format string, args ...any)
 
@@ -136,7 +138,11 @@ func (p *Phone) Pair(ctx context.Context, baseURL, code, phoneName string) (Phon
 		return PhoneState{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 15 * time.Second}
+	client, caErr := NewTLSClient(p.CAFile)
+	if caErr != nil {
+		return PhoneState{}, caErr
+	}
+	client.Timeout = 15 * time.Second
 	resp, err := client.Do(req)
 	if err != nil {
 		return PhoneState{}, err
@@ -275,6 +281,11 @@ func (p *Phone) connect(ctx context.Context) error {
 	header := http.Header{}
 	header.Set("X-Token", st.PhoneToken)
 	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second, Proxy: http.ProxyFromEnvironment}
+	if p.CAFile != "" {
+		if tlsConfig, err := tlsConfigFor(p.CAFile); err == nil && tlsConfig != nil {
+			dialer.TLSClientConfig = tlsConfig
+		}
+	}
 	ws, _, err := dialer.DialContext(ctx, p.wsURL(st), header)
 	if err != nil {
 		return fmt.Errorf("relay: 连接中继失败: %w", err)

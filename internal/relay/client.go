@@ -40,6 +40,8 @@ type Client struct {
 	Ledger CommandLedger
 	// CommandTimeout 单条指令的执行上限。
 	CommandTimeout time.Duration
+	// CAFile 额外信任的 CA 证书路径（自签中继用）；留空走系统信任库。
+	CAFile string
 	// Logger 默认 log.Printf。
 	Logger func(format string, args ...any)
 
@@ -76,7 +78,14 @@ func (c *Client) init() {
 		c.Logger = log.Printf
 	}
 	if c.httpc == nil {
-		c.httpc = &http.Client{Timeout: 20 * time.Second}
+		client, err := NewTLSClient(c.CAFile)
+		if err != nil {
+			// CA 配错不能静默退回系统信任库：那样只会得到一个难以理解的握手错误。
+			c.Logger("[relay] CA 证书不可用：%v", err)
+			client = &http.Client{}
+		}
+		client.Timeout = 20 * time.Second
+		c.httpc = client
 	}
 	if c.results == nil {
 		c.results = make(map[string]ResultPayload)
@@ -230,6 +239,11 @@ func (c *Client) wsURL() string {
 
 func (c *Client) session(ctx context.Context) error {
 	dialer := websocket.Dialer{HandshakeTimeout: 15 * time.Second, Proxy: http.ProxyFromEnvironment}
+	if c.CAFile != "" {
+		if tlsConfig, err := tlsConfigFor(c.CAFile); err == nil && tlsConfig != nil {
+			dialer.TLSClientConfig = tlsConfig
+		}
+	}
 	header := http.Header{}
 	header.Set("X-Token", c.Token)
 	ws, _, err := dialer.DialContext(ctx, c.wsURL(), header)

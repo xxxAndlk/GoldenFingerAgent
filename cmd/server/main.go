@@ -592,6 +592,10 @@ func main() {
 			BaseURL:   relayURL,
 			Name:      envOrDefault("GFA_RELAY_NAME", hostname()),
 			StatePath: filepath.Join(filepath.Dir(settingsPath), "relay.json"),
+			// 中继用 IP 直连时是自签证书：额外信任这份 CA，而不是跳过校验。
+			// 桌面版是双击启动、拿不到环境变量，所以默认找 settings.json 同目录的
+			// relay-ca.pem（与 relay.json 放在一起，便于用户手动替换）。
+			CAFile: relayCAFile(settingsPath),
 			Handle:    relay.ExecuteLocal(localAPIBase(cfg.Server.Addr), nil),
 			// 持久化指令回执：电脑重启后重投的指令不会执行第二遍。
 			Ledger: repos.RelayReceipts,
@@ -722,6 +726,19 @@ func envOrDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// relayCAFile 定位中继 CA 证书：环境变量优先，其次是 settings.json 同目录下的
+// relay-ca.pem。文件不存在时返回空串 —— 客户端会照常走系统信任库。
+func relayCAFile(settingsPath string) string {
+	if v := os.Getenv("GFA_RELAY_CA"); v != "" {
+		return v
+	}
+	p := filepath.Join(filepath.Dir(settingsPath), "relay-ca.pem")
+	if _, err := os.Stat(p); err != nil {
+		return ""
+	}
+	return p
 }
 
 func hostname() string {

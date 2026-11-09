@@ -16,8 +16,17 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$root"
 
-echo "==> 1/4 同步 web 页面到 gosvc/webassets"
+echo "==> 1/4 同步 web 页面与中继 CA 到 android 资源"
 bash "$root/scripts/sync-webassets.sh"
+# 中继用自签证书时，手机必须额外信任这张 CA（assets/relay-ca.pem）。
+# 证书来自 server-dist/relay-tls/，没有就跳过（走正式域名时不需要）。
+if [[ -f "$root/server-dist/relay-tls/relay-ca.pem" ]]; then
+  mkdir -p android/app/src/main/assets
+  cp "$root/server-dist/relay-tls/relay-ca.pem" android/app/src/main/assets/relay-ca.pem
+  echo "    已同步中继 CA 证书到 assets/"
+else
+  echo "    未找到 server-dist/relay-tls/relay-ca.pem，跳过（走正式域名时不需要）"
+fi
 
 echo "==> 2/4 gomobile bind：Go 服务 → gosvc.aar"
 mkdir -p android/app/libs

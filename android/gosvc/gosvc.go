@@ -266,7 +266,11 @@ func StartServer(dataDir string) (info string, err error) {
 		return agent.UserContext{UserID: u.ID, UserName: u.Name, UserType: u.UserType, TZ: u.TZ}
 	}
 	// 生活管家 → 工作助手：手机侧中继客户端（配对后把指令交给电脑执行）。
-	phoneRelay := &relay.Phone{StatePath: filepath.Join(dataDir, "relay-phone.json")}
+	// 自签中继的 CA：放在 App 私有目录，用户通过「中继证书」设置写入。
+	phoneRelay := &relay.Phone{
+		StatePath: filepath.Join(dataDir, "relay-phone.json"),
+		CAFile:    filepath.Join(dataDir, "relay-ca.pem"),
+	}
 	if err := phoneRelay.Load(); err != nil {
 		log.Printf("[gosvc] 读取手机配对失败（需要重新配对）: %v", err)
 	}

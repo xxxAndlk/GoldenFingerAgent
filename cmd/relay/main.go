@@ -36,6 +36,9 @@ func main() {
 	codeTTL := flag.Duration("code-ttl", envDuration("RELAY_CODE_TTL", 5*time.Minute), "配对码有效期")
 	maxEndpoints := flag.Int("max-endpoints", envInt("RELAY_MAX_ENDPOINTS", 2000), "最大在线/登记电脑数")
 	maxPayload := flag.Int("max-payload", envInt("RELAY_MAX_PAYLOAD", 256<<10), "单条报文上限（字节）")
+	// 没有域名时用自签证书直接对外提供 TLS：证书要与手机/电脑信任的 CA 一致。
+	tlsCert := flag.String("tls-cert", os.Getenv("RELAY_TLS_CERT"), "TLS 证书路径（留空则明文监听，仅供本机反代）")
+	tlsKey := flag.String("tls-key", os.Getenv("RELAY_TLS_KEY"), "TLS 私钥路径")
 	flag.Parse()
 
 	cfg := relay.Config{
@@ -64,6 +67,15 @@ func main() {
 	defer stop()
 
 	go func() {
+		if *tlsCert != "" && *tlsKey != "" {
+			log.Printf("relay listening on %s (TLS, queue=%d ttl=%s)", *addr, *maxQueue, *queueTTL)
+			err := srv.ListenAndServeTLS(*tlsCert, *tlsKey)
+			if err != nil && err != http.ErrServerClosed {
+				fmt.Fprintln(os.Stderr, "relay:", err)
+				os.Exit(1)
+			}
+			return
+		}
 		log.Printf("relay listening on %s (queue=%d ttl=%s)", *addr, *maxQueue, *queueTTL)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintln(os.Stderr, "relay:", err)

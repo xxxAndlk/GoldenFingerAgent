@@ -156,6 +156,13 @@ def write_android_foreground(master):
         target = folder / "ic_launcher_atom.png"
         layer.save(target)
         written.append(target)
+        # 还要留一份默认密度：只有密度限定而没有默认版本时，
+        # AAPT/AGP 资源合并会报找不到 @drawable 引用。
+        if density == "mdpi":
+            default = res / "drawable" / "ic_launcher_atom.png"
+            default.parent.mkdir(parents=True, exist_ok=True)
+            layer.save(default)
+            written.append(default)
     return written
 
 

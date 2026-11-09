@@ -15,6 +15,24 @@
 - **未做**：Windows 任务栏/资源管理器显示的 exe 内嵌图标仍是 Electron 自带的（同一张图、分辨率较低）。要换成多分辨率版需要 `rcedit` 一类 PE 资源工具，本次未引入该依赖。
 - **环境坑（重要）**：`desktop/dist` 下任何新建的 `default_app.asar` 都会被 Kimi Work（Kimi.exe 主进程）独占锁定，`npm --prefix desktop run dist` 开头的 `rmSync` 必然报 EBUSY；仓库根目录另有继承的 `Everyone:(CI)(DENY)(DC)` ACL，连目录本身都删不掉。本次改为定点更新 `desktop/dist/GoldenFinger-win/resources/app/` 下的产物完成发布。
 
+## 〇.5、2026-11-07 中继部署到 120.26.102.114（自签 TLS）+ APK 打包
+
+- **中继已部署完成**：`/opt/gfa-relay/relay`（Linux amd64 静态二进制 6.5MB）+ 自签证书（IP SAN = 120.26.102.114，有效期至 2036-11-04）+ systemd `gfa-relay`（enable + active，开机自启，内存 1.3MB），监听 `*:8787` 且**TLS 已启用**。服务器本机自测 `{"ok":true,...}` 通过。
+- **中继原本只支持明文 HTTP**（靠外部 nginx/caddy 提供 TLS），而该机器上没有任何反代、也没有域名。改动：`cmd/relay` 增加 `-tls-cert`/`-tls-key`（也可用 `RELAY_TLS_CERT`/`RELAY_TLS_KEY`），有证书时走 `ListenAndServeTLS`。
+- **自签证书的信任（关键：不做 InsecureSkipVerify）**：新增 `internal/relay/tls.go` 的 `NewTLSClient`/`NewTLSDialer`/`tlsConfigFor` —— 把自签 CA **追加进系统信任池**再校验，主机名与签名照常验证。电脑端 `relay.Desktop`/`relay.Client` 走 `CAFile`，手机端 `relay.Phone` 走 `CAFile`。
+  - 测试锁定三条边界：`internal/relay/tls_test.go` 的「配了 CA 能连」「没配 CA 连不上」「CA 文件缺失回落系统池」；另有断言确保 `InsecureSkipVerify` 永远为 false。
+  - CA 文件不存在时**不算错误**（回落系统信任库），否则没配自签的用户会直接启动失败。
+- **电脑端 CA 定位**：桌面版是双击启动、拿不到环境变量，所以 `cmd/server` 的 `relayCAFile()` 优先读 `GFA_RELAY_CA`，其次找 `settings.json` 同目录的 `relay-ca.pem`（与 `relay.json` 同处，便于用户自行替换）。
+- **手机端 CA 送达**：内置在 APK 的 `assets/relay-ca.pem`，`GoBridge.installRelayCA()` 首次启动复制到私有目录 `files/relay-ca.pem`；已存在不覆盖（用户可能自己换过证书，静默覆盖会让配对失败却查不到原因）。`docker/android/build.sh` 第 1 步会从 `server-dist/relay-tls/` 同步该证书。
+  - 踩坑：`golang.org/x/mobile/app` 的 `android.AssetManager` 在 gomobile bind 下不可用（编译报 `undefined: android`），改由 Kotlin 侧复制 assets —— 这也是 Android 标准做法。
+- **私钥不入库**：`.gitignore` 增加 `/relay-ca.pem`、`/relay-key.pem`、`/android/app/src/main/assets/relay-ca.pem`。
+- **待办（需用户在阿里云控制台操作）**：安全组未放行 8787。已确认不是程序问题 —— 服务器本机 loopback 正常，但公网 IP 从外部**和服务器自身**都连不通（`ip route get` 显示走 NAT）。操作路径与验证命令见 `server-dist/relay-tls/安装步骤.md`。
+- **APK 构建**：`gfa-android-build` 镜像（5.23GB）已建好，产物 `android/app/build/outputs/apk/debug/app-debug.apk` 与 `android/app/libs/gosvc.aar`。构建脚本必须用 `MSYS_NO_PATHCONV=1` + `--mount type=bind`，否则 Git Bash 会把容器内 `/work/...` 转成 Windows 路径导致 `No such file or directory`。
+- **APK 构建踩的两个坑**：
+  1. `mergeDebugResources` 报 `NullPointerException: Cannot invoke "java.io.File.getName()" because the return value of "java.io.File.getParentFile()" is null` —— 根因是**旧构建缓存里残留着已删除的 `drawable/ic_launcher_foreground.xml.flat`**。删掉矢量前景后必须清 `android/app/build/intermediates` 与 `android/.gradle`，否则每次都失败。
+  2. 自适应图标前景只放密度限定目录（`drawable-xxhdpi/` 等）而没有默认版本时，AGP 资源合并不稳定。`create-tray-icon.py` 现在会额外写一份 `drawable/ic_launcher_atom.png`（默认密度）。
+- **顺带修掉一个被缓存掩盖的 Kotlin 编译错误**：`MainActivity.kt` 里有**两个 `companion object`**（`:39` 与 `:251`），Kotlin 编译直接报 `Only one companion object is allowed per class`。之前 11-05 的构建「成功」只是因为 gradle 缓存了旧的编译结果、没重新编译 Kotlin；一旦清缓存就会暴露。已合并为一个（`EXTRA_ROUTE` 与 `REQ_RECORD_AUDIO` 同处）。
+
 ## 〇.4、2026-11-07 快捷词改成预填，并清理它写进真实库的假数据
 
 - **问题**：手机底部快捷词（记一下 / 定提醒 / 记个人）点一下就把**写死的假例子**直接发给模型 —— 例如「帮我记一下张阿姨的电话是13800000000」、「帮我记一下车位在B2」。这不是提示词，是真实发送，模型会当成用户真实内容处理。

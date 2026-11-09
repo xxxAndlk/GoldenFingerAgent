@@ -27,6 +27,11 @@ desktop/dist/
 /android/.gradle/
 /android/local.properties
 
+# 中继 TLS 证书与私钥（私钥绝不入库；APK 内置的那份同样不入库）
+/relay-ca.pem
+/relay-key.pem
+/android/app/src/main/assets/relay-ca.pem
+
 # 本地数据与历史归档（含用户私人数据库与转写文本，绝不入库）
 /data/
 /.archive/

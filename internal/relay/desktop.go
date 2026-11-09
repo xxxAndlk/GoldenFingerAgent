@@ -26,6 +26,8 @@ type Desktop struct {
 	Enrich func(ctx context.Context, payload *ResultPayload)
 	// Ledger 持久化已执行指令的回执（可选）。
 	Ledger CommandLedger
+	// CAFile 额外信任的 CA 证书路径（自签中继用）；留空走系统信任库。
+	CAFile string
 	Logger func(format string, args ...any)
 
 	mu     sync.Mutex
@@ -143,6 +145,7 @@ func (d *Desktop) ClientFor(ctx context.Context) (*Client, error) {
 	d.client = &Client{
 		BaseURL: d.state.BaseURL, DesktopID: d.state.DesktopID, Token: d.state.Token,
 		Name: d.Name, Handle: d.Handle, Enrich: d.Enrich, Logger: d.Log(), Ledger: d.Ledger,
+		CAFile: d.CAFile,
 	}
 	return d.client, nil
 }

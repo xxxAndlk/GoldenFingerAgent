@@ -39,6 +39,9 @@ class MainActivity : AppCompatActivity() {
     companion object {
         /** 通知 / 转述意图里携带的面板路由：brief / tasks / inbox。 */
         const val EXTRA_ROUTE = "gfa_route"
+
+        /** 申请麦克风权限的请求码。 */
+        private const val REQ_RECORD_AUDIO = 41
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -246,9 +249,5 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         webView.destroy()
         super.onDestroy()
-    }
-
-    companion object {
-        private const val REQ_RECORD_AUDIO = 41
     }
 }
